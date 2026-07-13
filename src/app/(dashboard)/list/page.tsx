@@ -60,13 +60,16 @@ export default function ListPage() {
   const [editingDateId, setEditingDateId] = useState<string | null>(null);
   const [tempDate, setTempDate] = useState("");
 
+  const [editingEndDateId, setEditingEndDateId] = useState<string | null>(null);
+  const [tempEndDate, setTempEndDate] = useState("");
+
   // Filtering states
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterProject, setFilterProject] = useState<string>("all");
 
   // Sorting states
-  const [sortField, setSortField] = useState<"title" | "project" | "startDate" | "estimatedTime" | "status" | null>(null);
+  const [sortField, setSortField] = useState<"title" | "project" | "startDate" | "endDate" | "estimatedTime" | "status" | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   const handleUpdateStatus = async (taskId: string, newStatus: string) => {
@@ -110,6 +113,17 @@ export default function ListPage() {
       });
     }
     setEditingDateId(null);
+  };
+
+  const handleSaveEndDate = async (taskId: string) => {
+    if (tempEndDate) {
+      const parsedDate = new Date(tempEndDate);
+      await updateTask({
+        id: taskId as Id<"tasks">,
+        endDate: parsedDate.getTime(),
+      });
+    }
+    setEditingEndDateId(null);
   };
 
   const handleSort = (field: typeof sortField) => {
@@ -200,10 +214,10 @@ export default function ListPage() {
       </div>
 
       {/* Unified Filter Bar */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center glass p-2.5 rounded-xl border border-border/60 shadow-md shrink-0">
-        <div className="flex flex-wrap items-center gap-3 w-full">
+      <div className="flex flex-col sm:flex-row gap-3 items-center glass p-2 rounded-xl border border-border/60 shadow-md shrink-0">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full">
           {/* Search Bar */}
-          <div className="relative w-full sm:w-56">
+          <div className="relative col-span-2 sm:w-52">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
             <Input
               placeholder="Tìm kiếm công việc..."
@@ -214,10 +228,10 @@ export default function ListPage() {
           </div>
 
           {/* Project Filter */}
-          <div className="w-full sm:w-40">
+          <div className="col-span-1 sm:w-36">
             <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm">
-                <Briefcase className="w-3 h-3 text-muted-foreground" />
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                 <SelectValue placeholder="Dự án: Tất cả">
                   {filterProject === "all"
                     ? "Dự án: Tất cả"
@@ -239,9 +253,9 @@ export default function ListPage() {
           </div>
 
           {/* Status Filter */}
-          <div className="w-full sm:w-44">
+          <div className="col-span-1 sm:w-36">
             <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm">
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                 <SelectValue placeholder="Trạng thái: Tất cả">
                   {filterStatus === "all" ? (
                     <span className="flex items-center gap-1">
@@ -340,8 +354,17 @@ export default function ListPage() {
                     onClick={() => handleSort("startDate")}
                   >
                     <div className="flex items-center">
-                      Ngày thực hiện
+                      Ngày bắt đầu
                       {renderSortIcon("startDate")}
+                    </div>
+                  </TableHead>
+                  <TableHead 
+                    className="text-neutral-400 font-bold text-[10px] uppercase tracking-wider cursor-pointer hover:bg-white/5 select-none transition-colors group py-2"
+                    onClick={() => handleSort("endDate")}
+                  >
+                    <div className="flex items-center">
+                      Ngày kết thúc
+                      {renderSortIcon("endDate")}
                     </div>
                   </TableHead>
                   <TableHead 
@@ -369,7 +392,7 @@ export default function ListPage() {
               <TableBody>
                 {sortedTasks.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-neutral-500 py-12 text-xs">
+                    <TableCell colSpan={8} className="text-center text-neutral-500 py-12 text-xs">
                       Không tìm thấy công việc nào phù hợp.
                     </TableCell>
                   </TableRow>
@@ -438,13 +461,40 @@ export default function ListPage() {
                           ) : (
                             <span
                               className="cursor-text select-none hover:underline text-xs"
-                              title="Nhấp đúp để sửa nhanh ngày thực hiện"
+                              title="Nhấp đúp để sửa nhanh ngày bắt đầu"
                               onDoubleClick={() => {
                                 setEditingDateId(task._id);
                                 setTempDate(format(new Date(task.startDate), "yyyy-MM-dd"));
                               }}
                             >
                               {format(new Date(task.startDate), "dd/MM/yyyy")}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-neutral-400 group-hover:text-neutral-300 text-xs transition-colors">
+                          {editingEndDateId === task._id ? (
+                            <Input
+                              type="date"
+                              value={tempEndDate}
+                              onChange={(e) => setTempEndDate(e.target.value)}
+                              onBlur={() => handleSaveEndDate(task._id)}
+                              autoFocus
+                              className="h-6 text-[11px] bg-background px-1.5 py-0.5 rounded-md w-32"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveEndDate(task._id);
+                                if (e.key === 'Escape') setEditingEndDateId(null);
+                              }}
+                            />
+                          ) : (
+                            <span
+                              className="cursor-text select-none hover:underline text-xs"
+                              title="Nhấp đúp để sửa nhanh ngày kết thúc"
+                              onDoubleClick={() => {
+                                setEditingEndDateId(task._id);
+                                setTempEndDate(format(new Date(task.endDate || task.startDate), "yyyy-MM-dd"));
+                              }}
+                            >
+                              {format(new Date(task.endDate || task.startDate), "dd/MM/yyyy")}
                             </span>
                           )}
                         </TableCell>
@@ -515,7 +565,7 @@ export default function ListPage() {
                               )}
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start" className="w-48 bg-card/95 backdrop-blur-xl border-border shadow-xl">
-                              <DropdownMenuItem onClick={() => handleUpdateStatus(task._id, "todo")} className="cursor-pointer font-medium text-xs">
+                               <DropdownMenuItem onClick={() => handleUpdateStatus(task._id, "todo")} className="cursor-pointer font-medium text-xs">
                                 <Circle className="w-3.5 h-3.5 mr-2 text-muted-foreground" />
                                 Chưa thực hiện
                               </DropdownMenuItem>

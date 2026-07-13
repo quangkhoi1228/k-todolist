@@ -18,6 +18,7 @@ export interface TaskData {
   title: string;
   estimatedTime: number;
   startDate: number;
+  endDate?: number;
   pic?: string;
   project?: string;
   status?: string;
@@ -56,6 +57,15 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
         ? format(defaultDate, "yyyy-MM-dd") 
         : format(new Date(), "yyyy-MM-dd")
   );
+  const [endDate, setEndDate] = useState(
+    editTask?.endDate 
+      ? format(new Date(editTask.endDate), "yyyy-MM-dd") 
+      : editTask?.startDate 
+        ? format(new Date(editTask.startDate), "yyyy-MM-dd")
+        : defaultDate 
+          ? format(defaultDate, "yyyy-MM-dd") 
+          : format(new Date(), "yyyy-MM-dd")
+  );
   const [pic, setPic] = useState(editTask?.pic || "");
   const [project, setProject] = useState(editTask?.project || "");
   const [status, setStatus] = useState(editTask?.status || "todo");
@@ -93,6 +103,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
       setTitle(editTask.title);
       setEstimatedTime(formatHours(editTask.estimatedTime));
       setStartDate(format(new Date(editTask.startDate), "yyyy-MM-dd"));
+      setEndDate(format(new Date(editTask.endDate || editTask.startDate), "yyyy-MM-dd"));
       setPic(editTask.pic || "");
       setProject(editTask.project || "");
       setStatus(editTask.status || "todo");
@@ -117,6 +128,8 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
     if (!userId) return;
 
     const parsedHours = parseTimeToHours(estimatedTime);
+    const startTimestamp = startOfDay(new Date(startDate)).getTime();
+    const endTimestamp = startOfDay(new Date(endDate || startDate)).getTime();
 
     if (editTask) {
       await updateTask({
@@ -124,7 +137,8 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
         id: editTask._id as any,
         title,
         estimatedTime: parsedHours,
-        startDate: startOfDay(new Date(startDate)).getTime(),
+        startDate: startTimestamp,
+        endDate: endTimestamp,
         pic: pic || undefined,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         project: project && project !== "none" ? (project as any) : undefined,
@@ -135,8 +149,8 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
         userId,
         title,
         estimatedTime: parsedHours,
-        startDate: startOfDay(new Date(startDate)).getTime(),
-        endDate: startOfDay(new Date(startDate)).getTime(),
+        startDate: startTimestamp,
+        endDate: endTimestamp,
         pic: pic || undefined,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         project: project && project !== "none" ? (project as any) : undefined,
@@ -163,7 +177,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
             {editTask ? "Sửa Công Việc" : "Thêm Công Việc Mới"}
           </DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-5">
           <div className="space-y-1.5">
             <Label htmlFor="title" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Tên Công Việc</Label>
             <Textarea 
@@ -179,22 +193,33 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
               required 
             />
           </div>
-          
-          <div className="flex flex-col sm:flex-row gap-5 sm:gap-4 w-full">
+
+          <div className="flex flex-col sm:flex-row gap-4 w-full">
             <div className="space-y-1.5 sm:flex-1 w-full">
-              <Label htmlFor="startDate" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày thực hiện</Label>
+              <Label htmlFor="startDate" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày bắt đầu</Label>
               <Input 
                 id="startDate" 
                 type="date" 
                 value={startDate} 
-                onChange={(e) => setStartDate(e.target.value)} 
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  if (endDate && new Date(e.target.value) > new Date(endDate)) {
+                    setEndDate(e.target.value);
+                  }
+                }} 
                 className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
                 required 
               />
               <div className="flex gap-1.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setStartDate(format(new Date(), "yyyy-MM-dd"))}
+                  onClick={() => {
+                    const todayStr = format(new Date(), "yyyy-MM-dd");
+                    setStartDate(todayStr);
+                    if (endDate && new Date(todayStr) > new Date(endDate)) {
+                      setEndDate(todayStr);
+                    }
+                  }}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
                     startDate === format(new Date(), "yyyy-MM-dd")
                       ? "bg-primary/20 text-primary border-primary/40 font-semibold"
@@ -205,7 +230,13 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
                 </button>
                 <button
                   type="button"
-                  onClick={() => setStartDate(format(addDays(new Date(), 1), "yyyy-MM-dd"))}
+                  onClick={() => {
+                    const tomorrowStr = format(addDays(new Date(), 1), "yyyy-MM-dd");
+                    setStartDate(tomorrowStr);
+                    if (endDate && new Date(tomorrowStr) > new Date(endDate)) {
+                      setEndDate(tomorrowStr);
+                    }
+                  }}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
                     startDate === format(addDays(new Date(), 1), "yyyy-MM-dd")
                       ? "bg-primary/20 text-primary border-primary/40 font-semibold"
@@ -218,73 +249,98 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
             </div>
 
             <div className="space-y-1.5 sm:flex-1 w-full">
-              <Label htmlFor="estimatedTime" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Thời gian dự kiến</Label>
-              <div className="flex items-center gap-1.5">
-                <Button
+              <Label htmlFor="endDate" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày kết thúc</Label>
+              <Input 
+                id="endDate" 
+                type="date" 
+                value={endDate} 
+                onChange={(e) => setEndDate(e.target.value)} 
+                className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
+                required 
+              />
+              <div className="flex gap-1.5 pt-2">
+                <button
                   type="button"
-                  variant="outline"
-                  size="icon"
-                  className="h-10 w-10 shrink-0 rounded-lg border-border bg-muted/20 hover:bg-muted/50"
-                  onClick={() => {
-                    const currentHours = parseTimeToHours(estimatedTime);
-                    const val = currentHours - 0.25;
-                    setEstimatedTime(formatHours(Math.max(0.25, val)));
-                  }}
+                  onClick={() => setEndDate(startDate)}
+                  className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
+                    endDate === startDate
+                      ? "bg-primary/20 text-primary border-primary/40 font-semibold"
+                      : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
+                  }`}
                 >
-                  <Minus className="w-4 h-4 text-muted-foreground" />
-                </Button>
-                <Input 
-                  id="estimatedTime" 
-                  type="text" 
-                  value={estimatedTime} 
-                  onChange={(e) => setEstimatedTime(e.target.value)} 
-                  onBlur={() => {
-                    const parsed = parseTimeToHours(estimatedTime);
-                    setEstimatedTime(formatHours(parsed || 0.25));
-                  }}
-                  className="bg-muted/50 border-border text-foreground h-10 px-2 rounded-lg focus-visible:ring-primary/50 text-center font-semibold text-sm flex-1"
-                  required 
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className="h-10 w-10 shrink-0 rounded-lg border-border bg-muted/20 hover:bg-muted/50"
-                  onClick={() => {
-                    const currentHours = parseTimeToHours(estimatedTime);
-                    const val = currentHours + 0.25;
-                    setEstimatedTime(formatHours(val));
-                  }}
-                >
-                  <Plus className="w-4 h-4 text-muted-foreground" />
-                </Button>
+                  Bằng ngày bắt đầu
+                </button>
               </div>
-              <div className="flex flex-wrap gap-1 pt-2">
-                {[
-                  { label: "15p", value: 0.25 },
-                  { label: "30p", value: 0.5 },
-                  { label: "45p", value: 0.75 },
-                  { label: "1h", value: 1 },
-                  { label: "2h", value: 2 },
-                  { label: "4h", value: 4 },
-                ].map((preset) => {
-                  const isActive = parseTimeToHours(estimatedTime) === preset.value;
-                  return (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => setEstimatedTime(formatHours(preset.value))}
-                      className={`text-[10px] px-2 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
-                        isActive
-                          ? "bg-primary/20 text-primary border-primary/40 font-semibold"
-                          : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  );
-                })}
-              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5 w-full">
+            <Label htmlFor="estimatedTime" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Thời gian dự kiến</Label>
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-10 w-10 shrink-0 rounded-lg border-border bg-muted/20 hover:bg-muted/50"
+                onClick={() => {
+                  const currentHours = parseTimeToHours(estimatedTime);
+                  const val = currentHours - 0.25;
+                  setEstimatedTime(formatHours(Math.max(0.25, val)));
+                }}
+              >
+                <Minus className="w-4 h-4 text-muted-foreground" />
+              </Button>
+              <Input 
+                id="estimatedTime" 
+                type="text" 
+                value={estimatedTime} 
+                onChange={(e) => setEstimatedTime(e.target.value)} 
+                onBlur={() => {
+                  const parsed = parseTimeToHours(estimatedTime);
+                  setEstimatedTime(formatHours(parsed || 0.25));
+                }}
+                className="bg-muted/50 border-border text-foreground h-10 px-2 rounded-lg focus-visible:ring-primary/50 text-center font-semibold text-sm flex-1"
+                required 
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-10 w-10 shrink-0 rounded-lg border-border bg-muted/20 hover:bg-muted/50"
+                onClick={() => {
+                  const currentHours = parseTimeToHours(estimatedTime);
+                  const val = currentHours + 0.25;
+                  setEstimatedTime(formatHours(val));
+                }}
+              >
+                <Plus className="w-4 h-4 text-muted-foreground" />
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-1 pt-2">
+              {[
+                { label: "15p", value: 0.25 },
+                { label: "30p", value: 0.5 },
+                { label: "45p", value: 0.75 },
+                { label: "1h", value: 1 },
+                { label: "2h", value: 2 },
+                { label: "4h", value: 4 },
+              ].map((preset) => {
+                const isActive = parseTimeToHours(estimatedTime) === preset.value;
+                return (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => setEstimatedTime(formatHours(preset.value))}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
+                      isActive
+                        ? "bg-primary/20 text-primary border-primary/40 font-semibold"
+                        : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
 

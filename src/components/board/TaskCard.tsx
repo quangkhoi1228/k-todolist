@@ -61,6 +61,8 @@ export function TaskCard({ task }: { task: Task }) {
   };
 
   const handleDelete = async () => {
+    const confirmDelete = window.confirm("Bạn có chắc chắn muốn xóa công việc này?");
+    if (!confirmDelete) return;
     await deleteTask({ id: task._id as any });
   };
 

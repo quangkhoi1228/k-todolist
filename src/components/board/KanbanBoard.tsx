@@ -165,25 +165,25 @@ export function KanbanBoard({
   return (
     <div className="flex flex-col h-full gap-4">
       {/* Unified Filter Bar with Date Navigation */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center glass p-2.5 rounded-xl border border-border/60 shadow-md shrink-0">
-        <div className="flex flex-wrap items-center gap-3 w-full">
+      <div className="flex flex-col md:flex-row gap-3 items-center justify-between glass p-2 rounded-xl border border-border/60 shadow-md shrink-0">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full md:w-auto">
           {/* Date Navigation */}
-          <div className="flex items-center gap-1 shrink-0">
-            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs" onClick={() => setBaseDate(d => addDays(d, -7))}>
+          <div className="flex items-center gap-1 col-span-2 sm:col-auto shrink-0 justify-between sm:justify-start">
+            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs flex-1 sm:flex-initial text-center" onClick={() => setBaseDate(d => addDays(d, -7))}>
               <ChevronLeft className="w-3.5 h-3.5 mr-0.5" /> Trước
             </Button>
-            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer text-xs" onClick={() => setBaseDate(startOfDay(new Date()))}>
+            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer text-xs flex-1 sm:flex-initial text-center" onClick={() => setBaseDate(startOfDay(new Date()))}>
               <CalendarIcon className="w-3 h-3 mr-0.5" /> Hôm nay
             </Button>
-            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs" onClick={() => setBaseDate(d => addDays(d, 7))}>
+            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs flex-1 sm:flex-initial text-center" onClick={() => setBaseDate(d => addDays(d, 7))}>
               Sau <ChevronRight className="w-3.5 h-3.5 ml-0.5" />
             </Button>
           </div>
 
-          <div className="h-5 w-[1px] bg-border/80 self-center hidden md:block" />
+          <div className="h-5 w-[1px] bg-border/80 self-center hidden sm:block" />
 
           {/* Search Bar */}
-          <div className="relative w-full sm:w-52">
+          <div className="relative col-span-2 sm:w-52">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
             <Input
               placeholder="Tìm kiếm công việc..."
@@ -194,10 +194,10 @@ export function KanbanBoard({
           </div>
 
           {/* Project Filter */}
-          <div className="w-full sm:w-36">
+          <div className="col-span-1 sm:w-36">
             <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm">
-                <Briefcase className="w-3 h-3 text-muted-foreground" />
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                 <SelectValue placeholder="Dự án: Tất cả">
                   {filterProject === "all"
                     ? "Dự án: Tất cả"
@@ -219,9 +219,9 @@ export function KanbanBoard({
           </div>
 
           {/* Status Filter */}
-          <div className="w-full sm:w-44">
+          <div className="col-span-1 sm:w-36">
             <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm">
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                 <SelectValue placeholder="Trạng thái: Tất cả">
                   {filterStatus === "all" ? (
                     <span className="flex items-center gap-1">
