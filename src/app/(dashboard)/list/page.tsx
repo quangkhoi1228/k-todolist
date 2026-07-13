@@ -6,7 +6,8 @@ import { useAuth } from "@clerk/nextjs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
-import { NewTaskDialog } from "@/components/board/NewTaskDialog";
+import { NewTaskSheet } from "@/components/board/NewTaskSheet";
+import { formatHours } from "@/lib/time-utils";
 
 export default function ListPage() {
   const { userId } = useAuth();
@@ -29,14 +30,14 @@ export default function ListPage() {
   });
 
   return (
-    <div className="p-6 h-full flex flex-col">
-      <div className="flex justify-between items-center mb-8">
-        <h2 className="text-3xl font-black tracking-tight text-white">List View</h2>
-        <NewTaskDialog>
-          <button className="px-5 py-2.5 bg-white text-black font-semibold rounded-xl hover:bg-neutral-200 hover:shadow-lg hover:-translate-y-0.5 transition-all duration-300">
-            Add Task
+    <div className="p-4 h-full flex flex-col">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl font-black tracking-tight text-foreground">Danh Sách Công Việc</h2>
+        <NewTaskSheet>
+          <button className="px-3.5 py-1.5 bg-foreground text-background text-sm font-semibold rounded-lg hover:opacity-90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-300">
+            Thêm Công Việc
           </button>
-        </NewTaskDialog>
+        </NewTaskSheet>
       </div>
 
       <div className="flex-1 overflow-hidden glass-panel rounded-2xl">
@@ -67,7 +68,7 @@ export default function ListPage() {
                     <TableCell className="text-neutral-400 group-hover:text-neutral-300 transition-colors">{format(new Date(task.startDate), "MMM d, yyyy")}</TableCell>
                     <TableCell className="text-right">
                       <Badge variant="outline" className={task.isOverflowing ? 'text-red-300 border-red-500/30 bg-red-950/30' : 'text-neutral-400 border-white/10 bg-black/20'}>
-                        {task.estimatedTime}h
+                        {formatHours(task.estimatedTime)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-neutral-400">

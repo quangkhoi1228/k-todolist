@@ -26,9 +26,9 @@ export default function GanttPage() {
   }));
 
   return (
-    <div className="p-6 h-full flex flex-col">
-      <div className="flex justify-between items-center mb-8">
-        <h2 className="text-3xl font-black tracking-tight text-white">Gantt Chart</h2>
+    <div className="p-4 h-full flex flex-col">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl font-black tracking-tight text-foreground">Biểu đồ Gantt</h2>
         <div className="space-x-2 bg-black/20 p-1 rounded-xl border border-white/5">
           <Button variant={view === ViewMode.Day ? "default" : "ghost"} className={view === ViewMode.Day ? 'rounded-lg shadow-sm' : 'rounded-lg text-neutral-400 hover:text-white'} onClick={() => setView(ViewMode.Day)}>Day</Button>
           <Button variant={view === ViewMode.Week ? "default" : "ghost"} className={view === ViewMode.Week ? 'rounded-lg shadow-sm' : 'rounded-lg text-neutral-400 hover:text-white'} onClick={() => setView(ViewMode.Week)}>Week</Button>

@@ -8,9 +8,10 @@ import { TaskCard } from "./TaskCard";
 import { getDays, formatDateStr } from "@/lib/date-utils";
 import { startOfDay, addDays } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export interface Task {
   _id: string;
@@ -24,7 +25,26 @@ export interface Task {
   isOverflowing?: boolean;
 }
 
-export function KanbanBoard({ tasks, onUpdateTask }: { tasks: Task[], onUpdateTask: (taskId: string, newStartDate: number) => void }) {
+interface KanbanBoardProps {
+  tasks: Task[];
+  onUpdateTask: (taskId: string, newStartDate: number) => void;
+  projects?: {
+    _id: string;
+    name: string;
+    color?: string;
+    userId: string;
+  }[];
+  selectedProjectId: string;
+  setSelectedProjectId: (id: string) => void;
+}
+
+export function KanbanBoard({ 
+  tasks, 
+  onUpdateTask, 
+  projects, 
+  selectedProjectId, 
+  setSelectedProjectId 
+}: KanbanBoardProps) {
   const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
   const [baseDate, setBaseDate] = useState(() => startOfDay(new Date()));
   const days = useMemo(() => getDays(baseDate, 7), [baseDate]);
@@ -131,6 +151,7 @@ export function KanbanBoard({ tasks, onUpdateTask }: { tasks: Task[], onUpdateTa
 
     // Assign new orders to the target list to preserve the visual order
     const updates = targetList.map((t, index) => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       id: t._id as any,
       order: index * 1000, // Space them out
       startDate: newStartDate,
@@ -144,16 +165,48 @@ export function KanbanBoard({ tasks, onUpdateTask }: { tasks: Task[], onUpdateTa
 
   return (
     <div className="flex flex-col h-full gap-4">
-      <div className="flex items-center gap-2 shrink-0">
-        <Button variant="outline" size="sm" onClick={() => setBaseDate(d => addDays(d, -7))}>
-          <ChevronLeft className="w-4 h-4 mr-1" /> Trước
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => setBaseDate(startOfDay(new Date()))}>
-          <CalendarIcon className="w-4 h-4 mr-1" /> Hôm nay
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => setBaseDate(d => addDays(d, 7))}>
-          Sau <ChevronRight className="w-4 h-4 ml-1" />
-        </Button>
+      <div className="flex items-center justify-between gap-4 shrink-0 flex-wrap bg-muted/20 p-2 rounded-xl border border-border/50">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, -7))}>
+              <ChevronLeft className="w-4 h-4 mr-1" /> Trước
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer" onClick={() => setBaseDate(startOfDay(new Date()))}>
+              <CalendarIcon className="w-3.5 h-3.5 mr-1" /> Hôm nay
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, 7))}>
+              Sau <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
+          </div>
+
+          <div className="h-5 w-[1px] bg-border/80 self-center hidden sm:block" />
+
+          {projects && projects.length > 0 && (
+            <div className="w-48">
+              <Select value={selectedProjectId} onValueChange={(val) => setSelectedProjectId(val || "all")}>
+                <SelectTrigger className="bg-background/80 hover:bg-background border-border/60 text-foreground h-8 px-3 rounded-lg text-xs font-semibold focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1.5 shadow-sm">
+                  <Briefcase className="w-3.5 h-3.5 text-muted-foreground" />
+                  <SelectValue placeholder="Lọc theo dự án">
+                    {selectedProjectId === "all" 
+                      ? "Tất cả dự án" 
+                      : selectedProjectId === "none" 
+                        ? "Không có dự án" 
+                        : projects?.find((p) => p._id === selectedProjectId)?.name}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                  <SelectItem value="all" className="text-xs cursor-pointer">Tất cả dự án</SelectItem>
+                  <SelectItem value="none" className="text-xs cursor-pointer italic text-muted-foreground">Không có dự án</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p._id} value={p._id} className="text-xs cursor-pointer">
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
       </div>
       <DndContext 
         sensors={sensors}
@@ -161,7 +214,7 @@ export function KanbanBoard({ tasks, onUpdateTask }: { tasks: Task[], onUpdateTa
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className="flex gap-4 overflow-x-auto pb-4 h-full">
+        <div className="flex gap-3 overflow-x-auto pb-4 h-full">
         {days.map(day => {
           const dateStr = formatDateStr(day);
           const dayTasks = tasksByDate[dateStr] || [];
