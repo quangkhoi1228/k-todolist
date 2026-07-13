@@ -8,10 +8,11 @@ import { TaskCard } from "./TaskCard";
 import { getDays, formatDateStr } from "@/lib/date-utils";
 import { startOfDay, addDays } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase } from "lucide-react";
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 
 export interface Task {
   _id: string;
@@ -34,16 +35,12 @@ interface KanbanBoardProps {
     color?: string;
     userId: string;
   }[];
-  selectedProjectId: string;
-  setSelectedProjectId: (id: string) => void;
 }
 
 export function KanbanBoard({ 
   tasks, 
   onUpdateTask, 
-  projects, 
-  selectedProjectId, 
-  setSelectedProjectId 
+  projects 
 }: KanbanBoardProps) {
   const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
   const [baseDate, setBaseDate] = useState(() => startOfDay(new Date()));
@@ -51,13 +48,31 @@ export function KanbanBoard({
   
   const [activeTask, setActiveTask] = useState<Task | null>(null);
 
+  // Filtering states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterProject, setFilterProject] = useState<string>("all");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+
+  // Filter tasks
+  const filteredTasks = useMemo(() => {
+    return tasks.filter(task => {
+      const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesStatus = filterStatus === "all" || task.status === filterStatus;
+      
+      const taskProject = task.project || "none";
+      const matchesProject = filterProject === "all" || taskProject === filterProject;
+      
+      return matchesSearch && matchesStatus && matchesProject;
+    });
+  }, [tasks, searchQuery, filterProject, filterStatus]);
+
   // Group tasks by date string
   const tasksByDate = useMemo(() => {
     const grouped: Record<string, Task[]> = {};
     days.forEach(day => grouped[formatDateStr(day)] = []);
     
     // Sort tasks by order
-    const sortedTasks = [...tasks].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const sortedTasks = [...filteredTasks].sort((a, b) => (a.order || 0) - (b.order || 0));
 
     sortedTasks.forEach(task => {
       const taskDate = startOfDay(new Date(task.startDate));
@@ -69,143 +84,207 @@ export function KanbanBoard({
 
     // Mark overflowing tasks
     Object.keys(grouped).forEach(dateStr => {
-      let cumulativeHours = 0;
-      grouped[dateStr].forEach(task => {
-        cumulativeHours += task.estimatedTime;
-        if (cumulativeHours > 8) {
-          task.isOverflowing = true;
-        } else {
-          task.isOverflowing = false;
-        }
-      });
+      const dayTasks = grouped[dateStr];
+      const totalHours = dayTasks.reduce((sum, t) => sum + t.estimatedTime, 0);
+      if (totalHours > 8) {
+        grouped[dateStr] = dayTasks.map(t => ({ ...t, isOverflowing: true }));
+      }
     });
 
     return grouped;
-  }, [tasks, days]);
+  }, [days, filteredTasks]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 5,
+        distance: 8,
       },
     })
   );
 
   function handleDragStart(event: DragStartEvent) {
-    const { active } = event;
-    const task = tasks.find(t => t._id === active.id);
-    if (task) setActiveTask(task);
+    if (event.active.data.current?.type === "Task") {
+      setActiveTask(event.active.data.current.task);
+    }
   }
 
   function handleDragEnd(event: DragEndEvent) {
-    setActiveTask(null);
     const { active, over } = event;
     if (!over) return;
 
-    const activeId = active.id as string;
-    const overId = over.id as string;
+    const activeId = active.id;
+    const overId = over.id;
 
-    const activeTask = tasks.find(t => t._id === activeId);
-    if (!activeTask) return;
-
-    const overData = over.data.current;
-    
-    let newStartDate = activeTask.startDate;
-    let targetList: Task[] = [];
-    
-    if (overData?.type === "Column") {
-      newStartDate = startOfDay(new Date(overData.dateStr)).getTime();
-      targetList = [...(tasksByDate[overData.dateStr] || [])];
-      
-      // Moving to a new column, place at the end
-      if (activeTask.startDate !== newStartDate) {
-        // Remove from old, add to new at end
-        targetList.push(activeTask);
-      } else {
-        // Dropped on the same column but not on a task, do nothing or move to end
-        return;
-      }
-    } else if (overData?.type === "Task") {
-      const overTask = overData.task as Task;
-      newStartDate = startOfDay(new Date(overTask.startDate)).getTime();
-      const dateStr = formatDateStr(startOfDay(new Date(newStartDate)));
-      targetList = [...(tasksByDate[dateStr] || [])];
-
-      if (activeTask.startDate !== newStartDate) {
-        // Insert into the new list at the specific index
-        const overIndex = targetList.findIndex(t => t._id === overTask._id);
-        targetList.splice(overIndex, 0, activeTask);
-      } else {
-        // Reordering within the same list
-        if (activeId !== overId) {
-          const oldIndex = targetList.findIndex(t => t._id === activeId);
-          const newIndex = targetList.findIndex(t => t._id === overId);
-          targetList = arrayMove(targetList, oldIndex, newIndex);
-        } else {
-          return; // No change
-        }
-      }
-    } else {
+    // 1. Dragged to a different column (date)
+    if (over.data.current?.type === "Column") {
+      const targetDateStr = over.data.current.dateStr;
+      const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
+      onUpdateTask(activeId as string, newStartDate);
       return;
     }
 
-    // Assign new orders to the target list to preserve the visual order
-    const updates = targetList.map((t, index) => ({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      id: t._id as any,
-      order: index * 1000, // Space them out
-      startDate: newStartDate,
-    }));
+    // 2. Dragged over a task
+    if (over.data.current?.type === "Task") {
+      const overTask = over.data.current.task as Task;
+      const targetDateStr = formatDateStr(startOfDay(new Date(overTask.startDate)));
+      const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
 
-    // Optimistically UI will be sluggish if we just fire mutation and wait for Convex,
-    // but Convex provides very fast updates so it is usually unnoticeable.
-    // If it is, we should use useOptimistic.
-    updateTaskOrders({ updates });
+      const activeTaskData = active.data.current?.task as Task;
+      const sourceDateStr = formatDateStr(startOfDay(new Date(activeTaskData.startDate)));
+
+      const sourceList = [...(tasksByDate[sourceDateStr] || [])];
+      const targetList = sourceDateStr === targetDateStr ? sourceList : [...(tasksByDate[targetDateStr] || [])];
+
+      const activeIndex = sourceList.findIndex((t) => t._id === activeId);
+      const overIndex = targetList.findIndex((t) => t._id === overId);
+
+      if (sourceDateStr === targetDateStr) {
+        // Reordering in same column
+        const reordered = arrayMove(sourceList, activeIndex, overIndex);
+        const updates = reordered.map((t, index) => ({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id: t._id as any,
+          order: index * 1000,
+          startDate: newStartDate,
+        }));
+        updateTaskOrders({ updates });
+      } else {
+        // Moving between columns and placing in specific index
+        targetList.splice(overIndex, 0, activeTaskData);
+        const updates = targetList.map((t, index) => ({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id: t._id as any,
+          order: index * 1000,
+          startDate: newStartDate,
+        }));
+        updateTaskOrders({ updates });
+      }
+    }
   }
 
   return (
     <div className="flex flex-col h-full gap-4">
-      <div className="flex items-center justify-between gap-4 shrink-0 flex-wrap bg-muted/20 p-2 rounded-xl border border-border/50">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, -7))}>
-              <ChevronLeft className="w-4 h-4 mr-1" /> Trước
+      {/* Unified Filter Bar with Date Navigation */}
+      <div className="flex flex-col sm:flex-row gap-3 items-center glass p-2.5 rounded-xl border border-border/60 shadow-md shrink-0">
+        <div className="flex flex-wrap items-center gap-3 w-full">
+          {/* Date Navigation */}
+          <div className="flex items-center gap-1 shrink-0">
+            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs" onClick={() => setBaseDate(d => addDays(d, -7))}>
+              <ChevronLeft className="w-3.5 h-3.5 mr-0.5" /> Trước
             </Button>
-            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer" onClick={() => setBaseDate(startOfDay(new Date()))}>
-              <CalendarIcon className="w-3.5 h-3.5 mr-1" /> Hôm nay
+            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer text-xs" onClick={() => setBaseDate(startOfDay(new Date()))}>
+              <CalendarIcon className="w-3 h-3 mr-0.5" /> Hôm nay
             </Button>
-            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, 7))}>
-              Sau <ChevronRight className="w-4 h-4 ml-1" />
+            <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs" onClick={() => setBaseDate(d => addDays(d, 7))}>
+              Sau <ChevronRight className="w-3.5 h-3.5 ml-0.5" />
             </Button>
           </div>
 
-          <div className="h-5 w-[1px] bg-border/80 self-center hidden sm:block" />
+          <div className="h-5 w-[1px] bg-border/80 self-center hidden md:block" />
 
-          {projects && projects.length > 0 && (
-            <div className="w-48">
-              <Select value={selectedProjectId} onValueChange={(val) => setSelectedProjectId(val || "all")}>
-                <SelectTrigger className="bg-background/80 hover:bg-background border-border/60 text-foreground h-8 px-3 rounded-lg text-xs font-semibold focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1.5 shadow-sm">
-                  <Briefcase className="w-3.5 h-3.5 text-muted-foreground" />
-                  <SelectValue placeholder="Lọc theo dự án">
-                    {selectedProjectId === "all" 
-                      ? "Tất cả dự án" 
-                      : selectedProjectId === "none" 
-                        ? "Không có dự án" 
-                        : projects?.find((p) => p._id === selectedProjectId)?.name}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
-                  <SelectItem value="all" className="text-xs cursor-pointer">Tất cả dự án</SelectItem>
-                  <SelectItem value="none" className="text-xs cursor-pointer italic text-muted-foreground">Không có dự án</SelectItem>
-                  {projects.map((p) => (
-                    <SelectItem key={p._id} value={p._id} className="text-xs cursor-pointer">
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          {/* Search Bar */}
+          <div className="relative w-full sm:w-52">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Tìm kiếm công việc..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 text-[11px] bg-background/50 border-border/60 rounded-lg w-full"
+            />
+          </div>
+
+          {/* Project Filter */}
+          <div className="w-full sm:w-36">
+            <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm">
+                <Briefcase className="w-3 h-3 text-muted-foreground" />
+                <SelectValue placeholder="Dự án: Tất cả">
+                  {filterProject === "all"
+                    ? "Dự án: Tất cả"
+                    : filterProject === "none"
+                      ? "Không có dự án"
+                      : `Dự án: ${projects?.find((p) => p._id === filterProject)?.name || ""}`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                <SelectItem value="all" className="text-[11px] cursor-pointer">Dự án: Tất cả</SelectItem>
+                <SelectItem value="none" className="text-[11px] cursor-pointer italic text-muted-foreground">Không có dự án</SelectItem>
+                {projects?.map((p) => (
+                  <SelectItem key={p._id} value={p._id} className="text-[11px] cursor-pointer">
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Status Filter */}
+          <div className="w-full sm:w-44">
+            <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm">
+                <SelectValue placeholder="Trạng thái: Tất cả">
+                  {filterStatus === "all" ? (
+                    <span className="flex items-center gap-1">
+                      <Circle className="w-3 h-3 text-muted-foreground" />
+                      Trạng thái: Tất cả
+                    </span>
+                  ) : filterStatus === "todo" ? (
+                    <span className="flex items-center gap-1 text-neutral-500">
+                      <Circle className="w-3 h-3 text-neutral-400" />
+                      Chưa thực hiện
+                    </span>
+                  ) : filterStatus === "processing" ? (
+                    <span className="flex items-center gap-1 text-blue-500">
+                      <Clock className="w-3 h-3 animate-pulse" />
+                      Đang xử lý
+                    </span>
+                  ) : filterStatus === "pending" ? (
+                    <span className="flex items-center gap-1 text-amber-500">
+                      <PauseCircle className="w-3 h-3" />
+                      Tạm dừng
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-emerald-500">
+                      <CheckCircle2 className="w-3 h-3" />
+                      Đã hoàn thành
+                    </span>
+                  )}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                <SelectItem value="all" className="text-[11px] cursor-pointer">
+                  <span className="flex items-center gap-1">
+                    <Circle className="w-3.5 h-3.5 text-muted-foreground" />
+                    Trạng thái: Tất cả
+                  </span>
+                </SelectItem>
+                <SelectItem value="todo" className="text-[11px] cursor-pointer">
+                  <span className="flex items-center gap-1 text-neutral-500">
+                    <Circle className="w-3.5 h-3.5 text-neutral-400" />
+                    Chưa thực hiện
+                  </span>
+                </SelectItem>
+                <SelectItem value="processing" className="text-[11px] cursor-pointer">
+                  <span className="flex items-center gap-1 text-blue-500">
+                    <Clock className="w-3.5 h-3.5" />
+                    Đang xử lý
+                  </span>
+                </SelectItem>
+                <SelectItem value="pending" className="text-[11px] cursor-pointer">
+                  <span className="flex items-center gap-1 text-amber-500">
+                    <PauseCircle className="w-3.5 h-3.5" />
+                    Tạm dừng
+                  </span>
+                </SelectItem>
+                <SelectItem value="done" className="text-[11px] cursor-pointer">
+                  <span className="flex items-center gap-1 text-emerald-500">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Đã hoàn thành
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
       <DndContext 

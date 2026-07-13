@@ -164,3 +164,91 @@
     box-shadow: 0 0 20px oklch(var(--destructive) / 0.4);
   }
 }
+
+/* Gantt Chart Custom Theme Sync */
+.custom-gantt-container ._3_ygE,
+.custom-gantt-container ._3ZbQT {
+  border-color: var(--border) !important;
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
+}
+
+.custom-gantt-container ._34SS0 {
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
+  border-color: var(--border) !important;
+}
+.custom-gantt-container ._34SS0:nth-of-type(even) {
+  background-color: color-mix(in srgb, var(--card) 96%, var(--foreground) 4%) !important;
+}
+
+.custom-gantt-container ._3lLk3 {
+  color: var(--foreground) !important;
+  border-color: var(--border) !important;
+}
+
+.custom-gantt-container ._WuQ0f {
+  color: var(--muted-foreground) !important;
+  background-color: var(--muted) !important;
+  border-color: var(--border) !important;
+}
+
+/* SVG overrides */
+.custom-gantt-container rect._2dZTy {
+  fill: var(--card) !important;
+}
+.custom-gantt-container rect._2dZTy:nth-child(even) {
+  fill: color-mix(in srgb, var(--card) 96%, var(--foreground) 4%) !important;
+}
+
+.custom-gantt-container line._3rUKi,
+.custom-gantt-container line._RuwuK,
+.custom-gantt-container line._1rLuZ {
+  stroke: var(--border) !important;
+}
+
+.custom-gantt-container text._9w8d5 {
+  fill: var(--foreground) !important;
+  font-weight: 500 !important;
+}
+.custom-gantt-container text._2q1Kt {
+  fill: var(--muted-foreground) !important;
+}
+
+.custom-gantt-container text._3zRJQ {
+  fill: var(--primary-foreground) !important;
+  font-weight: 600 !important;
+}
+.custom-gantt-container text._3KcaM {
+  fill: var(--foreground) !important;
+  font-weight: 500 !important;
+}
+
+/* Tooltip styling */
+.custom-gantt-container ._3T42e {
+  background-color: var(--popover) !important;
+  color: var(--popover-foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15) !important;
+}
+.dark .custom-gantt-container ._3T42e {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+}
+.custom-gantt-container ._29NTg {
+  color: var(--muted-foreground) !important;
+}
+
+/* Force text visibility inside rows and headers */
+.custom-gantt-container ._34SS0 * {
+  color: var(--foreground) !important;
+}
+.custom-gantt-container ._WuQ0f * {
+  color: var(--foreground) !important;
+}
+
+/* Gantt timeline calendar header background */
+.custom-gantt-container ._35nLX {
+  fill: var(--muted) !important;
+  stroke: var(--border) !important;
+}
