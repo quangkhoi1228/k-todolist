@@ -37,7 +37,8 @@ import {
   Search,
   ArrowUp,
   ArrowDown,
-  ArrowUpDown
+  ArrowUpDown,
+  SlidersHorizontal
 } from "lucide-react";
 
 export default function ListPage() {
@@ -64,6 +65,7 @@ export default function ListPage() {
   const [tempEndDate, setTempEndDate] = useState("");
 
   // Filtering states
+  const [showFilters, setShowFilters] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterProject, setFilterProject] = useState<string>("all");
@@ -206,15 +208,26 @@ export default function ListPage() {
       {/* Title bar with Add Task Button */}
       <div className="flex justify-between items-center shrink-0">
         <h2 className="text-lg font-bold tracking-tight text-foreground">Danh Sách Công Việc</h2>
-        <NewTaskSheet>
-          <button className="px-3 py-1.5 bg-foreground text-background text-xs font-semibold rounded-lg hover:opacity-90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 cursor-pointer shadow-sm">
-            Thêm Công Việc
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => setShowFilters(!showFilters)} 
+            className={`md:hidden px-3 py-1.5 border border-border rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-muted/50 transition-colors cursor-pointer ${
+              showFilters ? "bg-primary/10 text-primary border-primary/30 font-bold" : "bg-background text-foreground"
+            }`}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            Lọc
           </button>
-        </NewTaskSheet>
+          <NewTaskSheet>
+            <button className="px-3 py-1.5 bg-foreground text-background text-xs font-semibold rounded-lg hover:opacity-90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 cursor-pointer shadow-sm">
+              Thêm Công Việc
+            </button>
+          </NewTaskSheet>
+        </div>
       </div>
 
       {/* Unified Filter Bar */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center glass p-2 rounded-xl border border-border/60 shadow-md shrink-0">
+      <div className={`${showFilters ? "flex" : "hidden"} md:flex flex-col sm:flex-row gap-3 items-center glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full`}>
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full">
           {/* Search Bar */}
           <div className="relative col-span-2 sm:w-52">

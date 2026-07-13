@@ -4,7 +4,8 @@ import { CSS } from "@dnd-kit/utilities";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { MoreHorizontal, Pencil, Trash2, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Zap, Briefcase } from "lucide-react";
+import { MoreHorizontal, Pencil, Trash2, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Zap, Briefcase, Calendar } from "lucide-react";
+import { format } from "date-fns";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -174,6 +175,15 @@ export function TaskCard({ task }: { task: Task }) {
                 </h4>
               )}
             </div>
+
+            {!isTitleEditing && !isQuickEditing && (
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground/80 bg-black/10 dark:bg-black/20 border border-white/5 py-0.5 px-1.5 rounded-md w-fit select-none">
+                <Calendar className="w-2.5 h-2.5 text-muted-foreground" />
+                <span>{format(new Date(task.startDate), "dd/MM/yyyy")}</span>
+                <span className="text-muted-foreground/50">—</span>
+                <span>{format(new Date(task.endDate || task.startDate), "dd/MM/yyyy")}</span>
+              </div>
+            )}
             
             <div className="flex justify-between items-center w-full pt-0.5">
               <div className="flex items-center gap-1.5">
