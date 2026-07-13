@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "K-TodoList",
+  title: "KFlow",
   description: "Task Manager with Auto Scheduling and Gantt Chart",
 };
 

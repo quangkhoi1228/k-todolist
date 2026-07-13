@@ -18,7 +18,7 @@ export default async function DashboardLayout({
         <header className="md:hidden h-16 border-b border-border bg-card/60 backdrop-blur-md flex items-center justify-between px-4 shrink-0 z-20">
           <div className="flex items-center gap-3">
             <MobileSidebar />
-            <h1 className="text-lg font-bold tracking-tight">TodoList</h1>
+            <h1 className="text-lg font-bold tracking-tight">KFlow</h1>
           </div>
           <ThemeToggle />
         </header>

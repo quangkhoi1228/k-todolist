@@ -12,7 +12,7 @@ export default function Sidebar() {
           <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30 glow-primary">
             <span className="text-primary font-black">K</span>
           </div>
-          <h1 className="text-xl font-extrabold text-foreground tracking-tight">K-TodoList</h1>
+          <h1 className="text-xl font-extrabold text-foreground tracking-tight">KFlow</h1>
         </div>
       </div>
       
