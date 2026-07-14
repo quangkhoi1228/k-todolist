@@ -487,12 +487,12 @@ export default function ListPage() {
                         <TableCell className="text-neutral-400 group-hover:text-neutral-300 text-xs transition-colors">
                           {editingEndDateId === task._id ? (
                             <Input
-                              type="date"
+                              type="datetime-local"
                               value={tempEndDate}
                               onChange={(e) => setTempEndDate(e.target.value)}
                               onBlur={() => handleSaveEndDate(task._id)}
                               autoFocus
-                              className="h-6 text-[11px] bg-background px-1.5 py-0.5 rounded-md w-32"
+                              className="h-6 text-[10px] bg-background px-1 py-0.5 rounded-md w-40"
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') handleSaveEndDate(task._id);
                                 if (e.key === 'Escape') setEditingEndDateId(null);
@@ -504,10 +504,10 @@ export default function ListPage() {
                               title="Nhấp đúp để sửa nhanh ngày kết thúc"
                               onDoubleClick={() => {
                                 setEditingEndDateId(task._id);
-                                setTempEndDate(format(new Date(task.endDate || task.startDate), "yyyy-MM-dd"));
+                                setTempEndDate(format(new Date(task.endDate || task.startDate), "yyyy-MM-dd'T'HH:mm"));
                               }}
                             >
-                              {format(new Date(task.endDate || task.startDate), "dd/MM/yyyy")}
+                              {format(new Date(task.endDate || task.startDate), "dd/MM/yyyy HH:mm")}
                             </span>
                           )}
                         </TableCell>

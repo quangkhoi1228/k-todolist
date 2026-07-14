@@ -59,12 +59,12 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
   );
   const [endDate, setEndDate] = useState(
     editTask?.endDate 
-      ? format(new Date(editTask.endDate), "yyyy-MM-dd") 
+      ? format(new Date(editTask.endDate), "yyyy-MM-dd'T'HH:mm") 
       : editTask?.startDate 
-        ? format(new Date(editTask.startDate), "yyyy-MM-dd")
+        ? format(new Date(editTask.startDate), "yyyy-MM-dd'T'18:00")
         : defaultDate 
-          ? format(defaultDate, "yyyy-MM-dd") 
-          : format(new Date(), "yyyy-MM-dd")
+          ? format(defaultDate, "yyyy-MM-dd'T'18:00") 
+          : format(new Date(), "yyyy-MM-dd'T'18:00")
   );
   const [pic, setPic] = useState(editTask?.pic || "");
   const [project, setProject] = useState(editTask?.project || "");
@@ -98,18 +98,36 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
   }, []);
 
   useEffect(() => {
-    if (editTask && open) {
+    if (open) {
       /* eslint-disable react-hooks/set-state-in-effect */
-      setTitle(editTask.title);
-      setEstimatedTime(formatHours(editTask.estimatedTime));
-      setStartDate(format(new Date(editTask.startDate), "yyyy-MM-dd"));
-      setEndDate(format(new Date(editTask.endDate || editTask.startDate), "yyyy-MM-dd"));
-      setPic(editTask.pic || "");
-      setProject(editTask.project || "");
-      setStatus(editTask.status || "todo");
+      if (editTask) {
+        setTitle(editTask.title);
+        setEstimatedTime(formatHours(editTask.estimatedTime));
+        setStartDate(format(new Date(editTask.startDate), "yyyy-MM-dd"));
+        setEndDate(format(new Date(editTask.endDate || editTask.startDate), "yyyy-MM-dd'T'HH:mm"));
+        setPic(editTask.pic || "");
+        setProject(editTask.project || "");
+        setStatus(editTask.status || "todo");
+      } else {
+        setTitle("");
+        setEstimatedTime("1h");
+        setStartDate(
+          defaultDate 
+            ? format(defaultDate, "yyyy-MM-dd") 
+            : format(new Date(), "yyyy-MM-dd")
+        );
+        setEndDate(
+          defaultDate 
+            ? format(defaultDate, "yyyy-MM-dd'T'18:00") 
+            : format(new Date(), "yyyy-MM-dd'T'18:00")
+        );
+        setPic("");
+        setProject("");
+        setStatus("todo");
+      }
       /* eslint-enable react-hooks/set-state-in-effect */
     }
-  }, [editTask, open]);
+  }, [editTask, open, defaultDate]);
 
   const handleDelete = async () => {
     if (!editTask) return;
@@ -129,7 +147,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
 
     const parsedHours = parseTimeToHours(estimatedTime);
     const startTimestamp = startOfDay(new Date(startDate)).getTime();
-    const endTimestamp = startOfDay(new Date(endDate || startDate)).getTime();
+    const endTimestamp = new Date(endDate || startDate).getTime();
 
     if (editTask) {
       await updateTask({
@@ -204,7 +222,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
                 onChange={(e) => {
                   setStartDate(e.target.value);
                   if (endDate && new Date(e.target.value) > new Date(endDate)) {
-                    setEndDate(e.target.value);
+                    setEndDate(`${e.target.value}T18:00`);
                   }
                 }} 
                 className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
@@ -217,7 +235,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
                     const todayStr = format(new Date(), "yyyy-MM-dd");
                     setStartDate(todayStr);
                     if (endDate && new Date(todayStr) > new Date(endDate)) {
-                      setEndDate(todayStr);
+                      setEndDate(`${todayStr}T18:00`);
                     }
                   }}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
@@ -234,7 +252,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
                     const tomorrowStr = format(addDays(new Date(), 1), "yyyy-MM-dd");
                     setStartDate(tomorrowStr);
                     if (endDate && new Date(tomorrowStr) > new Date(endDate)) {
-                      setEndDate(tomorrowStr);
+                      setEndDate(`${tomorrowStr}T18:00`);
                     }
                   }}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
@@ -252,7 +270,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
               <Label htmlFor="endDate" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày kết thúc</Label>
               <Input 
                 id="endDate" 
-                type="date" 
+                type="datetime-local" 
                 value={endDate} 
                 onChange={(e) => setEndDate(e.target.value)} 
                 className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
@@ -261,9 +279,9 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
               <div className="flex gap-1.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setEndDate(startDate)}
+                  onClick={() => setEndDate(`${startDate}T18:00`)}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
-                    endDate === startDate
+                    endDate === `${startDate}T18:00`
                       ? "bg-primary/20 text-primary border-primary/40 font-semibold"
                       : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
                   }`}

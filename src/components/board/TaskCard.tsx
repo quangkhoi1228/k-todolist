@@ -1,16 +1,15 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { MoreHorizontal, Pencil, Trash2, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Zap, Briefcase, Calendar } from "lucide-react";
+import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar } from "lucide-react";
 import { format } from "date-fns";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useMutation, useQuery } from "convex/react";
@@ -36,7 +35,6 @@ export function TaskCard({ task }: { task: Task }) {
   const [tempTitle, setTempTitle] = useState(task.title);
 
   const updateTask = useMutation(api.tasks.updateTask);
-  const deleteTask = useMutation(api.tasks.deleteTask);
   const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
 
   const {
@@ -61,11 +59,6 @@ export function TaskCard({ task }: { task: Task }) {
     });
   };
 
-  const handleDelete = async () => {
-    const confirmDelete = window.confirm("Bạn có chắc chắn muốn xóa công việc này?");
-    if (!confirmDelete) return;
-    await deleteTask({ id: task._id as any });
-  };
 
   const handleSaveQuickEdit = async () => {
     await updateTask({
@@ -181,7 +174,11 @@ export function TaskCard({ task }: { task: Task }) {
                 <Calendar className="w-2.5 h-2.5 text-muted-foreground" />
                 <span>{format(new Date(task.startDate), "dd/MM/yyyy")}</span>
                 <span className="text-muted-foreground/50">—</span>
-                <span>{format(new Date(task.endDate || task.startDate), "dd/MM/yyyy")}</span>
+                <span>
+                  {task.endDate 
+                    ? format(new Date(task.endDate), "dd/MM/yyyy HH:mm") 
+                    : format(new Date(task.startDate), "dd/MM/yyyy")}
+                </span>
               </div>
             )}
             
@@ -317,55 +314,20 @@ export function TaskCard({ task }: { task: Task }) {
           </div>
         </Card>
 
-        {/* Action Menu */}
+        {/* Edit Button */}
         {!isQuickEditing && (
           <div className="absolute top-2 right-2 opacity-0 group-hover/task:opacity-100 transition-opacity">
-            <DropdownMenu>
-              <DropdownMenuTrigger 
-                className="p-1.5 rounded-md hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                <MoreHorizontal className="w-4 h-4" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48 bg-card/95 backdrop-blur-xl border-border shadow-xl">
-                <DropdownMenuItem onClick={() => {
-                  setQuickTitle(task.title);
-                  setQuickTime(formatHours(task.estimatedTime));
-                  setIsQuickEditing(true);
-                }} className="cursor-pointer font-medium text-foreground">
-                  <Zap className="w-4 h-4 mr-2 text-amber-500" />
-                  Sửa nhanh
-                </DropdownMenuItem>
-                <DropdownMenuSeparator className="bg-border/50" />
-                
-                <DropdownMenuItem onClick={() => handleUpdateStatus("todo")} className="cursor-pointer font-medium">
-                  <Circle className="w-4 h-4 mr-2 text-muted-foreground" />
-                  Chưa thực hiện
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleUpdateStatus("processing")} className="cursor-pointer font-medium text-blue-500 focus:text-blue-500">
-                  <Clock className="w-4 h-4 mr-2" />
-                  Đang xử lý
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleUpdateStatus("pending")} className="cursor-pointer font-medium text-amber-500 focus:text-amber-500">
-                  <PauseCircle className="w-4 h-4 mr-2" />
-                  Tạm dừng
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleUpdateStatus("done")} className="cursor-pointer font-medium text-emerald-500 focus:text-emerald-500">
-                  <CheckCircle2 className="w-4 h-4 mr-2" />
-                  Đã hoàn thành
-                </DropdownMenuItem>
-                
-                <DropdownMenuSeparator className="bg-border/50" />
-                <DropdownMenuItem onClick={() => setIsEditOpen(true)} className="cursor-pointer font-medium text-foreground">
-                  <Pencil className="w-4 h-4 mr-2" />
-                  Sửa chi tiết
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDelete} className="cursor-pointer font-medium text-destructive focus:text-destructive focus:bg-destructive/10">
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Xóa công việc
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsEditOpen(true);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="p-1.5 rounded-md hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              title="Sửa chi tiết"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
       </div>
