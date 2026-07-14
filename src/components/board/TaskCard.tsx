@@ -4,7 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar } from "lucide-react";
+import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar, ArrowUp, ArrowDown, Minus } from "lucide-react";
 import { format } from "date-fns";
 import {
   DropdownMenu,
@@ -22,7 +22,38 @@ interface Task extends TaskData {
   isOverflowing?: boolean;
 }
 
-export function TaskCard({ task }: { task: Task }) {
+const PriorityIndicator = ({ priority }: { priority: string }) => {
+  const activeColor = priority === "high"
+    ? "bg-rose-500"
+    : priority === "low"
+      ? "bg-slate-400 dark:bg-slate-500"
+      : "bg-indigo-500 dark:bg-indigo-400";
+  return (
+    <div className="flex flex-col gap-[1.5px] justify-center items-center h-5 w-5 shrink-0 bg-muted/40 rounded border border-border/20" title={`Độ ưu tiên: ${priority === "high" ? "Cao" : priority === "low" ? "Thấp" : "Trung bình"}`}>
+      {priority === "high" ? (
+        <>
+          <div className={`h-[1.5px] w-2.5 ${activeColor} rounded-full`} />
+          <div className={`h-[1.5px] w-2.5 ${activeColor} rounded-full`} />
+          <div className={`h-[1.5px] w-2.5 ${activeColor} rounded-full`} />
+        </>
+      ) : priority === "normal" ? (
+        <>
+          <div className="h-[1.5px] w-2.5 bg-muted-foreground/30 rounded-full" />
+          <div className={`h-[1.5px] w-2.5 ${activeColor} rounded-full`} />
+          <div className={`h-[1.5px] w-2.5 ${activeColor} rounded-full`} />
+        </>
+      ) : (
+        <>
+          <div className="h-[1.5px] w-2.5 bg-muted-foreground/30 rounded-full" />
+          <div className="h-[1.5px] w-2.5 bg-muted-foreground/30 rounded-full" />
+          <div className={`h-[1.5px] w-2.5 ${activeColor} rounded-full`} />
+        </>
+      )}
+    </div>
+  );
+};
+
+export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = false }: { task: Task; hideProjectBadge?: boolean; hideStatusBadge?: boolean }) {
   const { userId } = useAuth();
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isQuickEditing, setIsQuickEditing] = useState(false);
@@ -116,11 +147,11 @@ export function TaskCard({ task }: { task: Task }) {
             ${isQuickEditing || isTitleEditing ? 'ring-2 ring-primary border-primary' : ''}
           `}
         >
-          <div className="p-2.5 flex flex-col gap-2 relative">
-            {projectName && (
-              <div className="flex">
-                <Badge variant="outline" className="text-[10px] font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20 py-0.5 px-2 flex items-center gap-1 rounded-md">
-                  <Briefcase className="w-3 h-3" />
+          <div className="px-2.5 py-1.5 flex flex-col gap-1.5 relative">
+            {projectName && !hideProjectBadge && (
+              <div className="flex flex-wrap gap-1">
+                <Badge variant="outline" className="text-[9px] font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20 py-0 px-1.5 flex items-center gap-1 rounded-md h-5">
+                  <Briefcase className="w-2.5 h-2.5" />
                   {projectName}
                 </Badge>
               </div>
@@ -161,7 +192,7 @@ export function TaskCard({ task }: { task: Task }) {
                     setTempTitle(task.title);
                     setIsTitleEditing(true);
                   }}
-                  className={`text-sm font-semibold leading-tight pr-6 w-full cursor-text select-none ${isDone ? 'text-muted-foreground line-through' : 'text-foreground'}`}
+                  className={`text-sm font-semibold leading-tight w-full cursor-text select-none ${isDone ? 'text-muted-foreground line-through' : 'text-foreground'}`}
                   title="Double click để sửa tên"
                 >
                   {task.title}
@@ -238,7 +269,11 @@ export function TaskCard({ task }: { task: Task }) {
                   </button>
                 )}
                 
-                {!isQuickEditing && (
+                {!isQuickEditing && task.priority && (
+                  <PriorityIndicator priority={task.priority} />
+                )}
+                
+                {!isQuickEditing && !hideStatusBadge && (
                   <DropdownMenu>
                     <DropdownMenuTrigger 
                       className="focus:outline-none cursor-pointer"
@@ -316,17 +351,17 @@ export function TaskCard({ task }: { task: Task }) {
 
         {/* Edit Button */}
         {!isQuickEditing && (
-          <div className="absolute top-2 right-2 opacity-0 group-hover/task:opacity-100 transition-opacity">
+          <div className="absolute top-1 right-1 opacity-0 group-hover/task:opacity-100 transition-opacity z-20">
             <button 
               onClick={(e) => {
                 e.stopPropagation();
                 setIsEditOpen(true);
               }}
               onPointerDown={(e) => e.stopPropagation()}
-              className="p-1.5 rounded-md hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              className="p-1 rounded-md bg-background/80 hover:bg-muted border border-border/50 text-muted-foreground hover:text-foreground transition-colors cursor-pointer shadow-sm"
               title="Sửa chi tiết"
             >
-              <Pencil className="w-3.5 h-3.5" />
+              <Pencil className="w-3 h-3" />
             </button>
           </div>
         )}

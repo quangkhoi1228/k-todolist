@@ -17,9 +17,9 @@ export default function BoardPage() {
 
   const [showFilters, setShowFilters] = useState(false);
 
-  const handleUpdateTask = (taskId: string, newStartDate: number) => {
+  const handleUpdateTask = (taskId: string, updates: { startDate?: number; endDate?: number; status?: string; project?: string }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    updateTask({ id: taskId as any, startDate: newStartDate });
+    updateTask({ id: taskId as any, ...(updates as any) });
   };
 
   return (

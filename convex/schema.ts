@@ -6,6 +6,7 @@ export default defineSchema({
     userId: v.string(),
     name: v.string(),
     color: v.optional(v.string()),
+    order: v.optional(v.number()),
   }).index("by_user", ["userId"]),
   
   tasks: defineTable({
@@ -20,5 +21,6 @@ export default defineSchema({
     order: v.optional(v.number()),
     pic: v.optional(v.string()), // Person In Charge
     support: v.optional(v.string()),
+    priority: v.optional(v.string()), // 'low', 'normal', 'high'
   }).index("by_user", ["userId"]),
 });

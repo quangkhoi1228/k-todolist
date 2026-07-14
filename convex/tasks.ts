@@ -24,6 +24,7 @@ export const createTask = mutation({
     order: v.optional(v.number()),
     pic: v.optional(v.string()),
     support: v.optional(v.string()),
+    priority: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("tasks", args);
@@ -43,6 +44,7 @@ export const updateTask = mutation({
     order: v.optional(v.number()),
     pic: v.optional(v.string()),
     support: v.optional(v.string()),
+    priority: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { id, ...rest } = args;

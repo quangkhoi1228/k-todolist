@@ -23,17 +23,20 @@ export interface TaskData {
   project?: string;
   status?: string;
   order?: number;
+  priority?: string;
 }
 
 interface NewTaskSheetProps {
   children?: React.ReactNode;
   defaultDate?: Date;
+  defaultProject?: string;
+  defaultStatus?: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   editTask?: TaskData;
 }
 
-export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOpenChange, editTask }: NewTaskSheetProps) {
+export function NewTaskSheet({ children, defaultDate, defaultProject, defaultStatus, open: controlledOpen, onOpenChange, editTask }: NewTaskSheetProps) {
   const { userId } = useAuth();
   const createTask = useMutation(api.tasks.createTask);
   const updateTask = useMutation(api.tasks.updateTask);
@@ -67,8 +70,9 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
           : format(new Date(), "yyyy-MM-dd'T'18:00")
   );
   const [pic, setPic] = useState(editTask?.pic || "");
-  const [project, setProject] = useState(editTask?.project || "");
-  const [status, setStatus] = useState(editTask?.status || "todo");
+  const [project, setProject] = useState(editTask?.project || defaultProject || "");
+  const [status, setStatus] = useState(editTask?.status || defaultStatus || "todo");
+  const [priority, setPriority] = useState(editTask?.priority || "normal");
 
   const [projectSearch, setProjectSearch] = useState("");
   const [isProjectDropdownOpen, setIsProjectDropdownOpen] = useState(false);
@@ -108,6 +112,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
         setPic(editTask.pic || "");
         setProject(editTask.project || "");
         setStatus(editTask.status || "todo");
+        setPriority(editTask.priority || "normal");
       } else {
         setTitle("");
         setEstimatedTime("1h");
@@ -122,12 +127,13 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
             : format(new Date(), "yyyy-MM-dd'T'18:00")
         );
         setPic("");
-        setProject("");
-        setStatus("todo");
+        setProject(defaultProject || "");
+        setStatus(defaultStatus || "todo");
+        setPriority("normal");
       }
       /* eslint-enable react-hooks/set-state-in-effect */
     }
-  }, [editTask, open, defaultDate]);
+  }, [editTask, open, defaultDate, defaultProject, defaultStatus]);
 
   const handleDelete = async () => {
     if (!editTask) return;
@@ -161,6 +167,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         project: project && project !== "none" ? (project as any) : undefined,
         status: status,
+        priority: priority,
       });
     } else {
       await createTask({
@@ -173,6 +180,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         project: project && project !== "none" ? (project as any) : undefined,
         status: status,
+        priority: priority,
         order: Date.now(), // default order is current timestamp to place at end
       });
     }
@@ -183,6 +191,7 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
       setEstimatedTime("1h");
       setProject("");
       setStatus("todo");
+      setPriority("normal");
     }
   };
 
@@ -472,6 +481,33 @@ export function NewTaskSheet({ children, defaultDate, open: controlledOpen, onOp
                     key={item.value}
                     type="button"
                     onClick={() => setStatus(item.value)}
+                    className={`text-xs px-3.5 py-1.5 rounded-lg border transition-all duration-200 cursor-pointer font-medium hover:opacity-95 flex-1 text-center ${
+                      isActive
+                        ? `${item.activeClass} font-semibold ring-1 ring-primary/20`
+                        : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Độ ưu tiên</Label>
+            <div className="flex flex-wrap gap-2 pt-1">
+              {[
+                { value: "low", label: "Thấp", activeClass: "bg-slate-500/10 text-slate-400 border-slate-500/30" },
+                { value: "normal", label: "Trung bình", activeClass: "bg-indigo-500/10 text-indigo-400 border-indigo-500/30" },
+                { value: "high", label: "Cao", activeClass: "bg-rose-500/10 text-rose-400 border-rose-500/30" },
+              ].map((item) => {
+                const isActive = priority === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => setPriority(item.value)}
                     className={`text-xs px-3.5 py-1.5 rounded-lg border transition-all duration-200 cursor-pointer font-medium hover:opacity-95 flex-1 text-center ${
                       isActive
                         ? `${item.activeClass} font-semibold ring-1 ring-primary/20`
