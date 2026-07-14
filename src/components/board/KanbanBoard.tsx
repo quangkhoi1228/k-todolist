@@ -1320,7 +1320,7 @@ export function KanbanBoard({
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className={`flex-1 min-h-0 overflow-auto pb-4 ${viewMode === "status" ? "" : "flex flex-row gap-3"}`}>
+        <div className={`flex-1 min-h-0 pb-4 ${viewMode === "status" ? "overflow-auto" : "overflow-x-auto overflow-y-hidden flex flex-row gap-3 items-stretch"}`}>
           {viewMode === "status" ? (
             <div className="flex flex-col gap-3.5 min-w-max">
               {/* Status Headers row — sticky when scrolling vertically */}

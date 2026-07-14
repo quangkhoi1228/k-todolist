@@ -4,7 +4,6 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import { format, isToday } from "date-fns";
 import { vi } from "date-fns/locale";
 import { TaskCard } from "./TaskCard";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { NewTaskSheet } from "./NewTaskSheet";
 import { Badge } from "@/components/ui/badge";
 
@@ -55,7 +54,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
   };
 
   return (
-    <div className={`flex flex-col w-[345px] shrink-0 rounded-2xl border transition-all duration-300 group ${
+    <div className={`flex flex-col w-[345px] shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group ${
       statusMode
         ? statusStyles[statusMode]
         : isOverdue
@@ -66,7 +65,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
               ? 'bg-primary/5 dark:bg-primary/5 border-primary/40 shadow-[0_0_20px_rgba(139,92,246,0.12)]' 
               : 'glass-panel border-border/50'
     }`}>
-      <div className={`p-3 py-2.5 border-b flex justify-between items-center rounded-t-2xl relative ${
+      <div className={`p-3 py-2.5 border-b flex justify-between items-center rounded-t-2xl relative shrink-0 ${
         statusMode
           ? statusHeaderStyles[statusMode]
           : isOverdue
@@ -129,15 +128,18 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
         </div>
       </div>
       
-      <ScrollArea className={`flex-1 p-3 transition-colors ${isOver ? 'bg-white/5' : ''}`}>
-        <div ref={setNodeRef} className="min-h-[150px] pt-1.5 pb-1.5 px-0.5">
+      <div
+        ref={setNodeRef}
+        className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 transition-colors ${isOver ? "bg-white/5" : ""}`}
+      >
+        <div className="min-h-[150px] pt-1.5 pb-1.5 px-0.5">
           <SortableContext items={tasks.map((t) => t._id)} strategy={verticalListSortingStrategy}>
             {tasks.map((task) => (
               <TaskCard key={task._id} task={task} />
             ))}
           </SortableContext>
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }

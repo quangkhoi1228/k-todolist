@@ -1,26 +1,50 @@
+"use client";
+
 import { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar, ArrowUp, ArrowDown, Minus } from "lucide-react";
-import { format, startOfDay } from "date-fns";
+import { Button } from "@/components/ui/button";
+import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar } from "lucide-react";
+import { differenceInCalendarDays, format, startOfDay } from "date-fns";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { NewTaskSheet, TaskData } from "./NewTaskSheet";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
+import { cn } from "@/lib/utils";
 
 interface Task extends TaskData {
   isOverflowing?: boolean;
 }
+
+type DueUrgency = "overdue" | "today" | "soon" | null;
+
+const SOON_DAYS = 3;
+
+function getDueUrgency(endDate?: number | null, status?: string): DueUrgency {
+  if (!endDate || status === "done") return null;
+  const days = differenceInCalendarDays(startOfDay(new Date(endDate)), startOfDay(new Date()));
+  if (days < 0) return "overdue";
+  if (days === 0) return "today";
+  if (days <= SOON_DAYS) return "soon";
+  return null;
+}
+
+const urgencyDateClass: Record<Exclude<DueUrgency, null>, string> = {
+  overdue: "text-orange-600 dark:text-orange-400 bg-orange-500/10 border-orange-500/30",
+  today: "text-orange-500 dark:text-orange-400 bg-orange-500/8 border-orange-500/25",
+  soon: "text-amber-600 dark:text-amber-400 bg-amber-500/8 border-amber-500/25",
+};
 
 const PriorityIndicator = ({ priority, compact = false }: { priority: string; compact?: boolean }) => {
   const activeColor = priority === "high"
@@ -55,19 +79,28 @@ const PriorityIndicator = ({ priority, compact = false }: { priority: string; co
   );
 };
 
-function formatCompactDates(startDate?: number | null, endDate?: number | null) {
+function formatCompactDates(startDate?: number | null, endDate?: number | null, short = false) {
   if (!startDate && !endDate) return null;
   if (startDate && endDate) {
     const start = new Date(startDate);
     const end = new Date(endDate);
     const sameDay = format(start, "yyyy-MM-dd") === format(end, "yyyy-MM-dd");
     if (sameDay) {
-      return `${format(start, "dd/MM")} ${format(end, "HH:mm")}`;
+      return short ? format(end, "dd/MM HH:mm") : `${format(start, "dd/MM")} ${format(end, "HH:mm")}`;
     }
-    return `${format(start, "dd/MM")}–${format(end, "dd/MM HH:mm")}`;
+    return short
+      ? `${format(start, "dd/MM")}–${format(end, "dd/MM")}`
+      : `${format(start, "dd/MM")}–${format(end, "dd/MM HH:mm")}`;
   }
-  if (startDate) return format(new Date(startDate), "dd/MM/yyyy");
-  return format(new Date(endDate!), "dd/MM HH:mm");
+  if (startDate) return format(new Date(startDate), short ? "dd/MM" : "dd/MM/yyyy");
+  return format(new Date(endDate!), short ? "dd/MM HH:mm" : "dd/MM HH:mm");
+}
+
+function urgencyLabel(urgency: DueUrgency) {
+  if (urgency === "overdue") return "Quá hạn";
+  if (urgency === "today") return "Hết hạn hôm nay";
+  if (urgency === "soon") return "Sắp đến hạn";
+  return undefined;
 }
 
 export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = false }: { task: Task; hideProjectBadge?: boolean; hideStatusBadge?: boolean }) {
@@ -147,16 +180,21 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     setIsTitleEditing(false);
   };
 
-  const handleStartDateEditing = () => {
+  const openDateEditor = () => {
     setTempStartDate(task.startDate ? format(new Date(task.startDate), "yyyy-MM-dd") : "");
     setTempEndDate(
       task.endDate
         ? format(new Date(task.endDate), "yyyy-MM-dd'T'HH:mm")
         : task.startDate
           ? format(new Date(task.startDate), "yyyy-MM-dd'T'17:30")
-          : ""
+          : format(new Date(), "yyyy-MM-dd'T'17:30")
     );
     setIsDateEditing(true);
+  };
+
+  const handleDateOpenChange = (open: boolean) => {
+    if (open) openDateEditor();
+    else setIsDateEditing(false);
   };
 
   const handleSaveDates = async () => {
@@ -171,35 +209,188 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     setIsDateEditing(false);
   };
 
-  const handleCancelDateEdit = () => {
-    setIsDateEditing(false);
-  };
-
   const isDone = task.status === "done";
   const isCompact = hideProjectBadge && hideStatusBadge;
+  const hasDate = Boolean(task.startDate || task.endDate);
+  const dueUrgency = getDueUrgency(task.endDate, task.status);
+  const forceExpanded = isTitleEditing || isDateEditing || isTimeEditing;
   
   // Resolve project name from ID
   const projectName = task.project && task.project !== "none" 
     ? projects?.find(p => p._id === task.project)?.name || "Unknown Project"
     : null;
 
+  const dateTriggerClass = cn(
+    "flex items-center gap-1 rounded-md border transition-all cursor-pointer shrink-0 whitespace-nowrap",
+    isCompact ? "text-[9px] py-0 px-1 gap-0.5" : "text-[10px] py-0.5 px-1.5 w-fit",
+    dueUrgency
+      ? urgencyDateClass[dueUrgency]
+      : "text-muted-foreground/80 bg-muted/30 border-border/40 hover:bg-muted/50 hover:border-primary/30",
+    !hasDate && !isDateEditing && "opacity-0 max-h-0 py-0 px-0 border-transparent overflow-hidden pointer-events-none group-hover/task:opacity-100 group-hover/task:max-h-8 group-hover/task:py-0.5 group-hover/task:px-1.5 group-hover/task:border-dashed group-hover/task:border-border/60 group-hover/task:pointer-events-auto group-hover/task:bg-muted/20 group-hover/task:text-muted-foreground"
+  );
+
+  const datePopover = (
+    <Popover open={isDateEditing} onOpenChange={handleDateOpenChange}>
+      <PopoverTrigger
+        type="button"
+        className={dateTriggerClass}
+        title={urgencyLabel(dueUrgency) ?? (hasDate ? "Sửa ngày" : "Thêm ngày")}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
+        {hasDate ? (
+          isCompact ? (
+            forceExpanded ? (
+              <span>{formatCompactDates(task.startDate, task.endDate)}</span>
+            ) : (
+              <>
+                <span className="group-hover/task:hidden truncate max-w-[5.5rem]">
+                  {formatCompactDates(task.startDate, task.endDate, true)}
+                </span>
+                <span className="hidden group-hover/task:inline">
+                  {formatCompactDates(task.startDate, task.endDate)}
+                </span>
+              </>
+            )
+          ) : (
+            <>
+              {task.startDate && <span>{format(new Date(task.startDate), "dd/MM/yyyy")}</span>}
+              {task.startDate && task.endDate && <span className="opacity-50">—</span>}
+              {task.endDate && <span>{format(new Date(task.endDate), "dd/MM/yyyy HH:mm")}</span>}
+            </>
+          )
+        ) : (
+          <span className="italic">Thêm ngày</span>
+        )}
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="start"
+        sideOffset={8}
+        className="w-80 p-3.5 bg-card/98 backdrop-blur-xl border border-border shadow-2xl rounded-xl z-[100]"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex flex-col gap-3">
+          <div className="text-sm font-bold text-foreground flex items-center gap-1.5">
+            <Calendar className="w-4 h-4 text-primary" />
+            {hasDate ? "Chỉnh sửa ngày" : "Thêm ngày cho công việc"}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground">Ngày bắt đầu</label>
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="date"
+                value={tempStartDate}
+                onChange={(e) => {
+                  setTempStartDate(e.target.value);
+                  if (e.target.value && tempEndDate && new Date(e.target.value) > new Date(tempEndDate)) {
+                    setTempEndDate(`${e.target.value}T17:30`);
+                  }
+                }}
+                onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
+                className="h-9 text-sm bg-background border-border rounded-lg cursor-pointer"
+              />
+              {tempStartDate && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => setTempStartDate("")}
+                  title="Xóa ngày bắt đầu"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground">Hạn chót</label>
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="datetime-local"
+                value={tempEndDate}
+                onChange={(e) => setTempEndDate(e.target.value)}
+                onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
+                className="h-9 text-sm bg-background border-border rounded-lg cursor-pointer flex-1"
+              />
+              {tempEndDate && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => setTempEndDate("")}
+                  title="Xóa hạn chót"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-1 border-t border-border/60">
+            <Button
+              type="button"
+              variant="ghost"
+              className="flex-1 h-9 cursor-pointer"
+              onClick={() => setIsDateEditing(false)}
+            >
+              Hủy
+            </Button>
+            <Button
+              type="button"
+              className="flex-1 h-9 font-semibold cursor-pointer gap-1.5"
+              onClick={() => void handleSaveDates()}
+            >
+              <Check className="w-4 h-4" />
+              Lưu ngày
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+
   return (
     <>
-      <div ref={setNodeRef} style={style} className={`${isCompact ? "mb-1" : "mb-2.5"} touch-none group/task relative hover:z-10`}>
+      <div ref={setNodeRef} style={style} className={`${isCompact ? "mb-0.5" : "mb-2.5"} touch-none group/task relative hover:z-30`}>
         <Card 
           {...(isQuickEditing || isDateEditing ? {} : attributes)} 
           {...(isQuickEditing || isDateEditing ? {} : listeners)} 
-          className={`
-            bg-card border-border ${isCompact ? "shadow-sm border" : "shadow-[0_8px_30px_rgb(0,0,0,0.12)] border-[1.5px]"} group-hover/task:border-primary/50 ${isCompact ? "" : "group-hover/task:shadow-[0_8px_30px_rgba(var(--primary),0.15)]"} transition-all duration-300 
-            ${task.isOverflowing ? 'border-destructive shadow-[0_0_15px_rgba(239,68,68,0.15)] group-hover/task:border-destructive' : isCompact ? 'group-hover/task:shadow-md' : 'group-hover/task:shadow-lg group-hover/task:-translate-y-0.5'}
-            ${isDone ? 'opacity-60 grayscale-[0.5]' : ''}
-            ${isQuickEditing || isTitleEditing || isDateEditing ? 'ring-2 ring-primary border-primary' : ''}
-          `}
+          className={cn(
+            "bg-card border-border group-hover/task:border-primary/50 transition-all duration-200",
+            isCompact ? "shadow-sm border rounded-lg group-hover/task:shadow-lg group-hover/task:bg-card" : "shadow-[0_8px_30px_rgb(0,0,0,0.12)] border-[1.5px]",
+            !isCompact && "group-hover/task:shadow-[0_8px_30px_rgba(var(--primary),0.15)]",
+            task.isOverflowing
+              ? "border-destructive shadow-[0_0_15px_rgba(239,68,68,0.15)] group-hover/task:border-destructive"
+              : isCompact
+                ? "group-hover/task:shadow-md"
+                : "group-hover/task:shadow-lg group-hover/task:-translate-y-0.5",
+            isDone && "opacity-60 grayscale-[0.5]",
+            (isQuickEditing || isTitleEditing || isDateEditing) && "ring-2 ring-primary border-primary"
+          )}
         >
           {isCompact ? (
-            <div className="px-1.5 py-1 flex flex-col gap-0.5 relative">
-              {/* Title — wrap full text */}
-              <div className="pr-5 min-w-0">
+            <div
+              className={cn(
+                "px-1.5 py-1 flex gap-1.5 relative transition-[padding] duration-200",
+                forceExpanded
+                  ? "flex-col items-stretch py-1.5"
+                  : "items-center group-hover/task:flex-col group-hover/task:items-stretch group-hover/task:py-1.5"
+              )}
+            >
+              {/* Title */}
+              <div
+                className={cn(
+                  "min-w-0 pr-5",
+                  forceExpanded ? "w-full" : "flex-1 group-hover/task:w-full"
+                )}
+              >
                 {isTitleEditing ? (
                   <Input
                     value={tempTitle}
@@ -207,7 +398,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                     onBlur={handleSaveTitle}
                     onPointerDown={(e) => e.stopPropagation()}
                     autoFocus
-                    className="h-5 text-[11px] font-semibold bg-background w-full px-1.5 py-0 rounded"
+                    className="h-6 text-[11px] font-semibold bg-background w-full px-1.5 py-0 rounded"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleSaveTitle();
                       if (e.key === "Escape") {
@@ -223,117 +414,69 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                       setTempTitle(task.title);
                       setIsTitleEditing(true);
                     }}
-                    className={`text-[11px] font-semibold leading-snug break-words cursor-text select-none ${isDone ? "text-muted-foreground line-through" : "text-foreground"}`}
-                    title="Double click để sửa tên"
+                    className={cn(
+                      "text-[11px] font-semibold cursor-text select-none",
+                      isDone ? "text-muted-foreground line-through" : "text-foreground",
+                      forceExpanded
+                        ? "leading-snug break-words whitespace-normal"
+                        : "truncate leading-5 group-hover/task:leading-snug group-hover/task:whitespace-normal group-hover/task:break-words"
+                    )}
+                    title={task.title}
                   >
                     {task.title}
                   </h4>
                 )}
               </div>
 
-              {/* Meta — always one row */}
+              {/* Meta — one row when collapsed; full width when expanded */}
               {!isTitleEditing && (
-                isDateEditing ? (
-                  <div className="flex items-center gap-1" onPointerDown={(e) => e.stopPropagation()}>
+                <div
+                  className={cn(
+                    "flex items-center gap-1 flex-nowrap",
+                    forceExpanded
+                      ? "w-full flex-wrap"
+                      : "shrink-0 max-w-[55%] group-hover/task:max-w-none group-hover/task:w-full group-hover/task:flex-wrap"
+                  )}
+                >
+                  {datePopover}
+
+                  {isTimeEditing ? (
                     <Input
-                      type="date"
-                      value={tempStartDate}
-                      onChange={(e) => {
-                        setTempStartDate(e.target.value);
-                        if (e.target.value && tempEndDate && new Date(e.target.value) > new Date(tempEndDate)) {
-                          setTempEndDate(`${e.target.value}T17:30`);
+                      type="text"
+                      value={tempTime}
+                      onChange={(e) => setTempTime(e.target.value)}
+                      onBlur={handleSaveTime}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      autoFocus
+                      className="h-5 w-10 text-[9px] px-0.5 bg-background text-center font-semibold rounded shrink-0"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveTime();
+                        if (e.key === "Escape") {
+                          setIsTimeEditing(false);
+                          setTempTime(formatHours(task.estimatedTime));
                         }
                       }}
-                      onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
-                      autoFocus
-                      className="h-5 text-[9px] bg-background px-1 py-0 rounded flex-1 min-w-0"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSaveDates();
-                        if (e.key === "Escape") handleCancelDateEdit();
-                      }}
                     />
-                    {tempStartDate && (
-                      <button type="button" onClick={() => setTempStartDate("")} className="p-0.5 rounded text-muted-foreground hover:text-destructive shrink-0" title="Xóa ngày bắt đầu">
-                        <X className="w-2.5 h-2.5" />
-                      </button>
-                    )}
-                    <Input
-                      type="datetime-local"
-                      value={tempEndDate}
-                      onChange={(e) => setTempEndDate(e.target.value)}
-                      onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
-                      className="h-5 text-[9px] bg-background px-1 py-0 rounded flex-1 min-w-0"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSaveDates();
-                        if (e.key === "Escape") handleCancelDateEdit();
-                      }}
-                    />
-                    {tempEndDate && (
-                      <button type="button" onClick={() => setTempEndDate("")} className="p-0.5 rounded text-muted-foreground hover:text-destructive shrink-0" title="Xóa ngày kết thúc">
-                        <X className="w-2.5 h-2.5" />
-                      </button>
-                    )}
-                    <button type="button" onClick={handleSaveDates} className="p-0.5 rounded bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/40 shrink-0" title="Lưu">
-                      <Check className="w-3 h-3" />
-                    </button>
-                    <button type="button" onClick={handleCancelDateEdit} className="p-0.5 rounded bg-destructive/20 text-destructive hover:bg-destructive/40 shrink-0" title="Hủy">
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1 flex-nowrap overflow-hidden">
+                  ) : (
                     <button
-                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleStartDateEditing();
+                        setTempTime(formatHours(task.estimatedTime));
+                        setIsTimeEditing(true);
                       }}
                       onPointerDown={(e) => e.stopPropagation()}
-                      className="flex items-center gap-0.5 text-[9px] text-muted-foreground/80 bg-muted/30 border border-border/40 py-0 px-1 rounded hover:bg-muted/50 hover:border-primary/30 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
-                      title="Click để sửa nhanh ngày"
+                      className="focus:outline-none cursor-pointer shrink-0"
+                      title="Click để sửa nhanh thời gian"
                     >
-                      <Calendar className="w-2.5 h-2.5 shrink-0" />
-                      <span>{formatCompactDates(task.startDate, task.endDate) ?? "Ngày"}</span>
+                      <Badge variant="outline" className={`${task.isOverflowing ? "text-destructive border-destructive bg-destructive/10" : "text-muted-foreground border-border bg-muted/30"} text-[9px] py-0 px-1 h-5 flex items-center gap-0.5 hover:bg-muted/50 transition-colors`}>
+                        <Clock className="w-2.5 h-2.5" />
+                        {formatHours(task.estimatedTime)}
+                      </Badge>
                     </button>
+                  )}
 
-                    {isTimeEditing ? (
-                      <Input
-                        type="text"
-                        value={tempTime}
-                        onChange={(e) => setTempTime(e.target.value)}
-                        onBlur={handleSaveTime}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        autoFocus
-                        className="h-5 w-10 text-[9px] px-0.5 bg-background text-center font-semibold rounded shrink-0"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveTime();
-                          if (e.key === "Escape") {
-                            setIsTimeEditing(false);
-                            setTempTime(formatHours(task.estimatedTime));
-                          }
-                        }}
-                      />
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setTempTime(formatHours(task.estimatedTime));
-                          setIsTimeEditing(true);
-                        }}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className="focus:outline-none cursor-pointer shrink-0"
-                        title="Click để sửa nhanh thời gian"
-                      >
-                        <Badge variant="outline" className={`${task.isOverflowing ? "text-destructive border-destructive bg-destructive/10" : "text-muted-foreground border-border bg-muted/30"} text-[9px] py-0 px-1 h-5 flex items-center gap-0.5 hover:bg-muted/50 transition-colors`}>
-                          <Clock className="w-2.5 h-2.5" />
-                          {formatHours(task.estimatedTime)}
-                        </Badge>
-                      </button>
-                    )}
-
-                    {task.priority && <PriorityIndicator priority={task.priority} compact />}
-                  </div>
-                )
+                  {task.priority && <PriorityIndicator priority={task.priority} compact />}
+                </div>
               )}
             </div>
           ) : (
@@ -390,107 +533,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
               )}
             </div>
 
-            {!isTitleEditing && !isQuickEditing && (
-              isDateEditing ? (
-                <div
-                  className="flex flex-col gap-1"
-                  onPointerDown={(e) => e.stopPropagation()}
-                >
-                  <div className="flex items-center gap-1">
-                    <Input
-                      type="date"
-                      value={tempStartDate}
-                      onChange={(e) => {
-                        setTempStartDate(e.target.value);
-                        if (e.target.value && tempEndDate && new Date(e.target.value) > new Date(tempEndDate)) {
-                          setTempEndDate(`${e.target.value}T17:30`);
-                        }
-                      }}
-                      onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
-                      autoFocus
-                      className="h-6 text-[10px] bg-background px-1.5 py-0 rounded-md flex-1 min-w-0"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSaveDates();
-                        if (e.key === "Escape") handleCancelDateEdit();
-                      }}
-                    />
-                    {tempStartDate && (
-                      <button
-                        type="button"
-                        onClick={() => setTempStartDate("")}
-                        className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                        title="Xóa ngày bắt đầu"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Input
-                      type="datetime-local"
-                      value={tempEndDate}
-                      onChange={(e) => setTempEndDate(e.target.value)}
-                      onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
-                      className="h-6 text-[10px] bg-background px-1 py-0 rounded-md flex-1 min-w-0"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSaveDates();
-                        if (e.key === "Escape") handleCancelDateEdit();
-                      }}
-                    />
-                    {tempEndDate && (
-                      <button
-                        type="button"
-                        onClick={() => setTempEndDate("")}
-                        className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                        title="Xóa ngày kết thúc"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 justify-end">
-                    <button
-                      type="button"
-                      onClick={handleSaveDates}
-                      className="p-0.5 rounded bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/40"
-                      title="Lưu"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCancelDateEdit}
-                      className="p-0.5 rounded bg-destructive/20 text-destructive hover:bg-destructive/40"
-                      title="Hủy"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleStartDateEditing();
-                  }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground/80 bg-black/10 dark:bg-black/20 border border-white/5 py-0.5 px-1.5 rounded-md w-fit hover:bg-black/15 dark:hover:bg-black/30 hover:border-primary/30 transition-colors cursor-pointer"
-                  title="Click để sửa nhanh ngày"
-                >
-                  <Calendar className="w-2.5 h-2.5 text-muted-foreground" />
-                  {task.startDate || task.endDate ? (
-                    <>
-                      {task.startDate && <span>{format(new Date(task.startDate), "dd/MM/yyyy")}</span>}
-                      {task.startDate && task.endDate && <span className="text-muted-foreground/50">—</span>}
-                      {task.endDate && <span>{format(new Date(task.endDate), "dd/MM/yyyy HH:mm")}</span>}
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground/60 italic">Thêm ngày</span>
-                  )}
-                </button>
-              )
-            )}
+            {!isTitleEditing && !isQuickEditing && datePopover}
             
             <div className="flex justify-between items-center w-full pt-0.5">
               <div className="flex items-center gap-1.5">
