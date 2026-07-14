@@ -64,16 +64,23 @@ export const updateTaskOrders = mutation({
       v.object({
         id: v.id("tasks"),
         order: v.number(),
-        startDate: v.number(), // Might update date if dragged between columns
+        startDate: v.optional(v.number()),
+        endDate: v.optional(v.number()),
+        status: v.optional(v.string()),
+        project: v.optional(v.union(v.id("projects"), v.null())),
       })
     ),
   },
   handler: async (ctx, args) => {
     for (const update of args.updates) {
-      await ctx.db.patch(update.id, {
-        order: update.order,
-        startDate: update.startDate,
-      });
+      const patch: Record<string, unknown> = { order: update.order };
+      if (update.startDate !== undefined) patch.startDate = update.startDate;
+      if (update.endDate !== undefined) patch.endDate = update.endDate;
+      if (update.status !== undefined) patch.status = update.status;
+      if (update.project !== undefined) {
+        patch.project = update.project === null ? undefined : update.project;
+      }
+      await ctx.db.patch(update.id, patch);
     }
   },
 });

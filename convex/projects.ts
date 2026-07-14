@@ -2,12 +2,20 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
 export const getProjects = query({
-  args: { userId: v.string() },
+  args: {
+    userId: v.string(),
+    includeArchived: v.optional(v.boolean()),
+  },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const projects = await ctx.db
       .query("projects")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
+
+    if (args.includeArchived) {
+      return projects;
+    }
+    return projects.filter((p) => !p.archived);
   },
 });
 
@@ -18,19 +26,34 @@ export const createProject = mutation({
     color: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    return await ctx.db.insert("projects", args);
+    return await ctx.db.insert("projects", { ...args, archived: false });
   },
 });
 
 export const updateProject = mutation({
   args: {
     id: v.id("projects"),
-    name: v.string(),
+    name: v.optional(v.string()),
     color: v.optional(v.string()),
+    archived: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
-    return await ctx.db.patch(id, updates);
+    const patch: Record<string, unknown> = {};
+    if (updates.name !== undefined) patch.name = updates.name;
+    if (updates.color !== undefined) patch.color = updates.color;
+    if (updates.archived !== undefined) patch.archived = updates.archived;
+    return await ctx.db.patch(id, patch);
+  },
+});
+
+export const setProjectArchived = mutation({
+  args: {
+    id: v.id("projects"),
+    archived: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.patch(args.id, { archived: args.archived });
   },
 });
 
@@ -86,6 +109,7 @@ export const cloneProject = mutation({
       name: args.name || `${project.name} (Copy)`,
       color: project.color,
       order: project.order !== undefined ? project.order + 1 : undefined,
+      archived: false,
     });
 
     // 2. Fetch all tasks associated with the original project
@@ -94,9 +118,9 @@ export const cloneProject = mutation({
       .filter((q) => q.eq(q.field("project"), args.projectId))
       .collect();
 
-    // 3. Clone tasks and set status to "todo"
+    // 3. Clone tasks as todo with dates cleared
     for (const task of tasks) {
-      const { _id, _creationTime, ...taskData } = task;
+      const { _id, _creationTime, startDate: _startDate, endDate: _endDate, ...taskData } = task;
       await ctx.db.insert("tasks", {
         ...taskData,
         project: clonedProjectId,

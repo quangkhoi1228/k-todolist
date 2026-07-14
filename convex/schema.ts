@@ -7,6 +7,7 @@ export default defineSchema({
     name: v.string(),
     color: v.optional(v.string()),
     order: v.optional(v.number()),
+    archived: v.optional(v.boolean()),
   }).index("by_user", ["userId"]),
   
   tasks: defineTable({
@@ -15,7 +16,7 @@ export default defineSchema({
     estimatedTime: v.number(), // in hours
     startDate: v.optional(v.union(v.number(), v.null())), // timestamp
     endDate: v.optional(v.union(v.number(), v.null())), // timestamp
-    status: v.optional(v.string()), // 'todo', 'processing', 'pending', 'done'
+    status: v.optional(v.string()), // 'todo', 'processing', 'pending', 'done' — kanban also has virtual 'dueToday'
     isCompleted: v.optional(v.boolean()),
     project: v.optional(v.id("projects")),
     order: v.optional(v.number()),

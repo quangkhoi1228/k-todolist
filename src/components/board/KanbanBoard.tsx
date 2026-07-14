@@ -1,7 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from "@dnd-kit/core";
+import {
+  DndContext,
+  DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCorners,
+  pointerWithin,
+  rectIntersection,
+  useDroppable,
+  type CollisionDetection,
+  type DroppableContainer,
+} from "@dnd-kit/core";
 import { arrayMove, SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Column } from "./Column";
@@ -19,6 +33,124 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useAuth } from "@clerk/nextjs";
 
 const KANBAN_COLUMN_WIDTH = 320;
+type BoardColumn = "todo" | "processing" | "dueToday" | "done";
+
+function isDueToday(task: { endDate?: number | null; status?: string }, todayStart = startOfDay(new Date()).getTime()) {
+  if (!task.endDate || task.status === "done") return false;
+  return startOfDay(new Date(task.endDate)).getTime() === todayStart;
+}
+
+function getBoardColumn(task: { endDate?: number | null; status?: string }): BoardColumn {
+  if (isDueToday(task)) return "dueToday";
+  const status = task.status || "todo";
+  if (status === "pending") return "todo";
+  if (status === "processing" || status === "done" || status === "todo") return status;
+  return "todo";
+}
+
+/** Default end-of-day deadline used when dropping into Đến hạn. */
+function dueTodayEndTimestamp(existingEnd?: number | null) {
+  const today = startOfDay(new Date());
+  if (existingEnd) {
+    const existing = new Date(existingEnd);
+    return new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      existing.getHours(),
+      existing.getMinutes(),
+      0,
+      0
+    ).getTime();
+  }
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate(), 17, 30, 0, 0).getTime();
+}
+
+/** Move a due-today task off today when dragged into a normal status column. */
+function leaveDueTodayEndTimestamp(existingEnd?: number | null) {
+  const tomorrow = addDays(startOfDay(new Date()), 1);
+  if (existingEnd) {
+    const existing = new Date(existingEnd);
+    return new Date(
+      tomorrow.getFullYear(),
+      tomorrow.getMonth(),
+      tomorrow.getDate(),
+      existing.getHours(),
+      existing.getMinutes(),
+      0,
+      0
+    ).getTime();
+  }
+  return new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 17, 30, 0, 0).getTime();
+}
+
+function buildBoardMoveFields(
+  sourceColumn: BoardColumn,
+  targetColumn: BoardColumn,
+  task: { endDate?: number | null; status?: string }
+) {
+  if (targetColumn === "dueToday") {
+    return {
+      endDate: dueTodayEndTimestamp(task.endDate),
+      ...(task.status === "done" ? { status: "todo" } : {}),
+    };
+  }
+  if (targetColumn === "done") {
+    return { status: "done" };
+  }
+  const fields: { status: string; endDate?: number } = { status: targetColumn };
+  if (sourceColumn === "dueToday") {
+    fields.endDate = leaveDueTodayEndTimestamp(task.endDate);
+  }
+  return fields;
+}
+
+/**
+ * closestCorners alone prefers tall upper swimlanes/projects, so drops on
+ * lower project rows never win. Prefer pointer hits, and keep Task/Project
+ * drags from colliding with the wrong container type.
+ */
+const kanbanCollisionDetection: CollisionDetection = (args) => {
+  const activeType = args.active.data.current?.type as string | undefined;
+
+  const droppableContainers = args.droppableContainers.filter((container: DroppableContainer) => {
+    const type = container.data.current?.type as string | undefined;
+    if (activeType === "Task") {
+      return type === "Task" || type === "SwimlaneCell" || type === "Column";
+    }
+    if (activeType === "Project") {
+      return type === "Project";
+    }
+    return true;
+  });
+
+  const filteredArgs = { ...args, droppableContainers };
+
+  const pointerCollisions = pointerWithin(filteredArgs);
+  if (pointerCollisions.length > 0) {
+    // Prefer the innermost target (Task over SwimlaneCell) when both contain the pointer.
+    const taskCollision = pointerCollisions.find((collision) => {
+      const container = droppableContainers.find((c) => c.id === collision.id);
+      return container?.data.current?.type === "Task";
+    });
+    if (taskCollision) return [taskCollision];
+
+    const cellCollision = pointerCollisions.find((collision) => {
+      const container = droppableContainers.find((c) => c.id === collision.id);
+      return container?.data.current?.type === "SwimlaneCell" || container?.data.current?.type === "Column";
+    });
+    if (cellCollision) return [cellCollision];
+
+    return pointerCollisions;
+  }
+
+  const intersections = rectIntersection(filteredArgs);
+  if (intersections.length > 0) {
+    return intersections;
+  }
+
+  return closestCorners(filteredArgs);
+};
 
 export interface Task {
   _id: string;
@@ -61,14 +193,19 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
     setIsSaving(true);
     try {
       const startVal = startOfDay(new Date()).getTime();
+      const isDueTodayColumn = status === "dueToday";
       await createTask({
         userId,
         title,
         estimatedTime: 1, // default 1 hour
         startDate: startVal,
-        endDate: endDate ? new Date(endDate).getTime() : startVal + 24 * 3600 * 1000,
+        endDate: isDueTodayColumn
+          ? dueTodayEndTimestamp()
+          : endDate
+            ? new Date(endDate).getTime()
+            : startVal + 24 * 3600 * 1000,
         project: project === "none" ? undefined : (project as any),
-        status,
+        status: isDueTodayColumn ? "todo" : status,
         priority,
       });
       setTitle("");
@@ -113,13 +250,19 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
 
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-semibold text-muted-foreground">Hạn chót</label>
-                <Input
-                  type="datetime-local"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="h-8 text-xs bg-background/50 border-border/60 rounded-lg px-2 cursor-pointer text-muted-foreground"
-                  onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
-                />
+                {status === "dueToday" ? (
+                  <div className="h-8 text-xs bg-amber-500/10 border border-amber-500/20 rounded-lg px-2 flex items-center text-amber-600 dark:text-amber-400 font-medium">
+                    Hôm nay
+                  </div>
+                ) : (
+                  <Input
+                    type="datetime-local"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="h-8 text-xs bg-background/50 border-border/60 rounded-lg px-2 cursor-pointer text-muted-foreground"
+                    onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
+                  />
+                )}
               </div>
 
               <div className="flex flex-col gap-1">
@@ -190,6 +333,7 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
   const { userId } = useAuth();
   const createProject = useMutation(api.projects.createProject);
   const cloneProject = useMutation(api.projects.cloneProject);
+  const setProjectArchived = useMutation(api.projects.setProjectArchived);
   const [newProjectName, setNewProjectName] = useState("");
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [cloneProjectName, setCloneProjectName] = useState("");
@@ -254,6 +398,19 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
     }
   };
 
+  const handleArchiveProject = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!confirm(`Lưu trữ dự án "${project.name}"? Dự án sẽ ẩn khỏi Kanban và có thể khôi phục trong phần Dự án.`)) {
+      return;
+    }
+    try {
+      await setProjectArchived({ id: project._id as any, archived: true });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div
       ref={setNodeRef}
@@ -279,7 +436,7 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
         {project.name}
       </span>
       
-      {/* Bottom Area: Count & Optional Add/Clone Button */}
+      {/* Bottom Area: Count & Optional Add/Clone/Archive Button */}
       <div className="flex flex-col items-center gap-1 w-full shrink-0">
         <span className="text-[9px] text-muted-foreground/80 font-bold bg-muted px-1 py-0.5 rounded leading-none">
           {totalTasks}
@@ -313,36 +470,47 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
             </PopoverContent>
           </Popover>
         ) : (
-          <Popover open={isClonePopoverOpen} onOpenChange={handleOpenCloneChange}>
-            <PopoverTrigger
-              className="h-5 w-5 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 mt-0.5 flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60 hover:text-primary"
-              title="Nhân bản dự án"
-              onClick={(e) => e.stopPropagation()}
+          <>
+            <Popover open={isClonePopoverOpen} onOpenChange={handleOpenCloneChange}>
+              <PopoverTrigger
+                className="h-5 w-5 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 mt-0.5 flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60 hover:text-primary"
+                title="Nhân bản dự án"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Copy className="w-3 h-3" />
+              </PopoverTrigger>
+              <PopoverContent side="right" align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50" onClick={(e) => e.stopPropagation()}>
+                <form onSubmit={handleCloneProject} className="flex flex-col gap-2.5">
+                  <div className="text-xs font-bold text-foreground">Nhân bản dự án</div>
+                  <div className="text-[10px] text-muted-foreground leading-normal">
+                    Sao chép toàn bộ công việc sang dự án mới ở trạng thái Chưa thực hiện và bỏ ngày.
+                  </div>
+                  <Input
+                    placeholder="Tên dự án mới..."
+                    value={cloneProjectName}
+                    onChange={(e) => setCloneProjectName(e.target.value)}
+                    autoFocus
+                    className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
+                    required
+                  />
+                  <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
+                    <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
+                      Nhân bản
+                    </Button>
+                  </div>
+                </form>
+              </PopoverContent>
+            </Popover>
+            <button
+              type="button"
+              className="h-5 w-5 p-0 rounded hover:bg-amber-500/10 hover:text-amber-600 transition-colors cursor-pointer shrink-0 flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60"
+              title="Lưu trữ dự án"
+              onClick={handleArchiveProject}
+              onPointerDown={(e) => e.stopPropagation()}
             >
-              <Copy className="w-3 h-3" />
-            </PopoverTrigger>
-            <PopoverContent side="right" align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50" onClick={(e) => e.stopPropagation()}>
-              <form onSubmit={handleCloneProject} className="flex flex-col gap-2.5">
-                <div className="text-xs font-bold text-foreground">Nhân bản dự án</div>
-                <div className="text-[10px] text-muted-foreground leading-normal">
-                  Sao chép toàn bộ công việc sang dự án mới ở trạng thái Chưa thực hiện.
-                </div>
-                <Input
-                  placeholder="Tên dự án mới..."
-                  value={cloneProjectName}
-                  onChange={(e) => setCloneProjectName(e.target.value)}
-                  autoFocus
-                  className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
-                  required
-                />
-                <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
-                  <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
-                    Nhân bản
-                  </Button>
-                </div>
-              </form>
-            </PopoverContent>
-          </Popover>
+              <Archive className="w-3 h-3" />
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -385,7 +553,7 @@ export function KanbanBoard({
   const [searchQuery, setSearchQuery] = useState("");
   const [filterProject, setFilterProject] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("endDate");
+  const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
@@ -421,8 +589,17 @@ export function KanbanBoard({
   };
 
   // Filter tasks
+  const activeProjectIds = useMemo(
+    () => new Set((projects ?? []).map((p) => p._id)),
+    [projects]
+  );
+
   const filteredTasks = useMemo(() => {
     return tasks.filter(task => {
+      // Hide tasks that belong to archived (or otherwise inactive) projects
+      if (task.project && task.project !== "none" && projects && !activeProjectIds.has(task.project)) {
+        return false;
+      }
       if (hideDoneTasks && task.status === "done") return false;
       const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = filterStatus === "all" || task.status === filterStatus;
@@ -432,7 +609,7 @@ export function KanbanBoard({
       
       return matchesSearch && matchesStatus && matchesProject;
     });
-  }, [tasks, searchQuery, filterProject, filterStatus, hideDoneTasks]);
+  }, [tasks, searchQuery, filterProject, filterStatus, hideDoneTasks, projects, activeProjectIds]);
 
   // Compute overdue tasks (uncompleted tasks with start date before today)
   const overdueTasks = useMemo(() => {
@@ -490,15 +667,10 @@ export function KanbanBoard({
   }, [projects]);
 
   const tasksByProjectAndStatus = useMemo(() => {
-    const grouped: Record<string, Record<string, Task[]>> = {};
+    const grouped: Record<string, Record<BoardColumn, Task[]>> = {};
     
     projectsList.forEach(p => {
-      grouped[p._id] = {
-        todo: [],
-        processing: [],
-        pending: [],
-        done: [],
-      };
+      grouped[p._id] = { todo: [], processing: [], dueToday: [], done: [] };
     });
     
     const sortedTasks = [...filteredTasks].sort((a, b) => {
@@ -529,15 +701,13 @@ export function KanbanBoard({
       return (a.order ?? 0) - (b.order ?? 0);
     });
     
-    console.log("DEBUG SORTED TASKS:", sortBy, sortedTasks.map(t => ({ title: t.title, endDate: t.endDate, priority: t.priority })));
-    
     sortedTasks.forEach(task => {
       const projId = task.project || "none";
-      const status = task.status || "todo";
       const targetProjId = grouped[projId] ? projId : "none";
+      const column = getBoardColumn(task);
       
-      if (grouped[targetProjId] && grouped[targetProjId][status]) {
-        grouped[targetProjId][status].push(task);
+      if (grouped[targetProjId]?.[column]) {
+        grouped[targetProjId][column].push(task);
       }
     });
     
@@ -560,6 +730,7 @@ export function KanbanBoard({
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
+    setActiveTask(null);
     if (!over) return;
 
     const activeId = active.id;
@@ -568,7 +739,14 @@ export function KanbanBoard({
     // Dragged a Project row
     if (active.data.current?.type === "Project") {
       const activeProjId = active.id;
-      const overProjId = over.id;
+      const overProjId =
+        over.data.current?.type === "Project"
+          ? over.id
+          : over.data.current?.type === "SwimlaneCell"
+            ? over.data.current.project
+            : over.data.current?.type === "Task"
+              ? ((over.data.current.task as Task).project || "none")
+              : over.id;
       
       if (activeProjId !== overProjId && overProjId !== "none" && activeProjId !== "none") {
         const realProjects = projects ? [...projects] : [];
@@ -589,20 +767,51 @@ export function KanbanBoard({
       return;
     }
 
-    // 1. Dragged to a different Swimlane Cell (Grid Cell)
+    // 1. Dragged onto a Swimlane Cell (empty area / cell container)
     if (over.data.current?.type === "SwimlaneCell") {
-      const targetProject = over.data.current.project;
-      const targetStatus = over.data.current.status;
-      
-      const updates: { project?: string; status?: string } = {};
-      if (targetProject === "none") {
-        updates.project = undefined;
-      } else {
-        updates.project = targetProject;
-      }
-      updates.status = targetStatus;
+      const targetProject = (over.data.current.project as string) || "none";
+      const targetColumn = over.data.current.status as BoardColumn;
+      const activeTaskData = active.data.current?.task as Task;
+      const sourceProject = activeTaskData?.project || "none";
+      const sourceColumn = getBoardColumn(activeTaskData);
 
-      onUpdateTask(activeId as string, updates as any);
+      // Same cell empty-area drop: keep current order (reorder happens via Task targets).
+      if (sourceProject === targetProject && sourceColumn === targetColumn) {
+        return;
+      }
+
+      const targetList = [
+        ...(tasksByProjectAndStatus[targetProject]?.[targetColumn] || []),
+      ].filter((t) => t._id !== activeId);
+      targetList.push(activeTaskData);
+
+      if (sortBy !== "order") setSortBy("order");
+
+      const moveFields = buildBoardMoveFields(sourceColumn, targetColumn, activeTaskData);
+      const updates = targetList.map((t, index) => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        id: t._id as any,
+        order: index * 1000,
+        ...(t._id === activeId
+          ? {
+              ...moveFields,
+              project: (targetProject === "none" ? null : targetProject) as any,
+            }
+          : {}),
+      }));
+
+      const sourceList = (
+        tasksByProjectAndStatus[sourceProject]?.[sourceColumn] || []
+      ).filter((t) => t._id !== activeId);
+      for (const [index, t] of sourceList.entries()) {
+        updates.push({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id: t._id as any,
+          order: index * 1000,
+        });
+      }
+
+      void updateTaskOrders({ updates });
       return;
     }
 
@@ -628,22 +837,75 @@ export function KanbanBoard({
     // 2. Dragged over a task
     if (over.data.current?.type === "Task") {
       const overTask = over.data.current.task as Task;
+      const activeTaskData = active.data.current?.task as Task;
       
       if (viewMode === "status") {
-        const targetStatus = overTask.status || "todo";
-        const targetProject = overTask.project;
-        
-        onUpdateTask(activeId as string, {
-          status: targetStatus,
-          project: targetProject === "none" ? undefined : targetProject,
-        });
+        if (activeId === overId) return;
+
+        const targetColumn = getBoardColumn(overTask);
+        const targetProject = overTask.project || "none";
+        const sourceColumn = getBoardColumn(activeTaskData);
+        const sourceProject = activeTaskData.project || "none";
+
+        const sameCell =
+          sourceProject === targetProject && sourceColumn === targetColumn;
+
+        const sourceList = [
+          ...(tasksByProjectAndStatus[sourceProject]?.[sourceColumn] || []),
+        ];
+        const targetList = sameCell
+          ? sourceList
+          : [...(tasksByProjectAndStatus[targetProject]?.[targetColumn] || [])];
+
+        const activeIndex = sourceList.findIndex((t) => t._id === activeId);
+        const overIndex = targetList.findIndex((t) => t._id === overId);
+        if (activeIndex === -1 || overIndex === -1) return;
+
+        if (sortBy !== "order") setSortBy("order");
+
+        if (sameCell) {
+          const reordered = arrayMove(sourceList, activeIndex, overIndex);
+          void updateTaskOrders({
+            updates: reordered.map((t, index) => ({
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              id: t._id as any,
+              order: index * 1000,
+            })),
+          });
+        } else {
+          const moveFields = buildBoardMoveFields(sourceColumn, targetColumn, activeTaskData);
+          const nextTarget = targetList.filter((t) => t._id !== activeId);
+          nextTarget.splice(overIndex, 0, activeTaskData);
+
+          const updates = nextTarget.map((t, index) => ({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            id: t._id as any,
+            order: index * 1000,
+            ...(t._id === activeId
+              ? {
+                  ...moveFields,
+                  project: (targetProject === "none" ? null : targetProject) as any,
+                }
+              : {}),
+          }));
+
+          const nextSource = sourceList.filter((t) => t._id !== activeId);
+          for (const [index, t] of nextSource.entries()) {
+            updates.push({
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              id: t._id as any,
+              order: index * 1000,
+            });
+          }
+
+          void updateTaskOrders({ updates });
+        }
         return;
       }
 
       const targetDateStr = formatDateStr(startOfDay(new Date(overTask.startDate || Date.now())));
       const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
 
-      const activeTaskData = active.data.current?.task as Task;
       const sourceDateStr = formatDateStr(startOfDay(new Date(activeTaskData.startDate || Date.now())));
 
       const todayStart = startOfDay(new Date()).getTime();
@@ -664,7 +926,7 @@ export function KanbanBoard({
           order: index * 1000,
           startDate: newStartDate,
         }));
-        updateTaskOrders({ updates });
+        void updateTaskOrders({ updates });
       } else {
         // Moving between columns and placing in specific index
         targetList.splice(overIndex, 0, activeTaskData);
@@ -674,7 +936,7 @@ export function KanbanBoard({
           order: index * 1000,
           startDate: newStartDate,
         }));
-        updateTaskOrders({ updates });
+        void updateTaskOrders({ updates });
       }
     }
   }
@@ -1054,7 +1316,7 @@ export function KanbanBoard({
 
       <DndContext 
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={kanbanCollisionDetection}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
@@ -1062,7 +1324,7 @@ export function KanbanBoard({
           {viewMode === "status" ? (
             <div className="flex flex-col gap-3.5 min-w-max">
               {/* Status Headers row — sticky when scrolling vertically */}
-              <div className="flex gap-3 shrink-0 min-w-max pb-0.5 sticky top-0 z-40 bg-background/95 backdrop-blur-md pt-0.5 -mt-0.5">
+              <div className="flex gap-3 shrink-0 min-w-max pb-0.5 sticky top-0 z-40 bg-background/95 backdrop-blur-md pt-0.5 -mt-0.5 pointer-events-none">
                 {/* Empty corner cell */}
                 <div className="w-[48px] shrink-0 sticky left-0 z-50 bg-background/95 backdrop-blur-md border-r border-border/85 flex items-center justify-center py-1 select-none">
                   <span 
@@ -1077,7 +1339,7 @@ export function KanbanBoard({
                 {[
                   { status: "todo", label: "Chưa thực hiện", colorClass: "text-neutral-500 bg-neutral-500/5 dark:bg-neutral-500/10 border-neutral-500/10 dark:border-neutral-500/20" },
                   { status: "processing", label: "Đang xử lý", colorClass: "text-blue-500 bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/10 dark:border-blue-500/20" },
-                  { status: "pending", label: "Tạm dừng", colorClass: "text-amber-500 bg-amber-500/5 dark:bg-amber-500/10 border-amber-500/10 dark:border-amber-500/20" },
+                  { status: "dueToday", label: "Đến hạn", colorClass: "text-amber-500 bg-amber-500/5 dark:bg-amber-500/10 border-amber-500/10 dark:border-amber-500/20" },
                   { status: "done", label: "Đã hoàn thành", colorClass: "text-emerald-500 bg-emerald-500/5 dark:bg-emerald-500/10 border-emerald-500/10 dark:border-emerald-500/20" },
                 ].map(col => (
                   <div 
@@ -1096,7 +1358,7 @@ export function KanbanBoard({
                     {col.status === "done" ? (
                       <button
                         type="button"
-                        className="w-5 h-5 flex items-center justify-center rounded hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer shrink-0"
+                        className="w-5 h-5 flex items-center justify-center rounded hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer shrink-0 pointer-events-auto"
                         title={hideDoneTasks ? "Hiện công việc đã xong" : "Ẩn công việc đã xong"}
                         onClick={() => handleHideDoneTasksChange(!hideDoneTasks)}
                       >
@@ -1112,8 +1374,8 @@ export function KanbanBoard({
               {/* Swimlane rows */}
               <SortableContext items={projectsList.map((p) => p._id)} strategy={verticalListSortingStrategy}>
                 {projectsList.map(p => {
-                  const projectTasks = tasksByProjectAndStatus[p._id] || { todo: [], processing: [], pending: [], done: [] };
-                  const totalProjTasks = projectTasks.todo.length + projectTasks.processing.length + projectTasks.pending.length + projectTasks.done.length;
+                  const projectTasks = tasksByProjectAndStatus[p._id] || { todo: [], processing: [], dueToday: [], done: [] };
+                  const totalProjTasks = projectTasks.todo.length + projectTasks.processing.length + projectTasks.dueToday.length + projectTasks.done.length;
                   
                   return (
                     <div key={p._id} className="flex gap-3 shrink-0 min-w-max items-stretch">
@@ -1123,7 +1385,7 @@ export function KanbanBoard({
                       {/* Status cells */}
                       <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} />
                       <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} />
-                      <SwimlaneCell id={`${p._id}::pending`} project={p._id} status="pending" tasks={projectTasks.pending} />
+                      <SwimlaneCell id={`${p._id}::dueToday`} project={p._id} status="dueToday" tasks={projectTasks.dueToday} />
                       <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} />
                     </div>
                   );

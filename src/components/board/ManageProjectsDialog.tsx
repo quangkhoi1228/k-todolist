@@ -1,26 +1,41 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Trash2, FolderPlus, Folder, Pencil, Check, X } from "lucide-react";
+import { Trash2, FolderPlus, Folder, Pencil, Check, X, Archive, ArchiveRestore } from "lucide-react";
 
 export function ManageProjectsDialog({ children }: { children: React.ReactNode }) {
   const { userId } = useAuth();
   const [open, setOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const [tab, setTab] = useState<"active" | "archived">("active");
   
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
 
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  const projects = useQuery(
+    api.projects.getProjects,
+    userId ? { userId, includeArchived: true } : "skip"
+  );
   const createProject = useMutation(api.projects.createProject);
   const updateProject = useMutation(api.projects.updateProject);
+  const setProjectArchived = useMutation(api.projects.setProjectArchived);
   const deleteProject = useMutation(api.projects.deleteProject);
+
+  const activeProjects = useMemo(
+    () => (projects ?? []).filter((p) => !p.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [projects]
+  );
+  const archivedProjects = useMemo(
+    () => (projects ?? []).filter((p) => p.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [projects]
+  );
+  const visibleProjects = tab === "active" ? activeProjects : archivedProjects;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,6 +46,7 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
       name: newProjectName.trim(),
     });
     setNewProjectName("");
+    setTab("active");
   };
 
   const handleSaveEdit = async (id: string) => {
@@ -43,6 +59,14 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
   const startEdit = (id: string, name: string) => {
     setEditingId(id);
     setEditingName(name);
+  };
+
+  const handleArchive = async (id: string) => {
+    await setProjectArchived({ id: id as any, archived: true });
+  };
+
+  const handleUnarchive = async (id: string) => {
+    await setProjectArchived({ id: id as any, archived: false });
   };
 
   const handleDelete = async (id: string) => {
@@ -62,7 +86,7 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
           </DialogTitle>
         </DialogHeader>
         
-        <div className="space-y-6 pt-4">
+        <div className="space-y-4 pt-4">
           <form onSubmit={handleCreate} className="flex items-center gap-2">
             <Input
               value={newProjectName}
@@ -75,14 +99,35 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
             </Button>
           </form>
 
+          <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted/40 border border-border/50">
+            <button
+              type="button"
+              onClick={() => setTab("active")}
+              className={`flex-1 h-7 text-[11px] font-semibold rounded-md transition-colors cursor-pointer ${
+                tab === "active" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Đang dùng ({activeProjects.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("archived")}
+              className={`flex-1 h-7 text-[11px] font-semibold rounded-md transition-colors cursor-pointer ${
+                tab === "archived" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Đã lưu trữ ({archivedProjects.length})
+            </button>
+          </div>
+
           <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
             {!projects && <div className="text-sm text-muted-foreground text-center py-4">Đang tải...</div>}
-            {projects?.length === 0 && (
+            {projects && visibleProjects.length === 0 && (
               <div className="text-sm text-muted-foreground text-center py-8 bg-muted/20 rounded-xl border border-dashed border-border">
-                Chưa có dự án nào
+                {tab === "active" ? "Chưa có dự án nào" : "Chưa có dự án đã lưu trữ"}
               </div>
             )}
-            {projects?.map((project) => (
+            {visibleProjects.map((project) => (
               <div key={project._id} className="flex items-center justify-between p-3 rounded-xl border border-border bg-muted/20 hover:bg-muted/40 transition-colors">
                 {editingId === project._id ? (
                   <div className="flex items-center gap-1.5 flex-1 mr-2">
@@ -105,21 +150,46 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
                   </div>
                 ) : (
                   <>
-                    <span className="font-medium text-sm">{project.name}</span>
+                    <span className={`font-medium text-sm ${tab === "archived" ? "text-muted-foreground" : ""}`}>
+                      {project.name}
+                    </span>
                     <div className="flex items-center gap-1">
                       <Button 
                         variant="ghost" 
                         size="icon" 
                         className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
                         onClick={() => startEdit(project._id, project.name)}
+                        title="Đổi tên"
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
+                      {tab === "active" ? (
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="h-8 w-8 text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 cursor-pointer"
+                          onClick={() => handleArchive(project._id)}
+                          title="Lưu trữ dự án"
+                        >
+                          <Archive className="w-4 h-4" />
+                        </Button>
+                      ) : (
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="h-8 w-8 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
+                          onClick={() => handleUnarchive(project._id)}
+                          title="Khôi phục dự án"
+                        >
+                          <ArchiveRestore className="w-4 h-4" />
+                        </Button>
+                      )}
                       <Button 
                         variant="ghost" 
                         size="icon" 
                         className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
                         onClick={() => handleDelete(project._id)}
+                        title="Xoá dự án"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>

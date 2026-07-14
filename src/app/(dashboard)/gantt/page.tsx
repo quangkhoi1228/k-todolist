@@ -87,7 +87,11 @@ export default function GanttPage() {
 
   // Filter tasks
   const filteredTasks = useMemo(() => {
+    const activeProjectIds = new Set((projects ?? []).map((p) => p._id));
     return (tasks || []).filter(task => {
+      if (task.project && task.project !== "none" && projects && !activeProjectIds.has(task.project)) {
+        return false;
+      }
       const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = filterStatus === "all" || task.status === filterStatus;
       
@@ -96,7 +100,7 @@ export default function GanttPage() {
       
       return matchesSearch && matchesStatus && matchesProject;
     });
-  }, [tasks, searchQuery, filterProject, filterStatus]);
+  }, [tasks, projects, searchQuery, filterProject, filterStatus]);
 
   const ganttTasks: GanttTask[] = useMemo(() => {
     return filteredTasks

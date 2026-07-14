@@ -188,7 +188,11 @@ export default function ListPage() {
   });
 
   // Filter tasks
+  const activeProjectIds = new Set((projects ?? []).map((p) => p._id));
   const filteredTasks = tasksWithOverflow.filter(task => {
+    if (task.project && task.project !== "none" && projects && !activeProjectIds.has(task.project)) {
+      return false;
+    }
     const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = filterStatus === "all" || task.status === filterStatus;
     
