@@ -137,7 +137,7 @@ export default async function Home() {
                 <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 max-w-xs">
                   <LayoutGrid className="w-3.5 h-3.5 text-muted-foreground" />
                   <span className="text-xs text-muted-foreground">
-                    KFlow — Bảng Kanban
+                    KFlow — Kanban
                   </span>
                 </div>
               </div>

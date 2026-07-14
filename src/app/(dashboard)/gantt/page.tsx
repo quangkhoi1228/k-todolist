@@ -99,16 +99,18 @@ export default function GanttPage() {
   }, [tasks, searchQuery, filterProject, filterStatus]);
 
   const ganttTasks: GanttTask[] = useMemo(() => {
-    return filteredTasks.map((task) => ({
-      start: new Date(task.startDate),
-      end: new Date(task.endDate > task.startDate ? task.endDate : addDays(new Date(task.startDate), 1)), // ensure end is after start for display
-      name: task.title,
-      id: task._id,
-      type: "task",
-      progress: task.status === "done" ? 100 : task.status === "processing" ? 50 : 0,
-      isDisabled: false,
-      styles: getTaskColors(task.status || "todo"),
-    }));
+    return filteredTasks
+      .filter((task) => task.startDate && task.endDate)
+      .map((task) => ({
+        start: new Date(task.startDate!),
+        end: new Date(task.endDate! > task.startDate! ? task.endDate! : addDays(new Date(task.startDate!), 1).getTime()), // ensure end is after start for display
+        name: task.title,
+        id: task._id,
+        type: "task",
+        progress: task.status === "done" ? 100 : task.status === "processing" ? 50 : 0,
+        isDisabled: false,
+        styles: getTaskColors(task.status || "todo"),
+      }));
   }, [filteredTasks]);
 
   const handleDateChange = async (task: GanttTask) => {
@@ -132,7 +134,7 @@ export default function GanttPage() {
   };
 
   return (
-    <div className="p-3 h-full flex flex-col gap-2">
+    <div className="p-3 h-full min-h-0 flex flex-col gap-2">
       {/* Combined Single-Row Header & Filter Bar */}
       <div className="flex flex-col gap-2 glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full">
         {/* Main Row */}
@@ -415,7 +417,7 @@ export default function GanttPage() {
       </div>
 
       {/* Gantt Body */}
-      <div className="flex-1 glass-panel rounded-2xl overflow-hidden p-4">
+      <div className="flex-1 min-h-0 glass-panel rounded-2xl overflow-hidden p-4">
         {tasks === undefined ? (
           <div className="text-neutral-500 text-center py-12 text-xs">Loading Gantt Chart...</div>
         ) : ganttTasks.length > 0 ? (

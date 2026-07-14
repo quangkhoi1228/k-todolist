@@ -17,13 +17,14 @@ export interface TaskData {
   _id: string;
   title: string;
   estimatedTime: number;
-  startDate: number;
-  endDate?: number;
+  startDate?: number | null;
+  endDate?: number | null;
   pic?: string;
   project?: string;
   status?: string;
   order?: number;
   priority?: string;
+  isOverflowing?: boolean;
 }
 
 interface NewTaskSheetProps {
@@ -64,10 +65,10 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
     editTask?.endDate 
       ? format(new Date(editTask.endDate), "yyyy-MM-dd'T'HH:mm") 
       : editTask?.startDate 
-        ? format(new Date(editTask.startDate), "yyyy-MM-dd'T'18:00")
+        ? format(new Date(editTask.startDate), "yyyy-MM-dd'T'17:30")
         : defaultDate 
-          ? format(defaultDate, "yyyy-MM-dd'T'18:00") 
-          : format(new Date(), "yyyy-MM-dd'T'18:00")
+          ? format(defaultDate, "yyyy-MM-dd'T'17:30") 
+          : format(new Date(), "yyyy-MM-dd'T'17:30")
   );
   const [pic, setPic] = useState(editTask?.pic || "");
   const [project, setProject] = useState(editTask?.project || defaultProject || "");
@@ -107,8 +108,8 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
       if (editTask) {
         setTitle(editTask.title);
         setEstimatedTime(formatHours(editTask.estimatedTime));
-        setStartDate(format(new Date(editTask.startDate), "yyyy-MM-dd"));
-        setEndDate(format(new Date(editTask.endDate || editTask.startDate), "yyyy-MM-dd'T'HH:mm"));
+        setStartDate(editTask.startDate ? format(new Date(editTask.startDate), "yyyy-MM-dd") : "");
+        setEndDate(editTask.endDate ? format(new Date(editTask.endDate), "yyyy-MM-dd'T'HH:mm") : "");
         setPic(editTask.pic || "");
         setProject(editTask.project || "");
         setStatus(editTask.status || "todo");
@@ -123,8 +124,8 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
         );
         setEndDate(
           defaultDate 
-            ? format(defaultDate, "yyyy-MM-dd'T'18:00") 
-            : format(new Date(), "yyyy-MM-dd'T'18:00")
+            ? format(defaultDate, "yyyy-MM-dd'T'17:30") 
+            : format(new Date(), "yyyy-MM-dd'T'17:30")
         );
         setPic("");
         setProject(defaultProject || "");
@@ -152,8 +153,8 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
     if (!userId) return;
 
     const parsedHours = parseTimeToHours(estimatedTime);
-    const startTimestamp = startOfDay(new Date(startDate)).getTime();
-    const endTimestamp = new Date(endDate || startDate).getTime();
+    const startTimestamp = startDate ? startOfDay(new Date(startDate)).getTime() : null;
+    const endTimestamp = endDate ? new Date(endDate).getTime() : null;
 
     if (editTask) {
       await updateTask({
@@ -230,12 +231,12 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                 value={startDate} 
                 onChange={(e) => {
                   setStartDate(e.target.value);
-                  if (endDate && new Date(e.target.value) > new Date(endDate)) {
-                    setEndDate(`${e.target.value}T18:00`);
+                  if (e.target.value && endDate && new Date(e.target.value) > new Date(endDate)) {
+                    setEndDate(`${e.target.value}T17:30`);
                   }
                 }} 
+                onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                 className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
-                required 
               />
               <div className="flex gap-1.5 pt-2">
                 <button
@@ -244,7 +245,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                     const todayStr = format(new Date(), "yyyy-MM-dd");
                     setStartDate(todayStr);
                     if (endDate && new Date(todayStr) > new Date(endDate)) {
-                      setEndDate(`${todayStr}T18:00`);
+                      setEndDate(`${todayStr}T17:30`);
                     }
                   }}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
@@ -261,7 +262,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                     const tomorrowStr = format(addDays(new Date(), 1), "yyyy-MM-dd");
                     setStartDate(tomorrowStr);
                     if (endDate && new Date(tomorrowStr) > new Date(endDate)) {
-                      setEndDate(`${tomorrowStr}T18:00`);
+                      setEndDate(`${tomorrowStr}T17:30`);
                     }
                   }}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
@@ -282,15 +283,15 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                 type="datetime-local" 
                 value={endDate} 
                 onChange={(e) => setEndDate(e.target.value)} 
+                onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                 className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
-                required 
               />
               <div className="flex gap-1.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setEndDate(`${startDate}T18:00`)}
+                  onClick={() => startDate && setEndDate(`${startDate}T17:30`)}
                   className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
-                    endDate === `${startDate}T18:00`
+                    endDate === `${startDate}T17:30`
                       ? "bg-primary/20 text-primary border-primary/40 font-semibold"
                       : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
                   }`}

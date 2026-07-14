@@ -16,8 +16,8 @@ export const createTask = mutation({
     userId: v.string(),
     title: v.string(),
     estimatedTime: v.number(),
-    startDate: v.number(),
-    endDate: v.number(),
+    startDate: v.optional(v.union(v.number(), v.null())),
+    endDate: v.optional(v.union(v.number(), v.null())),
     notes: v.optional(v.string()),
     status: v.optional(v.string()),
     project: v.optional(v.id("projects")),
@@ -27,7 +27,10 @@ export const createTask = mutation({
     priority: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    return await ctx.db.insert("tasks", args);
+    const insertObj = { ...args };
+    if (insertObj.startDate === null) insertObj.startDate = undefined;
+    if (insertObj.endDate === null) insertObj.endDate = undefined;
+    return await ctx.db.insert("tasks", insertObj);
   },
 });
 
@@ -36,8 +39,8 @@ export const updateTask = mutation({
     id: v.id("tasks"),
     title: v.optional(v.string()),
     estimatedTime: v.optional(v.number()),
-    startDate: v.optional(v.number()),
-    endDate: v.optional(v.number()),
+    startDate: v.optional(v.union(v.number(), v.null())),
+    endDate: v.optional(v.union(v.number(), v.null())),
     notes: v.optional(v.string()),
     status: v.optional(v.string()),
     project: v.optional(v.id("projects")),
@@ -48,7 +51,10 @@ export const updateTask = mutation({
   },
   handler: async (ctx, args) => {
     const { id, ...rest } = args;
-    return await ctx.db.patch(id, rest);
+    const patchObj: any = { ...rest };
+    if (rest.startDate === null) patchObj.startDate = undefined;
+    if (rest.endDate === null) patchObj.endDate = undefined;
+    return await ctx.db.patch(id, patchObj);
   },
 });
 

@@ -131,24 +131,18 @@ export default function ListPage() {
   };
 
   const handleSaveDate = async (taskId: string) => {
-    if (tempDate) {
-      const parsedDate = new Date(tempDate);
-      await updateTask({
-        id: taskId as Id<"tasks">,
-        startDate: parsedDate.getTime(),
-      });
-    }
+    await updateTask({
+      id: taskId as Id<"tasks">,
+      startDate: tempDate ? new Date(tempDate).getTime() : null,
+    });
     setEditingDateId(null);
   };
 
   const handleSaveEndDate = async (taskId: string) => {
-    if (tempEndDate) {
-      const parsedDate = new Date(tempEndDate);
-      await updateTask({
-        id: taskId as Id<"tasks">,
-        endDate: parsedDate.getTime(),
-      });
-    }
+    await updateTask({
+      id: taskId as Id<"tasks">,
+      endDate: tempEndDate ? new Date(tempEndDate).getTime() : null,
+    });
     setEditingEndDateId(null);
   };
 
@@ -173,10 +167,16 @@ export default function ListPage() {
   };
 
   // Basic implementation to highlight overflowing tasks
-  const processedTasks = (tasks || []).slice().sort((a, b) => a.startDate - b.startDate);
+  const processedTasks = (tasks || []).slice().sort((a, b) => (a.startDate || 0) - (b.startDate || 0));
   const dailyHours: Record<string, number> = {};
 
   const tasksWithOverflow = processedTasks.map(task => {
+    if (!task.startDate) {
+      return {
+        ...task,
+        isOverflowing: false
+      };
+    }
     const dateStr = format(new Date(task.startDate), "yyyy-MM-dd");
     if (!dailyHours[dateStr]) dailyHours[dateStr] = 0;
     dailyHours[dateStr] += task.estimatedTime;
@@ -228,7 +228,7 @@ export default function ListPage() {
   });
 
   return (
-    <div className="p-3 h-full flex flex-col gap-2">
+    <div className="p-3 h-full min-h-0 flex flex-col gap-2">
       {/* Combined Single-Row Header & Filter Bar */}
       <div className="flex flex-col gap-2 glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full">
         {/* Main Row */}
@@ -504,7 +504,7 @@ export default function ListPage() {
       </div>
 
       {/* Tasks Table */}
-      <div className="flex-1 overflow-hidden glass-panel rounded-2xl">
+      <div className="flex-1 min-h-0 overflow-hidden glass-panel rounded-2xl">
         {tasks === undefined ? (
           <div className="p-8 text-center text-neutral-400">Loading tasks...</div>
         ) : (
@@ -634,6 +634,7 @@ export default function ListPage() {
                               onBlur={() => handleSaveDate(task._id)}
                               autoFocus
                               className="h-6 text-[11px] bg-background px-1.5 py-0.5 rounded-md w-32"
+                              onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') handleSaveDate(task._id);
                                 if (e.key === 'Escape') setEditingDateId(null);
@@ -645,10 +646,10 @@ export default function ListPage() {
                               title="Nhấp đúp để sửa nhanh ngày bắt đầu"
                               onDoubleClick={() => {
                                 setEditingDateId(task._id);
-                                setTempDate(format(new Date(task.startDate), "yyyy-MM-dd"));
+                                setTempDate(task.startDate ? format(new Date(task.startDate), "yyyy-MM-dd") : "");
                               }}
                             >
-                              {format(new Date(task.startDate), "dd/MM/yyyy")}
+                              {task.startDate ? format(new Date(task.startDate), "dd/MM/yyyy") : "-"}
                             </span>
                           )}
                         </TableCell>
@@ -661,6 +662,7 @@ export default function ListPage() {
                               onBlur={() => handleSaveEndDate(task._id)}
                               autoFocus
                               className="h-6 text-[10px] bg-background px-1 py-0.5 rounded-md w-40"
+                              onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') handleSaveEndDate(task._id);
                                 if (e.key === 'Escape') setEditingEndDateId(null);
@@ -672,10 +674,10 @@ export default function ListPage() {
                               title="Nhấp đúp để sửa nhanh ngày kết thúc"
                               onDoubleClick={() => {
                                 setEditingEndDateId(task._id);
-                                setTempEndDate(format(new Date(task.endDate || task.startDate), "yyyy-MM-dd'T'HH:mm"));
+                                setTempEndDate(task.endDate ? format(new Date(task.endDate), "yyyy-MM-dd'T'HH:mm") : (task.startDate ? format(new Date(task.startDate), "yyyy-MM-dd'T'17:30") : ""));
                               }}
                             >
-                              {format(new Date(task.endDate || task.startDate), "dd/MM/yyyy HH:mm")}
+                              {task.endDate ? format(new Date(task.endDate), "dd/MM/yyyy HH:mm") : "-"}
                             </span>
                           )}
                         </TableCell>

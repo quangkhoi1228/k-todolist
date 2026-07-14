@@ -18,8 +18,8 @@ export default function BoardPage() {
   };
 
   return (
-    <div className="p-3 h-full flex flex-col gap-2">
-      <div className="flex-1 overflow-hidden">
+    <div className="p-3 h-full min-h-0 flex flex-col gap-2">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {tasks === undefined ? (
           <div className="text-neutral-400">Loading tasks...</div>
         ) : (

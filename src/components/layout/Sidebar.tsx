@@ -20,7 +20,7 @@ export default function Sidebar() {
         <p className="px-2.5 text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Chế độ xem</p>
         <Link href="/board" className="group flex items-center gap-2 px-2.5 py-2 text-xs font-semibold rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 hover:shadow-md transition-all duration-300">
           <LayoutDashboard className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
-          Bảng (Kanban)
+          Kanban
         </Link>
         <Link href="/list" className="group flex items-center gap-2 px-2.5 py-2 text-xs font-semibold rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 hover:shadow-md transition-all duration-300">
           <ListTodo className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />

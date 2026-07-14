@@ -13,8 +13,8 @@ export default defineSchema({
     userId: v.string(),
     title: v.string(),
     estimatedTime: v.number(), // in hours
-    startDate: v.number(), // timestamp
-    endDate: v.number(), // timestamp
+    startDate: v.optional(v.union(v.number(), v.null())), // timestamp
+    endDate: v.optional(v.union(v.number(), v.null())), // timestamp
     status: v.optional(v.string()), // 'todo', 'processing', 'pending', 'done'
     isCompleted: v.optional(v.boolean()),
     project: v.optional(v.id("projects")),
@@ -22,5 +22,10 @@ export default defineSchema({
     pic: v.optional(v.string()), // Person In Charge
     support: v.optional(v.string()),
     priority: v.optional(v.string()), // 'low', 'normal', 'high'
+  }).index("by_user", ["userId"]),
+
+  userPreferences: defineTable({
+    userId: v.string(),
+    hideDoneTasks: v.boolean(),
   }).index("by_user", ["userId"]),
 });

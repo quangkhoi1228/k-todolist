@@ -23,7 +23,7 @@ export default async function DashboardLayout({
           <ThemeToggle />
         </header>
         
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 min-h-0 overflow-hidden">
           {children}
         </main>
       </div>

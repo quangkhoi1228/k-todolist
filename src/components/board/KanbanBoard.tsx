@@ -1,16 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from "@dnd-kit/core";
 import { arrayMove, SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Column } from "./Column";
 import { TaskCard } from "./TaskCard";
 import { getDays, formatDateStr } from "@/lib/date-utils";
-import { startOfDay, addDays } from "date-fns";
+import { startOfDay, addDays, format } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal } from "lucide-react";
-import { useMutation } from "convex/react";
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal, Copy, Archive, Eye, EyeOff } from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -18,12 +18,14 @@ import { NewTaskSheet } from "./NewTaskSheet";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAuth } from "@clerk/nextjs";
 
+const KANBAN_COLUMN_WIDTH = 320;
+
 export interface Task {
   _id: string;
   title: string;
   estimatedTime: number;
-  startDate: number;
-  endDate?: number;
+  startDate?: number | null;
+  endDate?: number | null;
   pic?: string;
   project?: string;
   status?: string;
@@ -49,7 +51,7 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
   const createTask = useMutation(api.tasks.createTask);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [endDate, setEndDate] = useState(() => format(new Date(), "yyyy-MM-dd'T'17:30"));
   const [priority, setPriority] = useState<"low" | "normal" | "high">("normal");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -70,7 +72,7 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
         priority,
       });
       setTitle("");
-      setEndDate("");
+      setEndDate(format(new Date(), "yyyy-MM-dd'T'17:30"));
       setPriority("normal");
       setOpen(false);
     } catch (err) {
@@ -83,11 +85,12 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
   return (
     <div
       ref={setNodeRef}
-      className={`w-[290px] shrink-0 p-2 rounded-xl border transition-all duration-200 min-h-[100px] flex flex-col gap-1.5 relative group/cell ${
+      className={`shrink-0 p-1.5 rounded-xl border transition-all duration-200 min-h-[80px] flex flex-col gap-1 relative group/cell ${
         isOver 
           ? "bg-primary/10 border-primary/40 shadow-sm" 
           : "bg-muted/10 border-border/30 hover:border-border/60"
       }`}
+      style={{ width: KANBAN_COLUMN_WIDTH }}
     >
       {/* Quick Add Button with Popover */}
       <div className="absolute top-1 right-1 opacity-0 group-hover/cell:opacity-100 transition-opacity z-10">
@@ -115,6 +118,7 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
                   className="h-8 text-xs bg-background/50 border-border/60 rounded-lg px-2 cursor-pointer text-muted-foreground"
+                  onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                 />
               </div>
 
@@ -167,7 +171,7 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
       </div>
 
       <SortableContext items={tasks.map((t) => t._id)} strategy={verticalListSortingStrategy}>
-        <div className="flex flex-col gap-1.5 flex-1 justify-start pt-3">
+        <div className="flex flex-col gap-1 flex-1 justify-start pt-2">
           {tasks.map((task) => (
             <TaskCard key={task._id} task={task} hideProjectBadge={true} hideStatusBadge={true} />
           ))}
@@ -183,6 +187,14 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
 }
 
 function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: number }) {
+  const { userId } = useAuth();
+  const createProject = useMutation(api.projects.createProject);
+  const cloneProject = useMutation(api.projects.cloneProject);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+  const [cloneProjectName, setCloneProjectName] = useState("");
+  const [isClonePopoverOpen, setIsClonePopoverOpen] = useState(false);
+
   const {
     attributes,
     listeners,
@@ -205,6 +217,43 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
     opacity: isDragging ? 0.3 : undefined,
   };
 
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newProjectName.trim() || !userId) return;
+    try {
+      await createProject({
+        userId,
+        name: newProjectName.trim(),
+      });
+      setNewProjectName("");
+      setIsPopoverOpen(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleOpenCloneChange = (open: boolean) => {
+    setIsClonePopoverOpen(open);
+    if (open) {
+      setCloneProjectName(`${project.name} (Copy)`);
+    }
+  };
+
+  const handleCloneProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cloneProjectName.trim() || !userId) return;
+    try {
+      await cloneProject({
+        projectId: project._id,
+        userId,
+        name: cloneProjectName.trim(),
+      });
+      setIsClonePopoverOpen(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div
       ref={setNodeRef}
@@ -218,7 +267,7 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
       {/* Top accent color dot */}
       <div 
         className="w-1.5 h-1.5 rounded-full shrink-0 mt-0.5"
-        style={{ backgroundColor: project.color || "#8b5cf6" }}
+        style={{ backgroundColor: project.color || (project._id === "none" ? "#64748b" : "#8b5cf6") }}
       />
       
       {/* Vertical name */}
@@ -230,10 +279,72 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
         {project.name}
       </span>
       
-      {/* Count */}
-      <span className="text-[9px] text-muted-foreground/80 font-bold bg-muted px-1 py-0 rounded mb-0.5">
-        {totalTasks}
-      </span>
+      {/* Bottom Area: Count & Optional Add/Clone Button */}
+      <div className="flex flex-col items-center gap-1 w-full shrink-0">
+        <span className="text-[9px] text-muted-foreground/80 font-bold bg-muted px-1 py-0.5 rounded leading-none">
+          {totalTasks}
+        </span>
+        
+        {project._id === "none" ? (
+          <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
+            <PopoverTrigger
+              className="h-5 w-5 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 mt-0.5 flex items-center justify-center border border-transparent hover:border-primary/20 bg-transparent text-muted-foreground hover:text-foreground"
+              title="Thêm dự án nhanh"
+            >
+              <Plus className="w-3 h-3 text-primary" />
+            </PopoverTrigger>
+            <PopoverContent side="right" align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50">
+              <form onSubmit={handleCreateProject} className="flex flex-col gap-2.5">
+                <div className="text-xs font-bold text-foreground">Tạo nhanh dự án</div>
+                <Input
+                  placeholder="Tên dự án mới..."
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  autoFocus
+                  className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
+                  required
+                />
+                <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
+                  <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
+                    Tạo mới
+                  </Button>
+                </div>
+              </form>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <Popover open={isClonePopoverOpen} onOpenChange={handleOpenCloneChange}>
+            <PopoverTrigger
+              className="h-5 w-5 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 mt-0.5 flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60 hover:text-primary"
+              title="Nhân bản dự án"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Copy className="w-3 h-3" />
+            </PopoverTrigger>
+            <PopoverContent side="right" align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50" onClick={(e) => e.stopPropagation()}>
+              <form onSubmit={handleCloneProject} className="flex flex-col gap-2.5">
+                <div className="text-xs font-bold text-foreground">Nhân bản dự án</div>
+                <div className="text-[10px] text-muted-foreground leading-normal">
+                  Sao chép toàn bộ công việc sang dự án mới ở trạng thái Chưa thực hiện.
+                </div>
+                <Input
+                  placeholder="Tên dự án mới..."
+                  value={cloneProjectName}
+                  onChange={(e) => setCloneProjectName(e.target.value)}
+                  autoFocus
+                  className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
+                  required
+                />
+                <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
+                  <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
+                    Nhân bản
+                  </Button>
+                </div>
+              </form>
+            </PopoverContent>
+          </Popover>
+        )}
+      </div>
     </div>
   );
 }
@@ -261,6 +372,9 @@ export function KanbanBoard({
   const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
   const updateProjectOrders = useMutation(api.projects.updateProjectOrders);
   const createProject = useMutation(api.projects.createProject);
+  const updatePreferences = useMutation(api.userPreferences.updateUserPreferences);
+  const userPreferences = useQuery(api.userPreferences.getUserPreferences, userId ? { userId } : "skip");
+  
   const [baseDate, setBaseDate] = useState(() => startOfDay(new Date()));
   const days = useMemo(() => getDays(baseDate, 7), [baseDate]);
   
@@ -273,10 +387,23 @@ export function KanbanBoard({
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("endDate");
   const [showMobileFilters, setShowMobileFilters] = useState(false);
-
-  // Project creation states
   const [newProjectName, setNewProjectName] = useState("");
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+  
+  const [hideDoneTasks, setHideDoneTasks] = useState(false);
+
+  useEffect(() => {
+    if (userPreferences !== undefined) {
+      setHideDoneTasks(userPreferences.hideDoneTasks);
+    }
+  }, [userPreferences]);
+
+  const handleHideDoneTasksChange = (value: boolean) => {
+    setHideDoneTasks(value);
+    if (userId) {
+      void updatePreferences({ userId, hideDoneTasks: value });
+    }
+  };
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -296,6 +423,7 @@ export function KanbanBoard({
   // Filter tasks
   const filteredTasks = useMemo(() => {
     return tasks.filter(task => {
+      if (hideDoneTasks && task.status === "done") return false;
       const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = filterStatus === "all" || task.status === filterStatus;
       
@@ -304,12 +432,13 @@ export function KanbanBoard({
       
       return matchesSearch && matchesStatus && matchesProject;
     });
-  }, [tasks, searchQuery, filterProject, filterStatus]);
+  }, [tasks, searchQuery, filterProject, filterStatus, hideDoneTasks]);
 
   // Compute overdue tasks (uncompleted tasks with start date before today)
   const overdueTasks = useMemo(() => {
     const todayStart = startOfDay(new Date()).getTime();
     return filteredTasks.filter(task => {
+      if (!task.startDate) return false;
       const isBeforeToday = startOfDay(new Date(task.startDate)).getTime() < todayStart;
       const isNotDone = task.status !== "done";
       return isBeforeToday && isNotDone;
@@ -327,12 +456,13 @@ export function KanbanBoard({
 
     sortedTasks.forEach(task => {
       // Exclude overdue tasks from regular columns
-      const isBeforeToday = startOfDay(new Date(task.startDate)).getTime() < todayStart;
+      const isBeforeToday = task.startDate ? startOfDay(new Date(task.startDate)).getTime() < todayStart : false;
       const isNotDone = task.status !== "done";
       if (isBeforeToday && isNotDone) {
         return;
       }
 
+      if (!task.startDate) return;
       const taskDate = startOfDay(new Date(task.startDate));
       const dateStr = formatDateStr(taskDate);
       if (grouped[dateStr]) {
@@ -510,14 +640,14 @@ export function KanbanBoard({
         return;
       }
 
-      const targetDateStr = formatDateStr(startOfDay(new Date(overTask.startDate)));
+      const targetDateStr = formatDateStr(startOfDay(new Date(overTask.startDate || Date.now())));
       const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
 
       const activeTaskData = active.data.current?.task as Task;
-      const sourceDateStr = formatDateStr(startOfDay(new Date(activeTaskData.startDate)));
+      const sourceDateStr = formatDateStr(startOfDay(new Date(activeTaskData.startDate || Date.now())));
 
       const todayStart = startOfDay(new Date()).getTime();
-      const isActiveOverdue = startOfDay(new Date(activeTaskData.startDate)).getTime() < todayStart && activeTaskData.status !== "done";
+      const isActiveOverdue = activeTaskData.startDate ? startOfDay(new Date(activeTaskData.startDate)).getTime() < todayStart && activeTaskData.status !== "done" : false;
 
       const sourceList = isActiveOverdue ? [...overdueTasks] : [...(tasksByDate[sourceDateStr] || [])];
       const targetList = sourceDateStr === targetDateStr && !isActiveOverdue ? sourceList : [...(tasksByDate[targetDateStr] || [])];
@@ -550,7 +680,7 @@ export function KanbanBoard({
   }
 
   return (
-    <div className="flex flex-col h-full gap-3">
+    <div className="flex flex-col h-full min-h-0 gap-3">
       {/* Combined Single-Row Header & Filter Bar */}
       <div className="flex flex-col gap-2 glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full">
         {/* Main Row */}
@@ -558,7 +688,7 @@ export function KanbanBoard({
           {/* Left section: Title + Toggle button */}
           <div className="flex items-center gap-1.5 shrink-0">
             <h2 className="text-xs font-bold uppercase tracking-widest text-foreground/80 shrink-0 select-none w-[180px] text-left flex items-center pl-2">
-              {viewMode === "status" ? "Bảng" : "Workload"}
+              {viewMode === "status" ? "Kanban" : "Workload"}
             </h2>
             <Button 
               variant="outline" 
@@ -928,13 +1058,13 @@ export function KanbanBoard({
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className={`flex ${viewMode === "status" ? "flex-col" : "flex-row"} gap-3 overflow-x-auto pb-4 h-full`}>
+        <div className={`flex-1 min-h-0 overflow-auto pb-4 ${viewMode === "status" ? "" : "flex flex-row gap-3"}`}>
           {viewMode === "status" ? (
             <div className="flex flex-col gap-3.5 min-w-max">
-              {/* Status Headers row */}
-              <div className="flex gap-3 shrink-0 min-w-max pb-0.5">
+              {/* Status Headers row — sticky when scrolling vertically */}
+              <div className="flex gap-3 shrink-0 min-w-max pb-0.5 sticky top-0 z-40 bg-background/95 backdrop-blur-md pt-0.5 -mt-0.5">
                 {/* Empty corner cell */}
-                <div className="w-[48px] shrink-0 sticky left-0 z-30 bg-background/95 backdrop-blur-md border-r border-border/85 flex items-center justify-center py-1 select-none">
+                <div className="w-[48px] shrink-0 sticky left-0 z-50 bg-background/95 backdrop-blur-md border-r border-border/85 flex items-center justify-center py-1 select-none">
                   <span 
                     className="text-[8px] font-black uppercase tracking-wider text-muted-foreground/80 whitespace-nowrap"
                     style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
@@ -943,7 +1073,7 @@ export function KanbanBoard({
                   </span>
                 </div>
                 
-                {/* Headers */}
+                 {/* Headers */}
                 {[
                   { status: "todo", label: "Chưa thực hiện", colorClass: "text-neutral-500 bg-neutral-500/5 dark:bg-neutral-500/10 border-neutral-500/10 dark:border-neutral-500/20" },
                   { status: "processing", label: "Đang xử lý", colorClass: "text-blue-500 bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/10 dark:border-blue-500/20" },
@@ -952,9 +1082,29 @@ export function KanbanBoard({
                 ].map(col => (
                   <div 
                     key={col.status}
-                    className={`w-[290px] shrink-0 py-1 px-2 rounded-lg border text-center font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 ${col.colorClass}`}
+                    className={`shrink-0 py-1 px-2 rounded-lg border font-bold text-[10px] uppercase tracking-wider flex items-center justify-between gap-1 shadow-sm ${col.colorClass}`}
+                    style={{ width: KANBAN_COLUMN_WIDTH }}
                   >
-                    <span>{col.label}</span>
+                    {col.status === "done" ? (
+                      <div className="w-5 shrink-0" />
+                    ) : (
+                      <div className="w-1 shrink-0" />
+                    )}
+                    
+                    <span className="flex-1 text-center">{col.label}</span>
+                    
+                    {col.status === "done" ? (
+                      <button
+                        type="button"
+                        className="w-5 h-5 flex items-center justify-center rounded hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer shrink-0"
+                        title={hideDoneTasks ? "Hiện công việc đã xong" : "Ẩn công việc đã xong"}
+                        onClick={() => handleHideDoneTasksChange(!hideDoneTasks)}
+                      >
+                        {hideDoneTasks ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                      </button>
+                    ) : (
+                      <div className="w-1 shrink-0" />
+                    )}
                   </div>
                 ))}
               </div>
