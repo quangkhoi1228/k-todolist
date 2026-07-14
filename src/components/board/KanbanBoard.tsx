@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors, closestCorners, useDroppable } from "@dnd-kit/core";
-import { arrayMove, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { arrayMove, SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Column } from "./Column";
 import { TaskCard } from "./TaskCard";
 import { getDays, formatDateStr } from "@/lib/date-utils";
 import { startOfDay, addDays } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -27,6 +28,7 @@ export interface Task {
   project?: string;
   status?: string;
   order?: number;
+  priority?: string;
   isOverflowing?: boolean;
 }
 
@@ -209,19 +211,19 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
       style={style}
       {...(project._id === "none" ? {} : attributes)}
       {...(project._id === "none" ? {} : listeners)}
-      className={`w-[48px] shrink-0 p-2 rounded-xl border border-border/80 bg-zinc-50 dark:bg-zinc-900 sticky left-0 z-20 flex flex-col justify-between items-center gap-2 shadow-sm relative overflow-hidden group ${
+      className={`w-[48px] shrink-0 p-1.5 rounded-lg border border-border/80 bg-zinc-50 dark:bg-zinc-900 sticky left-0 z-20 flex flex-col justify-between items-center gap-1.5 shadow-sm relative overflow-hidden group ${
         project._id === "none" ? "" : "cursor-grab active:cursor-grabbing hover:border-primary/40 hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
       {/* Top accent color dot */}
       <div 
-        className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
+        className="w-1.5 h-1.5 rounded-full shrink-0 mt-0.5"
         style={{ backgroundColor: project.color || "#8b5cf6" }}
       />
       
       {/* Vertical name */}
       <span 
-        className="text-[11px] font-bold text-foreground tracking-wide whitespace-nowrap text-center block select-none max-w-[120px] truncate"
+        className="text-[10px] font-bold text-foreground tracking-wide whitespace-nowrap text-center block select-none max-w-[80px] truncate"
         style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
         title={project.name}
       >
@@ -229,7 +231,7 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
       </span>
       
       {/* Count */}
-      <span className="text-[10px] text-muted-foreground/80 font-bold bg-muted px-1.5 py-0.5 rounded-full select-none mb-1">
+      <span className="text-[9px] text-muted-foreground/80 font-bold bg-muted px-1 py-0 rounded mb-0.5">
         {totalTasks}
       </span>
     </div>
@@ -244,6 +246,7 @@ interface KanbanBoardProps {
     name: string;
     color?: string;
     userId: string;
+    order?: number;
   }[];
   showFilters?: boolean;
 }
@@ -254,8 +257,10 @@ export function KanbanBoard({
   projects,
   showFilters = false
 }: KanbanBoardProps) {
+  const { userId } = useAuth();
   const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
   const updateProjectOrders = useMutation(api.projects.updateProjectOrders);
+  const createProject = useMutation(api.projects.createProject);
   const [baseDate, setBaseDate] = useState(() => startOfDay(new Date()));
   const days = useMemo(() => getDays(baseDate, 7), [baseDate]);
   
@@ -266,7 +271,27 @@ export function KanbanBoard({
   const [searchQuery, setSearchQuery] = useState("");
   const [filterProject, setFilterProject] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
+  const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("endDate");
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
+
+  // Project creation states
+  const [newProjectName, setNewProjectName] = useState("");
+  const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newProjectName.trim() || !userId) return;
+    try {
+      await createProject({
+        userId,
+        name: newProjectName.trim(),
+      });
+      setNewProjectName("");
+      setIsPopoverOpen(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   // Filter tasks
   const filteredTasks = useMemo(() => {
@@ -330,6 +355,7 @@ export function KanbanBoard({
   // Group tasks by project and status
   const projectsList = useMemo(() => {
     const list = projects ? [...projects] : [];
+    list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     return [...list, { _id: "none", name: "Không có dự án", color: "#64748b" }];
   }, [projects]);
 
@@ -345,7 +371,35 @@ export function KanbanBoard({
       };
     });
     
-    const sortedTasks = [...filteredTasks].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const sortedTasks = [...filteredTasks].sort((a, b) => {
+      if (sortBy === "endDate") {
+        const aVal = a.endDate ? Math.floor(a.endDate / 60000) * 60000 : Infinity;
+        const bVal = b.endDate ? Math.floor(b.endDate / 60000) * 60000 : Infinity;
+        if (aVal !== bVal) {
+          return aVal - bVal;
+        }
+        // If end dates are equal, sort by priority (high priority first)
+        const prioWeight = { high: 3, normal: 2, low: 1 };
+        const aPrio = prioWeight[a.priority as "high" | "normal" | "low"] || 0;
+        const bPrio = prioWeight[b.priority as "high" | "normal" | "low"] || 0;
+        return bPrio - aPrio;
+      }
+      if (sortBy === "priority") {
+        const prioWeight = { high: 3, normal: 2, low: 1 };
+        const aVal = prioWeight[a.priority as "high" | "normal" | "low"] || 0;
+        const bVal = prioWeight[b.priority as "high" | "normal" | "low"] || 0;
+        if (aVal !== bVal) {
+          return bVal - aVal;
+        }
+        // If priorities are equal, sub-sort by endDate (soonest first)
+        const aDate = a.endDate || Infinity;
+        const bDate = b.endDate || Infinity;
+        return aDate - bDate;
+      }
+      return (a.order ?? 0) - (b.order ?? 0);
+    });
+    
+    console.log("DEBUG SORTED TASKS:", sortBy, sortedTasks.map(t => ({ title: t.title, endDate: t.endDate, priority: t.priority })));
     
     sortedTasks.forEach(task => {
       const projId = task.project || "none";
@@ -358,7 +412,7 @@ export function KanbanBoard({
     });
     
     return grouped;
-  }, [filteredTasks, projectsList]);
+  }, [filteredTasks, projectsList, sortBy]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -380,6 +434,30 @@ export function KanbanBoard({
 
     const activeId = active.id;
     const overId = over.id;
+
+    // Dragged a Project row
+    if (active.data.current?.type === "Project") {
+      const activeProjId = active.id;
+      const overProjId = over.id;
+      
+      if (activeProjId !== overProjId && overProjId !== "none" && activeProjId !== "none") {
+        const realProjects = projects ? [...projects] : [];
+        realProjects.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        
+        const activeIndex = realProjects.findIndex(p => p._id === activeProjId);
+        const overIndex = realProjects.findIndex(p => p._id === overProjId);
+        
+        if (activeIndex !== -1 && overIndex !== -1) {
+          const reordered = arrayMove(realProjects, activeIndex, overIndex);
+          const updates = reordered.map((p, index) => ({
+            id: p._id as any,
+            order: index * 1000,
+          }));
+          updateProjectOrders({ updates });
+        }
+      }
+      return;
+    }
 
     // 1. Dragged to a different Swimlane Cell (Grid Cell)
     if (over.data.current?.type === "SwimlaneCell") {
@@ -473,39 +551,57 @@ export function KanbanBoard({
 
   return (
     <div className="flex flex-col h-full gap-3">
-      {/* Date Navigation (Only visible in Workload View Mode) */}
-      {viewMode === "date" && (
-        <div className="flex items-center gap-1 shrink-0">
-          <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs" onClick={() => setBaseDate(d => addDays(d, -7))}>
-            <ChevronLeft className="w-3.5 h-3.5 mr-0.5" /> Trước
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer text-xs" onClick={() => setBaseDate(startOfDay(new Date()))}>
-            <CalendarIcon className="w-3 h-3 mr-0.5" /> Hôm nay
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 px-2 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer text-xs" onClick={() => setBaseDate(d => addDays(d, 7))}>
-            Sau <ChevronRight className="w-3.5 h-3.5 ml-0.5" />
-          </Button>
-        </div>
-      )}
+      {/* Combined Single-Row Header & Filter Bar */}
+      <div className="flex flex-col gap-2 glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full">
+        {/* Main Row */}
+        <div className="flex items-center justify-between gap-2 w-full">
+          {/* Left section: Title + Toggle button */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <h2 className="text-xs font-bold uppercase tracking-widest text-foreground/80 shrink-0 select-none w-[180px] text-left flex items-center pl-2">
+              {viewMode === "status" ? "Bảng" : "Workload"}
+            </h2>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="md:hidden h-7 w-7 p-0 rounded-lg border-border/60 text-muted-foreground hover:text-foreground cursor-pointer"
+              onClick={() => setShowMobileFilters(!showMobileFilters)}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+            </Button>
+          </div>
 
-      {/* Collapsible Filter Bar */}
-      <div className={`${showFilters ? "flex" : "hidden"} md:flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between glass p-2 rounded-xl border border-border/60 shadow-md shrink-0`}>
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          {/* Desktop Filters (Hidden on mobile, inline on desktop) */}
+          <div className="hidden md:flex items-center gap-1.5 flex-1">
+            {/* Date Navigation (Only visible in Workload View Mode) */}
+            {viewMode === "date" && (
+              <div className="flex items-center gap-0.5 shrink-0">
+                <Button variant="outline" size="sm" className="h-7 w-7 p-0 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, -7))}>
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 px-2 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer text-[10px]" onClick={() => setBaseDate(startOfDay(new Date()))}>
+                  Hôm nay
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 w-7 p-0 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, 7))}>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            )}
+
             {/* Search Bar */}
-            <div className="relative w-full sm:w-52">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <div className="relative w-full sm:w-44">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
               <Input
-                placeholder="Tìm kiếm công việc..."
+                placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 h-8 text-[11px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
               />
             </div>
 
             {/* Project Filter */}
-            <div className="w-full sm:w-auto sm:min-w-[9rem] sm:max-w-[15rem]">
+            <div className="w-full sm:w-auto sm:min-w-[7.5rem] sm:max-w-[11rem]">
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
                   <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Dự án: Tất cả">
                     {filterProject === "all"
@@ -516,10 +612,10 @@ export function KanbanBoard({
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
-                  <SelectItem value="all" className="text-[11px] cursor-pointer">Dự án: Tất cả</SelectItem>
-                  <SelectItem value="none" className="text-[11px] cursor-pointer italic text-muted-foreground">Không có dự án</SelectItem>
+                  <SelectItem value="all" className="text-[10px] cursor-pointer">Dự án: Tất cả</SelectItem>
+                  <SelectItem value="none" className="text-[10px] cursor-pointer italic text-muted-foreground">Không có dự án</SelectItem>
                   {projects?.map((p) => (
-                    <SelectItem key={p._id} value={p._id} className="text-[11px] cursor-pointer">
+                    <SelectItem key={p._id} value={p._id} className="text-[10px] cursor-pointer">
                       {p.name}
                     </SelectItem>
                   ))}
@@ -528,101 +624,302 @@ export function KanbanBoard({
             </div>
 
             {/* Status Filter */}
-            <div className="w-full sm:w-36">
+            <div className="w-full sm:w-28">
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2 rounded-lg text-[11px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
-                        <Circle className="w-3 h-3 text-muted-foreground" />
+                        <Circle className="w-2.5 h-2.5 text-muted-foreground" />
                         Trạng thái: Tất cả
                       </span>
                     ) : filterStatus === "todo" ? (
                       <span className="flex items-center gap-1 text-neutral-500">
-                        <Circle className="w-3 h-3 text-neutral-400" />
+                        <Circle className="w-2.5 h-2.5 text-neutral-400" />
                         Chưa thực hiện
                       </span>
                     ) : filterStatus === "processing" ? (
                       <span className="flex items-center gap-1 text-blue-500">
-                        <Clock className="w-3 h-3 animate-pulse" />
+                        <Clock className="w-2.5 h-2.5 animate-pulse" />
                         Đang xử lý
                       </span>
                     ) : filterStatus === "pending" ? (
                       <span className="flex items-center gap-1 text-amber-500">
-                        <PauseCircle className="w-3 h-3" />
+                        <PauseCircle className="w-2.5 h-2.5" />
                         Tạm dừng
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 text-emerald-500">
-                        <CheckCircle2 className="w-3 h-3" />
+                        <CheckCircle2 className="w-2.5 h-2.5" />
                         Đã hoàn thành
                       </span>
                     )}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
-                  <SelectItem value="all" className="text-[11px] cursor-pointer">
+                  <SelectItem value="all" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1">
-                      <Circle className="w-3.5 h-3.5 text-muted-foreground" />
+                      <Circle className="w-3 h-3 text-muted-foreground" />
                       Trạng thái: Tất cả
                     </span>
                   </SelectItem>
-                  <SelectItem value="todo" className="text-[11px] cursor-pointer">
+                  <SelectItem value="todo" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-neutral-500">
-                      <Circle className="w-3.5 h-3.5 text-neutral-400" />
+                      <Circle className="w-3 h-3 text-neutral-400" />
                       Chưa thực hiện
                     </span>
                   </SelectItem>
-                  <SelectItem value="processing" className="text-[11px] cursor-pointer">
+                  <SelectItem value="processing" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-blue-500">
-                      <Clock className="w-3.5 h-3.5" />
+                      <Clock className="w-3 h-3" />
                       Đang xử lý
                     </span>
                   </SelectItem>
-                  <SelectItem value="pending" className="text-[11px] cursor-pointer">
+                  <SelectItem value="pending" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-amber-500">
-                      <PauseCircle className="w-3.5 h-3.5" />
+                      <PauseCircle className="w-3 h-3" />
                       Tạm dừng
                     </span>
                   </SelectItem>
-                  <SelectItem value="done" className="text-[11px] cursor-pointer">
+                  <SelectItem value="done" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-emerald-500">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <CheckCircle2 className="w-3 h-3" />
                       Đã hoàn thành
                     </span>
                   </SelectItem>
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Sort Select */}
+            {viewMode === "status" && (
+              <div className="w-full sm:w-28">
+                <Select value={sortBy} onValueChange={(val) => setSortBy(val as any)}>
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                    <SelectValue placeholder="Sắp xếp: Mặc định">
+                      {sortBy === "order" ? "Sắp xếp: Mặc định" : sortBy === "endDate" ? "Sắp xếp: Hạn chót" : "Sắp xếp: Độ ưu tiên"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                    <SelectItem value="order" className="text-[10px] cursor-pointer">Sắp xếp: Mặc định</SelectItem>
+                    <SelectItem value="endDate" className="text-[10px] cursor-pointer">Sắp xếp: Hạn chót</SelectItem>
+                    <SelectItem value="priority" className="text-[10px] cursor-pointer">Sắp xếp: Độ ưu tiên</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
+          {/* Right Section: Toggle Switcher & Add Actions */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Toggle Switcher */}
+            <div className="flex items-center bg-muted/40 border border-border/50 rounded-xl p-0.5 w-fit shadow-inner">
+              <Button
+                variant={viewMode === "status" ? "default" : "ghost"}
+                size="sm"
+                className={`h-6 px-2 rounded-lg text-[10px] font-semibold transition-all duration-200 cursor-pointer ${
+                  viewMode === "status" 
+                    ? "bg-background text-foreground shadow-sm hover:bg-background" 
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => setViewMode("status")}
+              >
+                Kanban
+              </Button>
+              <Button
+                variant={viewMode === "date" ? "default" : "ghost"}
+                size="sm"
+                className={`h-6 px-2 rounded-lg text-[10px] font-semibold transition-all duration-200 cursor-pointer ${
+                  viewMode === "date" 
+                    ? "bg-background text-foreground shadow-sm hover:bg-background" 
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => setViewMode("date")}
+              >
+                Workload
+              </Button>
+            </div>
+
+            {/* Popover Thêm Dự Án */}
+            <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
+              <PopoverTrigger className="px-2 h-7 bg-background border border-border text-foreground hover:bg-muted/50 text-[10px] font-semibold rounded-lg hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 cursor-pointer shadow-sm flex items-center gap-1">
+                <Plus className="w-3 h-3 text-primary" /> Dự Án
+              </PopoverTrigger>
+              <PopoverContent className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50">
+                <form onSubmit={handleCreateProject} className="flex flex-col gap-2.5">
+                  <div className="text-xs font-bold text-foreground">Tạo nhanh dự án</div>
+                  <Input
+                    placeholder="Tên dự án mới..."
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    autoFocus
+                    className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
+                    required
+                  />
+                  <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
+                    <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
+                      Tạo mới
+                    </Button>
+                  </div>
+                </form>
+              </PopoverContent>
+            </Popover>
+
+            {/* NewTaskSheet Thêm Công Việc */}
+            <NewTaskSheet>
+              <button className="px-2 h-7 bg-foreground text-background text-[10px] font-semibold rounded-lg hover:opacity-90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 cursor-pointer shadow-sm flex items-center gap-1">
+                <Plus className="w-3 h-3" /> Công Việc
+              </button>
+            </NewTaskSheet>
+          </div>
         </div>
 
-        {/* Toggle Switcher */}
-        <div className="flex items-center bg-muted/40 border border-border/50 rounded-xl p-0.5 w-fit shadow-inner shrink-0 self-end md:self-auto">
-          <Button
-            variant={viewMode === "status" ? "default" : "ghost"}
-            size="sm"
-            className={`h-7 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer ${
-              viewMode === "status" 
-                ? "bg-background text-foreground shadow-sm hover:bg-background" 
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-            onClick={() => setViewMode("status")}
-          >
-            Kanban
-          </Button>
-          <Button
-            variant={viewMode === "date" ? "default" : "ghost"}
-            size="sm"
-            className={`h-7 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer ${
-              viewMode === "date" 
-                ? "bg-background text-foreground shadow-sm hover:bg-background" 
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-            onClick={() => setViewMode("date")}
-          >
-            Workload
-          </Button>
-        </div>
+        {/* Mobile Collapsible Filters Row */}
+        {showMobileFilters && (
+          <div className="md:hidden flex flex-col gap-2 pt-2 border-t border-border/40 w-full">
+            {/* Date Navigation (Only visible in Workload View Mode) */}
+            {viewMode === "date" && (
+              <div className="flex items-center gap-1 w-full justify-between">
+                <span className="text-[10px] text-muted-foreground">Thời gian:</span>
+                <div className="flex items-center gap-0.5">
+                  <Button variant="outline" size="sm" className="h-7 w-7 p-0 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, -7))}>
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-7 px-3 rounded-lg border-border/60 hover:bg-muted/50 font-medium cursor-pointer text-[10px]" onClick={() => setBaseDate(startOfDay(new Date()))}>
+                    Hôm nay
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-7 w-7 p-0 rounded-lg border-border/60 hover:bg-muted/50 cursor-pointer" onClick={() => setBaseDate(d => addDays(d, 7))}>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Search Bar */}
+            <div className="relative w-full">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Input
+                placeholder="Tìm kiếm..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {/* Project Filter */}
+              <div className="w-full">
+                <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
+                    <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <SelectValue placeholder="Dự án: Tất cả">
+                      {filterProject === "all"
+                        ? "Dự án: Tất cả"
+                        : filterProject === "none"
+                          ? "Không có dự án"
+                          : `Dự án: ${projects?.find((p) => p._id === filterProject)?.name || ""}`}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                    <SelectItem value="all" className="text-[10px] cursor-pointer">Dự án: Tất cả</SelectItem>
+                    <SelectItem value="none" className="text-[10px] cursor-pointer italic text-muted-foreground">Không có dự án</SelectItem>
+                    {projects?.map((p) => (
+                      <SelectItem key={p._id} value={p._id} className="text-[10px] cursor-pointer">
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="w-full">
+                <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                    <SelectValue placeholder="Trạng thái: Tất cả">
+                      {filterStatus === "all" ? (
+                        <span className="flex items-center gap-1">
+                          <Circle className="w-2.5 h-2.5 text-muted-foreground" />
+                          Trạng thái: Tất cả
+                        </span>
+                      ) : filterStatus === "todo" ? (
+                        <span className="flex items-center gap-1 text-neutral-500">
+                          <Circle className="w-2.5 h-2.5 text-neutral-400" />
+                          Chưa thực hiện
+                        </span>
+                      ) : filterStatus === "processing" ? (
+                        <span className="flex items-center gap-1 text-blue-500">
+                          <Clock className="w-2.5 h-2.5 animate-pulse" />
+                          Đang xử lý
+                        </span>
+                      ) : filterStatus === "pending" ? (
+                        <span className="flex items-center gap-1 text-amber-500">
+                          <PauseCircle className="w-2.5 h-2.5" />
+                          Tạm dừng
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-emerald-500">
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                          Đã hoàn thành
+                        </span>
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                    <SelectItem value="all" className="text-[10px] cursor-pointer">
+                      <span className="flex items-center gap-1">
+                        <Circle className="w-3 h-3 text-muted-foreground" />
+                        Trạng thái: Tất cả
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="todo" className="text-[10px] cursor-pointer">
+                      <span className="flex items-center gap-1 text-neutral-500">
+                        <Circle className="w-3 h-3 text-neutral-400" />
+                        Chưa thực hiện
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="processing" className="text-[10px] cursor-pointer">
+                      <span className="flex items-center gap-1 text-blue-500">
+                        <Clock className="w-3 h-3" />
+                        Đang xử lý
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="pending" className="text-[10px] cursor-pointer">
+                      <span className="flex items-center gap-1 text-amber-500">
+                        <PauseCircle className="w-3 h-3" />
+                        Tạm dừng
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="done" className="text-[10px] cursor-pointer">
+                      <span className="flex items-center gap-1 text-emerald-500">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Đã hoàn thành
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Sort Select */}
+            {viewMode === "status" && (
+              <div className="w-full">
+                <Select value={sortBy} onValueChange={(val) => setSortBy(val as any)}>
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                    <SelectValue placeholder="Sắp xếp: Mặc định">
+                      {sortBy === "order" ? "Sắp xếp: Mặc định" : sortBy === "endDate" ? "Sắp xếp: Hạn chót" : "Sắp xếp: Độ ưu tiên"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
+                    <SelectItem value="order" className="text-[10px] cursor-pointer">Sắp xếp: Mặc định</SelectItem>
+                    <SelectItem value="endDate" className="text-[10px] cursor-pointer">Sắp xếp: Hạn chót</SelectItem>
+                    <SelectItem value="priority" className="text-[10px] cursor-pointer">Sắp xếp: Độ ưu tiên</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <DndContext 
@@ -635,11 +932,11 @@ export function KanbanBoard({
           {viewMode === "status" ? (
             <div className="flex flex-col gap-3.5 min-w-max">
               {/* Status Headers row */}
-              <div className="flex gap-3 shrink-0 min-w-max pb-1">
+              <div className="flex gap-3 shrink-0 min-w-max pb-0.5">
                 {/* Empty corner cell */}
-                <div className="w-[48px] shrink-0 sticky left-0 z-30 bg-background/95 backdrop-blur-md border-r border-border/85 flex items-center justify-center py-2 select-none">
+                <div className="w-[48px] shrink-0 sticky left-0 z-30 bg-background/95 backdrop-blur-md border-r border-border/85 flex items-center justify-center py-1 select-none">
                   <span 
-                    className="text-[9px] font-black uppercase tracking-wider text-muted-foreground/80 whitespace-nowrap"
+                    className="text-[8px] font-black uppercase tracking-wider text-muted-foreground/80 whitespace-nowrap"
                     style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
                   >
                     Dự án
@@ -655,7 +952,7 @@ export function KanbanBoard({
                 ].map(col => (
                   <div 
                     key={col.status}
-                    className={`w-[290px] shrink-0 p-2.5 rounded-xl border text-center font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 ${col.colorClass}`}
+                    className={`w-[290px] shrink-0 py-1 px-2 rounded-lg border text-center font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 ${col.colorClass}`}
                   >
                     <span>{col.label}</span>
                   </div>
@@ -663,43 +960,25 @@ export function KanbanBoard({
               </div>
 
               {/* Swimlane rows */}
-              {projectsList.map(p => {
-                const projectTasks = tasksByProjectAndStatus[p._id] || { todo: [], processing: [], pending: [], done: [] };
-                const totalProjTasks = projectTasks.todo.length + projectTasks.processing.length + projectTasks.pending.length + projectTasks.done.length;
-                
-                return (
-                  <div key={p._id} className="flex gap-3 shrink-0 min-w-max items-stretch">
-                    {/* Project Header Cell (Sticky Left, Narrow, Vertical text) */}
-                    <div className="w-[48px] shrink-0 p-2 rounded-xl border border-border/80 bg-zinc-50 dark:bg-zinc-900 sticky left-0 z-20 flex flex-col justify-between items-center gap-2 shadow-sm relative overflow-hidden group">
-                      {/* Top accent color dot */}
-                      <div 
-                        className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
-                        style={{ backgroundColor: p.color || "#8b5cf6" }}
-                      />
+              <SortableContext items={projectsList.map((p) => p._id)} strategy={verticalListSortingStrategy}>
+                {projectsList.map(p => {
+                  const projectTasks = tasksByProjectAndStatus[p._id] || { todo: [], processing: [], pending: [], done: [] };
+                  const totalProjTasks = projectTasks.todo.length + projectTasks.processing.length + projectTasks.pending.length + projectTasks.done.length;
+                  
+                  return (
+                    <div key={p._id} className="flex gap-3 shrink-0 min-w-max items-stretch">
+                      {/* Project Header Cell */}
+                      <ProjectHeaderCell project={p} totalTasks={totalProjTasks} />
                       
-                      {/* Vertical name */}
-                      <span 
-                        className="text-[11px] font-bold text-foreground tracking-wide whitespace-nowrap text-center block select-none max-w-[120px] truncate"
-                        style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
-                        title={p.name}
-                      >
-                        {p.name}
-                      </span>
-                      
-                      {/* Count */}
-                      <span className="text-[10px] text-muted-foreground/80 font-bold bg-muted px-1.5 py-0.5 rounded-full select-none mb-1">
-                        {totalProjTasks}
-                      </span>
+                      {/* Status cells */}
+                      <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} />
+                      <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} />
+                      <SwimlaneCell id={`${p._id}::pending`} project={p._id} status="pending" tasks={projectTasks.pending} />
+                      <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} />
                     </div>
-                    
-                    {/* Status cells */}
-                    <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} />
-                    <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} />
-                    <SwimlaneCell id={`${p._id}::pending`} project={p._id} status="pending" tasks={projectTasks.pending} />
-                    <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} />
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </SortableContext>
             </div>
           ) : (
             <>
