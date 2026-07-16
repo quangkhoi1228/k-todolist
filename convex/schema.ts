@@ -8,6 +8,7 @@ export default defineSchema({
     color: v.optional(v.string()),
     order: v.optional(v.number()),
     archived: v.optional(v.boolean()),
+    notes: v.optional(v.string()),
   }).index("by_user", ["userId"]),
   
   tasks: defineTable({

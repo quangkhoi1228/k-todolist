@@ -85,6 +85,18 @@ export const updateTaskOrders = mutation({
   },
 });
 
+export const getTasksByProject = query({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("tasks")
+      .filter((q) => q.eq(q.field("project"), args.projectId))
+      .collect();
+  },
+});
+
 export const deleteTask = mutation({
   args: { id: v.id("tasks") },
   handler: async (ctx, args) => {

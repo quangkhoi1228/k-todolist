@@ -108,6 +108,7 @@ export const cloneProject = mutation({
       userId: args.userId,
       name: args.name || `${project.name} (Copy)`,
       color: project.color,
+      notes: project.notes,
       order: project.order !== undefined ? project.order + 1 : undefined,
       archived: false,
     });
@@ -130,5 +131,18 @@ export const cloneProject = mutation({
     }
 
     return clonedProjectId;
+  },
+});
+
+export const updateProjectDetail = mutation({
+  args: {
+    id: v.id("projects"),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...updates } = args;
+    const patch: Record<string, unknown> = {};
+    if (updates.notes !== undefined) patch.notes = updates.notes;
+    return await ctx.db.patch(id, patch);
   },
 });

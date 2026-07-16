@@ -23,12 +23,13 @@ import { TaskCard } from "./TaskCard";
 import { getDays, formatDateStr } from "@/lib/date-utils";
 import { startOfDay, addDays, format } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal, Copy, Archive, Eye, EyeOff } from "lucide-react";
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal, Copy, Archive, Eye, EyeOff, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { NewTaskSheet } from "./NewTaskSheet";
+import { ProjectDetailPanel } from "./ProjectDetailPanel";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAuth } from "@clerk/nextjs";
 
@@ -329,7 +330,7 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
   );
 }
 
-function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: number }) {
+function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }: { project: any; totalTasks: number; expanded?: boolean; onToggleDetail?: () => void }) {
   const { userId } = useAuth();
   const createProject = useMutation(api.projects.createProject);
   const cloneProject = useMutation(api.projects.cloneProject);
@@ -417,102 +418,126 @@ function ProjectHeaderCell({ project, totalTasks }: { project: any; totalTasks: 
       style={style}
       {...(project._id === "none" ? {} : attributes)}
       {...(project._id === "none" ? {} : listeners)}
-      className={`w-[48px] shrink-0 p-1.5 rounded-lg border border-border/80 bg-zinc-50 dark:bg-zinc-900 sticky left-0 z-20 flex flex-col justify-between items-center gap-1.5 shadow-sm relative overflow-hidden group ${
+      className={`flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 bg-zinc-50 dark:bg-zinc-900 shadow-sm ${
         project._id === "none" ? "" : "cursor-grab active:cursor-grabbing hover:border-primary/40 hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
-      {/* Top accent color dot */}
+      {/* Expand toggle */}
+      {project._id !== "none" && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleDetail?.();
+          }}
+          className="w-5 h-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer shrink-0"
+          title={expanded ? "Thu gọn" : "Chi tiết dự án"}
+        >
+          {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRightIcon className="w-3.5 h-3.5" />}
+        </button>
+      )}
+      
+      {/* Accent color dot */}
       <div 
-        className="w-1.5 h-1.5 rounded-full shrink-0 mt-0.5"
+        className="w-2.5 h-2.5 rounded-full shrink-0"
         style={{ backgroundColor: project.color || (project._id === "none" ? "#64748b" : "#8b5cf6") }}
       />
       
-      {/* Vertical name */}
-      <span 
-        className="text-[10px] font-bold text-foreground tracking-wide whitespace-nowrap text-center block select-none max-w-[80px] truncate"
-        style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
-        title={project.name}
-      >
-        {project.name}
+      {/* Project name — clickable for detail */}
+      {project._id !== "none" ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleDetail?.();
+          }}
+          className="text-xs font-bold text-foreground truncate flex-1 select-none text-left hover:text-primary transition-colors cursor-pointer"
+          title={project.name}
+        >
+          {project.name}
+        </button>
+      ) : (
+        <span className="text-xs font-bold text-foreground truncate flex-1 select-none" title={project.name}>
+          {project.name}
+        </span>
+      )}
+      
+      {/* Task count badge */}
+      <span className="text-[10px] font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded leading-none shrink-0">
+        {totalTasks}
       </span>
       
-      {/* Bottom Area: Count & Optional Add/Clone/Archive Button */}
-      <div className="flex flex-col items-center gap-1 w-full shrink-0">
-        <span className="text-[9px] text-muted-foreground/80 font-bold bg-muted px-1 py-0.5 rounded leading-none">
-          {totalTasks}
-        </span>
-        
-        {project._id === "none" ? (
-          <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
+      {/* Actions */}
+      {project._id === "none" ? (
+        <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
+          <PopoverTrigger
+            className="h-6 w-6 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 flex items-center justify-center border border-transparent hover:border-primary/20 bg-transparent text-muted-foreground hover:text-foreground"
+            title="Thêm dự án nhanh"
+          >
+            <Plus className="w-3.5 h-3.5 text-primary" />
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50">
+            <form onSubmit={handleCreateProject} className="flex flex-col gap-2.5">
+              <div className="text-xs font-bold text-foreground">Tạo nhanh dự án</div>
+              <Input
+                placeholder="Tên dự án mới..."
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                autoFocus
+                className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
+                required
+              />
+              <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
+                <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
+                  Tạo mới
+                </Button>
+              </div>
+            </form>
+          </PopoverContent>
+        </Popover>
+      ) : (
+        <div className="flex items-center gap-1 shrink-0">
+          <Popover open={isClonePopoverOpen} onOpenChange={handleOpenCloneChange}>
             <PopoverTrigger
-              className="h-5 w-5 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 mt-0.5 flex items-center justify-center border border-transparent hover:border-primary/20 bg-transparent text-muted-foreground hover:text-foreground"
-              title="Thêm dự án nhanh"
+              className="h-6 w-6 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60 hover:text-primary"
+              title="Nhân bản dự án"
+              onClick={(e) => e.stopPropagation()}
             >
-              <Plus className="w-3 h-3 text-primary" />
+              <Copy className="w-3.5 h-3.5" />
             </PopoverTrigger>
-            <PopoverContent side="right" align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50">
-              <form onSubmit={handleCreateProject} className="flex flex-col gap-2.5">
-                <div className="text-xs font-bold text-foreground">Tạo nhanh dự án</div>
+            <PopoverContent align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50" onClick={(e) => e.stopPropagation()}>
+              <form onSubmit={handleCloneProject} className="flex flex-col gap-2.5">
+                <div className="text-xs font-bold text-foreground">Nhân bản dự án</div>
+                <div className="text-[10px] text-muted-foreground leading-normal">
+                  Sao chép toàn bộ công việc sang dự án mới ở trạng thái Chưa thực hiện và bỏ ngày.
+                </div>
                 <Input
                   placeholder="Tên dự án mới..."
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
+                  value={cloneProjectName}
+                  onChange={(e) => setCloneProjectName(e.target.value)}
                   autoFocus
                   className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
                   required
                 />
                 <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
                   <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
-                    Tạo mới
+                    Nhân bản
                   </Button>
                 </div>
               </form>
             </PopoverContent>
           </Popover>
-        ) : (
-          <>
-            <Popover open={isClonePopoverOpen} onOpenChange={handleOpenCloneChange}>
-              <PopoverTrigger
-                className="h-5 w-5 p-0 rounded hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer shrink-0 mt-0.5 flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60 hover:text-primary"
-                title="Nhân bản dự án"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Copy className="w-3 h-3" />
-              </PopoverTrigger>
-              <PopoverContent side="right" align="end" className="w-64 bg-card/98 backdrop-blur-xl border border-border p-3 shadow-xl rounded-xl z-50" onClick={(e) => e.stopPropagation()}>
-                <form onSubmit={handleCloneProject} className="flex flex-col gap-2.5">
-                  <div className="text-xs font-bold text-foreground">Nhân bản dự án</div>
-                  <div className="text-[10px] text-muted-foreground leading-normal">
-                    Sao chép toàn bộ công việc sang dự án mới ở trạng thái Chưa thực hiện và bỏ ngày.
-                  </div>
-                  <Input
-                    placeholder="Tên dự án mới..."
-                    value={cloneProjectName}
-                    onChange={(e) => setCloneProjectName(e.target.value)}
-                    autoFocus
-                    className="h-8 text-xs bg-background/50 border-border rounded-lg px-2"
-                    required
-                  />
-                  <div className="flex justify-end gap-1.5 pt-1.5 border-t border-border">
-                    <Button type="submit" size="sm" className="h-7 text-xs rounded-lg px-2.5 font-semibold cursor-pointer">
-                      Nhân bản
-                    </Button>
-                  </div>
-                </form>
-              </PopoverContent>
-            </Popover>
-            <button
-              type="button"
-              className="h-5 w-5 p-0 rounded hover:bg-amber-500/10 hover:text-amber-600 transition-colors cursor-pointer shrink-0 flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60"
-              title="Lưu trữ dự án"
-              onClick={handleArchiveProject}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <Archive className="w-3 h-3" />
-            </button>
-          </>
-        )}
-      </div>
+          <button
+            type="button"
+            className="h-6 w-6 p-0 rounded hover:bg-amber-500/10 hover:text-amber-600 transition-colors cursor-pointer flex items-center justify-center border border-transparent bg-transparent text-muted-foreground/60"
+            title="Lưu trữ dự án"
+            onClick={handleArchiveProject}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <Archive className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -547,6 +572,7 @@ export function KanbanBoard({
   const days = useMemo(() => getDays(baseDate, 7), [baseDate]);
   
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+  const [expandedProject, setExpandedProject] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"date" | "status">("status");
 
   // Filtering and sorting states
@@ -1322,20 +1348,9 @@ export function KanbanBoard({
       >
         <div className={`flex-1 min-h-0 pb-4 ${viewMode === "status" ? "overflow-auto" : "overflow-x-auto overflow-y-hidden flex flex-row gap-3 items-stretch"}`}>
           {viewMode === "status" ? (
-            <div className="flex flex-col gap-3.5 min-w-max">
+            <div className="flex flex-col gap-4 min-w-max">
               {/* Status Headers row — sticky when scrolling vertically */}
               <div className="flex gap-3 shrink-0 min-w-max pb-0.5 sticky top-0 z-40 bg-background/95 backdrop-blur-md pt-0.5 -mt-0.5 pointer-events-none">
-                {/* Empty corner cell */}
-                <div className="w-[48px] shrink-0 sticky left-0 z-50 bg-background/95 backdrop-blur-md border-r border-border/85 flex items-center justify-center py-1 select-none">
-                  <span 
-                    className="text-[8px] font-black uppercase tracking-wider text-muted-foreground/80 whitespace-nowrap"
-                    style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
-                  >
-                    Dự án
-                  </span>
-                </div>
-                
-                 {/* Headers */}
                 {[
                   { status: "todo", label: "Chưa thực hiện", colorClass: "text-neutral-500 bg-neutral-500/5 dark:bg-neutral-500/10 border-neutral-500/10 dark:border-neutral-500/20" },
                   { status: "processing", label: "Đang xử lý", colorClass: "text-blue-500 bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/10 dark:border-blue-500/20" },
@@ -1371,22 +1386,35 @@ export function KanbanBoard({
                 ))}
               </div>
 
-              {/* Swimlane rows */}
+              {/* Project sections */}
               <SortableContext items={projectsList.map((p) => p._id)} strategy={verticalListSortingStrategy}>
                 {projectsList.map(p => {
                   const projectTasks = tasksByProjectAndStatus[p._id] || { todo: [], processing: [], dueToday: [], done: [] };
                   const totalProjTasks = projectTasks.todo.length + projectTasks.processing.length + projectTasks.dueToday.length + projectTasks.done.length;
+                  const isExpanded = expandedProject === p._id;
                   
                   return (
-                    <div key={p._id} className="flex gap-3 shrink-0 min-w-max items-stretch">
-                      {/* Project Header Cell */}
-                      <ProjectHeaderCell project={p} totalTasks={totalProjTasks} />
+                    <div key={p._id} className="flex flex-col gap-2">
+                      {/* Project Section Header — horizontal bar on top */}
+                      <ProjectSectionHeader 
+                        project={p} 
+                        totalTasks={totalProjTasks} 
+                        expanded={isExpanded}
+                        onToggleDetail={() => setExpandedProject(isExpanded ? null : p._id)}
+                      />
                       
-                      {/* Status cells */}
-                      <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} />
-                      <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} />
-                      <SwimlaneCell id={`${p._id}::dueToday`} project={p._id} status="dueToday" tasks={projectTasks.dueToday} />
-                      <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} />
+                      {/* Detail panel */}
+                      {isExpanded && (
+                        <ProjectDetailPanel project={p} />
+                      )}
+                      
+                      {/* Status cells row */}
+                      <div className="flex gap-3">
+                        <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} />
+                        <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} />
+                        <SwimlaneCell id={`${p._id}::dueToday`} project={p._id} status="dueToday" tasks={projectTasks.dueToday} />
+                        <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} />
+                      </div>
                     </div>
                   );
                 })}
