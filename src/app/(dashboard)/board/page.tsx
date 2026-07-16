@@ -4,12 +4,17 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { KanbanBoard } from "@/components/board/KanbanBoard";
+import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
 
 export default function BoardPage() {
   const { userId } = useAuth();
   
   const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
   const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  
+  // Automatically shift overdue processing tasks to today
+  useAutoShiftTasks(tasks);
+
   const updateTask = useMutation(api.tasks.updateTask);
 
   const handleUpdateTask = (taskId: string, updates: { startDate?: number; endDate?: number; status?: string; project?: string }) => {

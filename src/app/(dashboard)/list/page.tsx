@@ -43,12 +43,17 @@ import {
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
 
 export default function ListPage() {
   const { userId } = useAuth();
   
   const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
   const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+
+  // Automatically shift overdue processing tasks to today
+  useAutoShiftTasks(tasks);
+
   const updateTask = useMutation(api.tasks.updateTask);
   const deleteTask = useMutation(api.tasks.deleteTask);
   const createProject = useMutation(api.projects.createProject);

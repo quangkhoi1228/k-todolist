@@ -5,7 +5,6 @@ import {
   LayoutGrid,
   BarChart3,
   Zap,
-  CheckCircle2,
   ArrowRight,
   Layers,
   Timer,
@@ -15,6 +14,7 @@ import {
   KanbanSquare,
   GanttChart,
 } from "lucide-react";
+import { Logo } from "@/components/ui/Logo";
 
 export default async function Home() {
   const { userId } = await auth();
@@ -29,9 +29,7 @@ export default async function Home() {
       <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border/50 bg-background/60 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-[oklch(0.7_0.2_320)] flex items-center justify-center shadow-lg shadow-primary/20">
-              <CheckCircle2 className="w-4.5 h-4.5 text-primary-foreground" />
-            </div>
+            <Logo size={32} />
             <span className="text-lg font-bold tracking-tight">
               KFlow
             </span>
@@ -462,9 +460,7 @@ export default async function Home() {
       <footer className="border-t border-border/50 py-8 px-6">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
-            <div className="w-6 h-6 rounded-md bg-gradient-to-br from-primary to-[oklch(0.7_0.2_320)] flex items-center justify-center">
-              <CheckCircle2 className="w-3.5 h-3.5 text-primary-foreground" />
-            </div>
+            <Logo size={24} />
             <span className="text-sm font-bold">KFlow</span>
           </div>
           <p className="text-xs text-muted-foreground">

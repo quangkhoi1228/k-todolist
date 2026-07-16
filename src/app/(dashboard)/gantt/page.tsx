@@ -14,11 +14,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Briefcase, Circle, Search, Clock, PauseCircle, CheckCircle2, SlidersHorizontal, Plus } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
 
 export default function GanttPage() {
   const { userId } = useAuth();
   const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
   const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+
+  // Automatically shift overdue processing tasks to today
+  useAutoShiftTasks(tasks);
+
   const updateTask = useMutation(api.tasks.updateTask);
   const createProject = useMutation(api.projects.createProject);
 

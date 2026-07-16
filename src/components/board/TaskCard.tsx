@@ -241,18 +241,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
         <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
         {hasDate ? (
           isCompact ? (
-            forceExpanded ? (
-              <span>{formatCompactDates(task.startDate, task.endDate)}</span>
-            ) : (
-              <>
-                <span className="group-hover/task:hidden truncate max-w-[5.5rem]">
-                  {formatCompactDates(task.startDate, task.endDate, true)}
-                </span>
-                <span className="hidden group-hover/task:inline">
-                  {formatCompactDates(task.startDate, task.endDate)}
-                </span>
-              </>
-            )
+            <span>{formatCompactDates(task.startDate, task.endDate)}</span>
           ) : (
             <>
               {task.startDate && <span>{format(new Date(task.startDate), "dd/MM/yyyy")}</span>}
@@ -376,21 +365,9 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
           )}
         >
           {isCompact ? (
-            <div
-              className={cn(
-                "px-1.5 py-1 flex gap-1.5 relative transition-[padding] duration-200",
-                forceExpanded
-                  ? "flex-col items-stretch py-1.5"
-                  : "items-center group-hover/task:flex-col group-hover/task:items-stretch group-hover/task:py-1.5"
-              )}
-            >
+            <div className="px-2 py-1 flex flex-col items-stretch gap-1 relative">
               {/* Title */}
-              <div
-                className={cn(
-                  "min-w-0 pr-5",
-                  forceExpanded ? "w-full" : "flex-1 group-hover/task:w-full"
-                )}
-              >
+              <div className="w-full min-w-0 pr-5">
                 {isTitleEditing ? (
                   <Input
                     value={tempTitle}
@@ -415,11 +392,8 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                       setIsTitleEditing(true);
                     }}
                     className={cn(
-                      "text-[11px] font-semibold cursor-text select-none",
-                      isDone ? "text-muted-foreground line-through" : "text-foreground",
-                      forceExpanded
-                        ? "leading-snug break-words whitespace-normal"
-                        : "truncate leading-5 group-hover/task:leading-snug group-hover/task:whitespace-normal group-hover/task:break-words"
+                      "text-[11px] font-semibold cursor-text select-none leading-snug break-words whitespace-normal",
+                      isDone ? "text-muted-foreground line-through" : "text-foreground"
                     )}
                     title={task.title}
                   >
@@ -428,18 +402,9 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                 )}
               </div>
 
-              {/* Meta — one row when collapsed; full width when expanded */}
+              {/* Meta — always below the title */}
               {!isTitleEditing && (
-                <div
-                  className={cn(
-                    "flex items-center gap-1 flex-nowrap",
-                    forceExpanded
-                      ? "w-full flex-wrap"
-                      : "shrink-0 max-w-[55%] group-hover/task:max-w-none group-hover/task:w-full group-hover/task:flex-wrap"
-                  )}
-                >
-                  {datePopover}
-
+                <div className="w-full flex items-center gap-1.5 flex-wrap mt-0.5">
                   {isTimeEditing ? (
                     <Input
                       type="text"
@@ -476,6 +441,8 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                   )}
 
                   {task.priority && <PriorityIndicator priority={task.priority} compact />}
+
+                  {datePopover}
                 </div>
               )}
             </div>
