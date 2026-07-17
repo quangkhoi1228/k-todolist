@@ -26,6 +26,16 @@ export default defineSchema({
     priority: v.optional(v.string()), // 'low', 'normal', 'high'
   }).index("by_user", ["userId"]),
 
+  taskDependencies: defineTable({
+    userId: v.string(),
+    taskId: v.id("tasks"), // successor - task phụ thuộc
+    dependsOnTaskId: v.id("tasks"), // predecessor - task được phụ thuộc
+    dependencyType: v.string(), // 'finish-to-start'
+  })
+    .index("by_user", ["userId"])
+    .index("by_task", ["taskId"])
+    .index("by_depends_on", ["dependsOnTaskId"]),
+
   userPreferences: defineTable({
     userId: v.string(),
     hideDoneTasks: v.boolean(),

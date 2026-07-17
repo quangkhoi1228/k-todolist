@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
@@ -171,6 +171,7 @@ export interface Task {
   order?: number;
   priority?: string;
   isOverflowing?: boolean;
+  isBlocked?: boolean;
 }
 
 interface SwimlaneCellProps {
@@ -178,9 +179,11 @@ interface SwimlaneCellProps {
   project: string;
   status: string;
   tasks: Task[];
+  selectedTaskIds: Set<string>;
+  onTaskClick: (taskId: string, e: React.MouseEvent) => void;
 }
 
-function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
+function SwimlaneCell({ id, project, status, tasks, selectedTaskIds, onTaskClick }: SwimlaneCellProps) {
   const { setNodeRef, isOver } = useDroppable({
     id,
     data: { type: "SwimlaneCell", project, status },
@@ -334,7 +337,7 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
       <SortableContext items={tasks.map((t) => t._id)} strategy={verticalListSortingStrategy}>
         <div className="flex flex-col gap-1 flex-1 justify-start pt-2">
           {tasks.map((task) => (
-            <TaskCard key={task._id} task={task} hideProjectBadge={true} hideStatusBadge={true} />
+            <TaskCard key={task._id} task={task} hideProjectBadge={true} hideStatusBadge={true} isSelected={selectedTaskIds.has(task._id)} onTaskClick={(e) => onTaskClick(task._id, e)} />
           ))}
           {tasks.length === 0 && (
             <div className="flex-1 flex items-center justify-center text-[10px] text-muted-foreground/30 italic py-6 select-none">
@@ -584,6 +587,20 @@ export function KanbanBoard({
   const createProject = useMutation(api.projects.createProject);
   const updatePreferences = useMutation(api.userPreferences.updateUserPreferences);
   const userPreferences = useQuery(api.userPreferences.getUserPreferences, userId ? { userId } : "skip");
+  const allDependencies = useQuery(api.tasks.getAllDependencies, userId ? { userId } : "skip");
+
+  // Build a set of blocked task IDs from dependencies
+  const blockedTaskIds = useMemo(() => {
+    if (!allDependencies || !tasks) return new Set<string>();
+    const blocked = new Set<string>();
+    for (const dep of allDependencies) {
+      const predecessor = tasks.find((t: any) => t._id === dep.dependsOnTaskId);
+      if (predecessor && predecessor.status !== "done") {
+        blocked.add(dep.taskId);
+      }
+    }
+    return blocked;
+  }, [allDependencies, tasks]);
   
   const [baseDate, setBaseDate] = useState(() => startOfDay(new Date()));
   const days = useMemo(() => getDays(baseDate, 7), [baseDate]);
@@ -591,6 +608,102 @@ export function KanbanBoard({
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [expandedProject, setExpandedProject] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"date" | "status">("status");
+
+  // Multi-select state
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [marquee, setMarquee] = useState<{startX: number; startY: number; currentX: number; currentY: number} | null>(null);
+  const isSelecting = useRef(false);
+  const selectStart = useRef<{x: number; y: number} | null>(null);
+
+  // Marquee selection mouse handlers
+  const handleBoardMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only start marquee when clicking empty area (not task cards, buttons, inputs)
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-task-card]') || target.closest('button') || target.closest('input') || target.closest('select') || target.closest('[role="button"]') || target.closest('[role="option"]')) {
+      return;
+    }
+    if (e.button !== 0) return;
+    
+    isSelecting.current = true;
+    selectStart.current = { x: e.clientX, y: e.clientY };
+    setMarquee({ startX: e.clientX, startY: e.clientY, currentX: e.clientX, currentY: e.clientY });
+  }, []);
+
+  // Track mouse for marquee selection — always present, checks refs
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isSelecting.current || !selectStart.current) return;
+      const dx = Math.abs(e.clientX - selectStart.current.x);
+      const dy = Math.abs(e.clientY - selectStart.current.y);
+      if (dx < 5 && dy < 5) return;
+      setMarquee(prev => prev ? { ...prev, currentX: e.clientX, currentY: e.clientY } : null);
+    };
+    
+    const handleMouseUp = (e: MouseEvent) => {
+      if (!isSelecting.current || !selectStart.current) return;
+      isSelecting.current = false;
+      
+      const m = {
+        startX: selectStart.current.x,
+        startY: selectStart.current.y,
+        currentX: e.clientX,
+        currentY: e.clientY,
+      };
+      selectStart.current = null;
+      setMarquee(null);
+      
+      const rect = {
+        left: Math.min(m.startX, m.currentX),
+        top: Math.min(m.startY, m.currentY),
+        right: Math.max(m.startX, m.currentX),
+        bottom: Math.max(m.startY, m.currentY),
+      };
+      const container = boardRef.current;
+      if (!container) return;
+      
+      const taskCards = container.querySelectorAll('[data-task-card]');
+      const newlySelected: string[] = [];
+      
+      taskCards.forEach((card) => {
+        const taskId = card.getAttribute('data-task-id');
+        if (!taskId) return;
+        const cardRect = card.getBoundingClientRect();
+        if (!(rect.right < cardRect.left || rect.left > cardRect.right || rect.bottom < cardRect.top || rect.top > cardRect.bottom)) {
+          newlySelected.push(taskId);
+        }
+      });
+      
+      if (newlySelected.length > 0) {
+        setSelectedTaskIds(new Set(newlySelected));
+      } else {
+        setSelectedTaskIds(new Set());
+      }
+    };
+    
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  // Handle clicking on a task card to select it
+  const handleTaskClick = useCallback((taskId: string, e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd+Click: toggle this task in selection
+      setSelectedTaskIds(prev => {
+        const next = new Set(prev);
+        if (next.has(taskId)) next.delete(taskId);
+        else next.add(taskId);
+        return next;
+      });
+    } else {
+      // Normal click: replace selection with just this task
+      setSelectedTaskIds(new Set([taskId]));
+    }
+  }, []);
 
   // Filtering and sorting states
   const [searchQuery, setSearchQuery] = useState("");
@@ -638,21 +751,23 @@ export function KanbanBoard({
   );
 
   const filteredTasks = useMemo(() => {
-    return tasks.filter(task => {
-      // Hide tasks that belong to archived (or otherwise inactive) projects
-      if (task.project && task.project !== "none" && projects && !activeProjectIds.has(task.project)) {
-        return false;
-      }
-      if (hideDoneTasks && task.status === "done") return false;
-      const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesStatus = filterStatus === "all" || task.status === filterStatus;
-      
-      const taskProject = task.project || "none";
-      const matchesProject = filterProject === "all" || taskProject === filterProject;
-      
-      return matchesSearch && matchesStatus && matchesProject;
-    });
-  }, [tasks, searchQuery, filterProject, filterStatus, hideDoneTasks, projects, activeProjectIds]);
+    return tasks
+      .filter(task => {
+        if (task.project && task.project !== "none" && projects && !activeProjectIds.has(task.project)) {
+          return false;
+        }
+        if (hideDoneTasks && task.status === "done") return false;
+        const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesStatus = filterStatus === "all" || task.status === filterStatus;
+        const taskProject = task.project || "none";
+        const matchesProject = filterProject === "all" || taskProject === filterProject;
+        return matchesSearch && matchesStatus && matchesProject;
+      })
+      .map(task => ({
+        ...task,
+        isBlocked: blockedTaskIds.has(task._id),
+      }));
+  }, [tasks, searchQuery, filterProject, filterStatus, hideDoneTasks, projects, activeProjectIds, blockedTaskIds]);
 
   // Compute overdue tasks (uncompleted tasks with start date before today)
   const overdueTasks = useMemo(() => {
@@ -779,6 +894,11 @@ export function KanbanBoard({
     const activeId = active.id;
     const overId = over.id;
 
+    // Determine which task IDs to move: if active is selected and multiple selected, move all
+    const movingIds = selectedTaskIds.has(activeId as string) && selectedTaskIds.size > 1
+      ? new Set(selectedTaskIds)
+      : new Set([activeId as string]);
+
     // Dragged a Project row
     if (active.data.current?.type === "Project") {
       const activeProjId = active.id;
@@ -807,6 +927,7 @@ export function KanbanBoard({
           updateProjectOrders({ updates });
         }
       }
+      setSelectedTaskIds(new Set());
       return;
     }
 
@@ -818,43 +939,64 @@ export function KanbanBoard({
       const sourceProject = activeTaskData?.project || "none";
       const sourceColumn = getBoardColumn(activeTaskData);
 
-      // Same cell empty-area drop: keep current order (reorder happens via Task targets).
+      // Same cell empty-area drop: keep current order
       if (sourceProject === targetProject && sourceColumn === targetColumn) {
+        setSelectedTaskIds(new Set());
         return;
       }
 
-      const targetList = [
-        ...(tasksByProjectAndStatus[targetProject]?.[targetColumn] || []),
-      ].filter((t) => t._id !== activeId);
-      targetList.push(activeTaskData);
-
       if (sortBy !== "order") setSortBy("order");
 
+      // Collect all selected tasks' data
+      const selectedData: Task[] = [];
+      const sourceUpdates: { id: any; order: number }[] = [];
+      const visitedSources = new Set<string>();
+
+      // Build updates for all moving tasks + non-moving source tasks
+      const targetExisting = (tasksByProjectAndStatus[targetProject]?.[targetColumn] || [])
+        .filter((t) => !movingIds.has(t._id));
+
+      // Move selected tasks to target cell
       const moveFields = buildBoardMoveFields(sourceColumn, targetColumn, activeTaskData);
-      const updates = targetList.map((t, index) => ({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const orderedMovingIds = [...filteredTasks.filter((t) => movingIds.has(t._id))]
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+      const newTargetList = [...targetExisting, ...orderedMovingIds.map((t) => ({
+        ...t,
+        project: targetProject === "none" ? null : targetProject,
+        status: moveFields.status || t.status,
+        endDate: moveFields.endDate ?? t.endDate,
+      }))];
+
+      const updates = newTargetList.map((t, index) => ({
         id: t._id as any,
         order: index * 1000,
-        ...(t._id === activeId
+        ...(movingIds.has(t._id)
           ? {
-              ...moveFields,
+              status: moveFields.status || t.status,
               project: (targetProject === "none" ? null : targetProject) as any,
+              endDate: moveFields.endDate ?? t.endDate ?? undefined,
             }
           : {}),
       }));
 
-      const sourceList = (
-        tasksByProjectAndStatus[sourceProject]?.[sourceColumn] || []
-      ).filter((t) => t._id !== activeId);
-      for (const [index, t] of sourceList.entries()) {
-        updates.push({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          id: t._id as any,
-          order: index * 1000,
-        });
+      // Reorder source cells for all affected projects
+      const affectedProjects = new Set([sourceProject, targetProject]);
+      for (const projId of affectedProjects) {
+        for (const col of ["todo", "processing", "dueToday", "done"] as BoardColumn[]) {
+          const cellTasks = (tasksByProjectAndStatus[projId]?.[col] || [])
+            .filter((t) => !movingIds.has(t._id));
+          for (const [index, t] of cellTasks.entries()) {
+            updates.push({
+              id: t._id as any,
+              order: index * 1000,
+            });
+          }
+        }
       }
 
       void updateTaskOrders({ updates });
+      setSelectedTaskIds(new Set());
       return;
     }
 
@@ -863,17 +1005,24 @@ export function KanbanBoard({
       if (viewMode === "status") {
         const targetStatus = over.data.current.statusMode;
         if (targetStatus) {
-          onUpdateTask(activeId as string, { status: targetStatus });
+          for (const tid of movingIds) {
+            onUpdateTask(tid as string, { status: targetStatus });
+          }
         }
+        setSelectedTaskIds(new Set());
         return;
       }
       
       const targetDateStr = over.data.current.dateStr;
       if (targetDateStr === "overdue") {
-        return; // Cannot drag into overdue column directly
+        setSelectedTaskIds(new Set());
+        return;
       }
       const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
-      onUpdateTask(activeId as string, { startDate: newStartDate });
+      for (const tid of movingIds) {
+        onUpdateTask(tid as string, { startDate: newStartDate });
+      }
+      setSelectedTaskIds(new Set());
       return;
     }
 
@@ -883,7 +1032,10 @@ export function KanbanBoard({
       const activeTaskData = active.data.current?.task as Task;
       
       if (viewMode === "status") {
-        if (activeId === overId) return;
+        if (activeId === overId) {
+          setSelectedTaskIds(new Set());
+          return;
+        }
 
         const targetColumn = getBoardColumn(overTask);
         const targetProject = overTask.project || "none";
@@ -893,38 +1045,42 @@ export function KanbanBoard({
         const sameCell =
           sourceProject === targetProject && sourceColumn === targetColumn;
 
-        const sourceList = [
-          ...(tasksByProjectAndStatus[sourceProject]?.[sourceColumn] || []),
-        ];
-        const targetList = sameCell
-          ? sourceList
-          : [...(tasksByProjectAndStatus[targetProject]?.[targetColumn] || [])];
-
-        const activeIndex = sourceList.findIndex((t) => t._id === activeId);
-        const overIndex = targetList.findIndex((t) => t._id === overId);
-        if (activeIndex === -1 || overIndex === -1) return;
-
         if (sortBy !== "order") setSortBy("order");
 
         if (sameCell) {
-          const reordered = arrayMove(sourceList, activeIndex, overIndex);
+          // Reorder: place all selected tasks at the drop position
+          const cellList = [
+            ...(tasksByProjectAndStatus[sourceProject]?.[sourceColumn] || []),
+          ];
+          const nonMoving = cellList.filter((t) => !movingIds.has(t._id));
+          const overIdx = nonMoving.findIndex((t) => t._id === overId);
+          const moving = cellList.filter((t) => movingIds.has(t._id));
+          const reordered = [...nonMoving];
+          reordered.splice(overIdx, 0, ...moving);
           void updateTaskOrders({
             updates: reordered.map((t, index) => ({
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               id: t._id as any,
               order: index * 1000,
             })),
           });
         } else {
+          // Move all selected tasks to target cell
           const moveFields = buildBoardMoveFields(sourceColumn, targetColumn, activeTaskData);
-          const nextTarget = targetList.filter((t) => t._id !== activeId);
-          nextTarget.splice(overIndex, 0, activeTaskData);
+          const targetExisting = (tasksByProjectAndStatus[targetProject]?.[targetColumn] || [])
+            .filter((t) => !movingIds.has(t._id));
+          const overIdx = targetExisting.findIndex((t) => t._id === overId);
+          const moving = (sourceProject === sourceProject
+            ? [...(tasksByProjectAndStatus[sourceProject]?.[sourceColumn] || [])]
+            : []
+          ).filter((t) => movingIds.has(t._id));
 
-          const updates = nextTarget.map((t, index) => ({
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const newTarget = [...targetExisting];
+          newTarget.splice(overIdx < 0 ? newTarget.length : overIdx, 0, ...moving);
+
+          const updates = newTarget.map((t, index) => ({
             id: t._id as any,
             order: index * 1000,
-            ...(t._id === activeId
+            ...(movingIds.has(t._id)
               ? {
                   ...moveFields,
                   project: (targetProject === "none" ? null : targetProject) as any,
@@ -932,20 +1088,28 @@ export function KanbanBoard({
               : {}),
           }));
 
-          const nextSource = sourceList.filter((t) => t._id !== activeId);
-          for (const [index, t] of nextSource.entries()) {
-            updates.push({
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              id: t._id as any,
-              order: index * 1000,
-            });
+          // Reorder source cells for affected projects
+          const affectedProjects = new Set([sourceProject, targetProject]);
+          for (const projId of affectedProjects) {
+            for (const col of ["todo", "processing", "dueToday", "done"] as BoardColumn[]) {
+              const cellTasks = (tasksByProjectAndStatus[projId]?.[col] || [])
+                .filter((t) => !movingIds.has(t._id));
+              for (const [index, t] of cellTasks.entries()) {
+                updates.push({
+                  id: t._id as any,
+                  order: index * 1000,
+                });
+              }
+            }
           }
 
           void updateTaskOrders({ updates });
         }
+        setSelectedTaskIds(new Set());
         return;
       }
 
+      // Date view
       const targetDateStr = formatDateStr(startOfDay(new Date(overTask.startDate || Date.now())));
       const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
 
@@ -957,30 +1121,34 @@ export function KanbanBoard({
       const sourceList = isActiveOverdue ? [...overdueTasks] : [...(tasksByDate[sourceDateStr] || [])];
       const targetList = sourceDateStr === targetDateStr && !isActiveOverdue ? sourceList : [...(tasksByDate[targetDateStr] || [])];
 
-      const activeIndex = sourceList.findIndex((t) => t._id === activeId);
-      const overIndex = targetList.findIndex((t) => t._id === overId);
-
       if (sourceDateStr === targetDateStr && !isActiveOverdue) {
-        // Reordering in same column
-        const reordered = arrayMove(sourceList, activeIndex, overIndex);
+        // Reorder in same date column
+        const nonMoving = sourceList.filter((t) => !movingIds.has(t._id));
+        const overIdx = nonMoving.findIndex((t) => t._id === overId);
+        const moving = sourceList.filter((t) => movingIds.has(t._id));
+        const reordered = [...nonMoving];
+        reordered.splice(overIdx, 0, ...moving);
         const updates = reordered.map((t, index) => ({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           id: t._id as any,
           order: index * 1000,
           startDate: newStartDate,
         }));
         void updateTaskOrders({ updates });
       } else {
-        // Moving between columns and placing in specific index
-        targetList.splice(overIndex, 0, activeTaskData);
-        const updates = targetList.map((t, index) => ({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // Move to new date column
+        const nonMoving = targetList.filter((t) => !movingIds.has(t._id));
+        const overIdx = nonMoving.findIndex((t) => t._id === overId);
+        const moving = sourceList.filter((t) => movingIds.has(t._id));
+        const newTarget = [...nonMoving];
+        newTarget.splice(overIdx < 0 ? newTarget.length : overIdx, 0, ...moving);
+        const updates = newTarget.map((t, index) => ({
           id: t._id as any,
           order: index * 1000,
           startDate: newStartDate,
         }));
         void updateTaskOrders({ updates });
       }
+      setSelectedTaskIds(new Set());
     }
   }
 
@@ -1023,7 +1191,7 @@ export function KanbanBoard({
             )}
 
             {/* Search Bar */}
-            <div className="relative w-full sm:w-44">
+            <div className="relative w-32">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
@@ -1034,9 +1202,9 @@ export function KanbanBoard({
             </div>
 
             {/* Project Filter */}
-            <div className="w-full sm:w-auto sm:min-w-36">
+            <div>
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
                   <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Dự án: Tất cả" className="flex items-center gap-1 truncate min-w-0">
                     {filterProject === "all"
@@ -1059,9 +1227,9 @@ export function KanbanBoard({
             </div>
 
             {/* Status Filter */}
-            <div className="w-full sm:min-w-32">
+            <div>
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
@@ -1128,9 +1296,9 @@ export function KanbanBoard({
 
             {/* Sort Select */}
             {viewMode === "status" && (
-              <div className="w-full sm:min-w-32">
+              <div>
                 <Select value={sortBy} onValueChange={(val) => setSortBy(val as any)}>
-                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
                     <SelectValue placeholder="Sắp xếp: Mặc định">
                       {sortBy === "order" ? "Sắp xếp: Mặc định" : sortBy === "endDate" ? "Sắp xếp: Hạn chót" : "Sắp xếp: Độ ưu tiên"}
                     </SelectValue>
@@ -1363,7 +1531,7 @@ export function KanbanBoard({
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className={`flex-1 min-h-0 pb-4 ${viewMode === "status" ? "overflow-auto" : "overflow-x-auto overflow-y-hidden flex flex-row gap-3 items-stretch"}`}>
+        <div ref={boardRef} onMouseDown={handleBoardMouseDown} className={`flex-1 min-h-0 pb-4 ${viewMode === "status" ? "overflow-auto" : "overflow-x-auto overflow-y-hidden flex flex-row gap-3 items-stretch"}`}>
           {viewMode === "status" ? (
             <div className="flex flex-col gap-4 min-w-max">
               {/* Status Headers row — sticky when scrolling vertically */}
@@ -1441,10 +1609,10 @@ export function KanbanBoard({
                       
                       {/* Status cells row */}
                       <div className="flex gap-3">
-                        <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} />
-                        <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} />
-                        <SwimlaneCell id={`${p._id}::dueToday`} project={p._id} status="dueToday" tasks={projectTasks.dueToday} />
-                        <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} />
+                        <SwimlaneCell id={`${p._id}::todo`} project={p._id} status="todo" tasks={projectTasks.todo} selectedTaskIds={selectedTaskIds} onTaskClick={(taskId, e) => handleTaskClick(taskId, e)} />
+                        <SwimlaneCell id={`${p._id}::processing`} project={p._id} status="processing" tasks={projectTasks.processing} selectedTaskIds={selectedTaskIds} onTaskClick={(taskId, e) => handleTaskClick(taskId, e)} />
+                        <SwimlaneCell id={`${p._id}::dueToday`} project={p._id} status="dueToday" tasks={projectTasks.dueToday} selectedTaskIds={selectedTaskIds} onTaskClick={(taskId, e) => handleTaskClick(taskId, e)} />
+                        <SwimlaneCell id={`${p._id}::done`} project={p._id} status="done" tasks={projectTasks.done} selectedTaskIds={selectedTaskIds} onTaskClick={(taskId, e) => handleTaskClick(taskId, e)} />
                       </div>
                     </div>
                   );
@@ -1482,9 +1650,32 @@ export function KanbanBoard({
         </div>
       
         <DragOverlay>
-          {activeTask ? <TaskCard task={activeTask} hideProjectBadge={viewMode === "status"} hideStatusBadge={viewMode === "status"} /> : null}
+          {activeTask ? (
+            <div className="flex flex-col gap-1">
+              <TaskCard task={activeTask} hideProjectBadge={viewMode === "status"} hideStatusBadge={viewMode === "status"} />
+              {selectedTaskIds.size > 1 && (
+                <div className="text-[10px] text-center text-primary font-bold bg-primary/10 rounded-lg px-2 py-1 border border-primary/30">
+                  +{selectedTaskIds.size - 1} task được chọn
+                </div>
+              )}
+            </div>
+          ) : null}
         </DragOverlay>
       </DndContext>
+      {marquee && (
+        <div
+          className="pointer-events-none fixed z-50"
+          style={{
+            left: Math.min(marquee.startX, marquee.currentX),
+            top: Math.min(marquee.startY, marquee.currentY),
+            width: Math.abs(marquee.currentX - marquee.startX),
+            height: Math.abs(marquee.currentY - marquee.startY),
+            background: 'rgba(59, 130, 246, 0.08)',
+            border: '1px solid rgba(59, 130, 246, 0.4)',
+            borderRadius: 4,
+          }}
+        />
+      )}
     </div>
   );
 }

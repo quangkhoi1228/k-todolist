@@ -100,6 +100,131 @@ export const getTasksByProject = query({
 export const deleteTask = mutation({
   args: { id: v.id("tasks") },
   handler: async (ctx, args) => {
+    // Cascade delete dependencies
+    const deps = await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_task", (q) => q.eq("taskId", args.id))
+      .collect();
+    const depOn = await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_depends_on", (q) => q.eq("dependsOnTaskId", args.id))
+      .collect();
+    for (const dep of [...deps, ...depOn]) {
+      await ctx.db.delete(dep._id);
+    }
     return await ctx.db.delete(args.id);
+  },
+});
+
+// === DEPENDENCY FUNCTIONS ===
+
+export const getAllDependencies = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+  },
+});
+
+export const getTaskDependencies = query({
+  args: { taskId: v.id("tasks") },
+  handler: async (ctx, args) => {
+    // Returns predecessor tasks that this task depends on
+    return await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+      .collect();
+  },
+});
+
+export const getTaskDependents = query({
+  args: { taskId: v.id("tasks") },
+  handler: async (ctx, args) => {
+    // Returns successor tasks that depend on this task
+    return await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_depends_on", (q) => q.eq("dependsOnTaskId", args.taskId))
+      .collect();
+  },
+});
+
+export const createDependency = mutation({
+  args: {
+    userId: v.string(),
+    taskId: v.id("tasks"),
+    dependsOnTaskId: v.id("tasks"),
+    dependencyType: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { userId, taskId, dependsOnTaskId, dependencyType } = args;
+
+    // Prevent self-reference
+    if (taskId === dependsOnTaskId) {
+      throw new Error("Cannot create a dependency on itself");
+    }
+
+    // Check for duplicate
+    const existing = await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_task", (q) => q.eq("taskId", taskId))
+      .collect();
+    if (existing.some((d) => d.dependsOnTaskId === dependsOnTaskId)) {
+      throw new Error("This dependency already exists");
+    }
+
+    // Circular dependency check: walk backwards from dependsOnTaskId
+    // to see if we'd reach taskId, which would create a cycle.
+    let visited = new Set<string>();
+    let queue = [dependsOnTaskId];
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      if (currentId === taskId) {
+        throw new Error("Circular dependency detected");
+      }
+      if (visited.has(currentId)) continue;
+      visited.add(currentId);
+      const deps = await ctx.db
+        .query("taskDependencies")
+        .withIndex("by_depends_on", (q) => q.eq("dependsOnTaskId", currentId))
+        .collect();
+      for (const d of deps) {
+        queue.push(d.taskId);
+      }
+    }
+
+    return await ctx.db.insert("taskDependencies", {
+      userId,
+      taskId,
+      dependsOnTaskId,
+      dependencyType: dependencyType || "finish-to-start",
+    });
+  },
+});
+
+export const deleteDependency = mutation({
+  args: { id: v.id("taskDependencies") },
+  handler: async (ctx, args) => {
+    return await ctx.db.delete(args.id);
+  },
+});
+
+export const isTaskBlocked = query({
+  args: { taskId: v.id("tasks") },
+  handler: async (ctx, args) => {
+    // A task is blocked if any of its predecessors are not done
+    const deps = await ctx.db
+      .query("taskDependencies")
+      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+      .collect();
+
+    for (const dep of deps) {
+      const predecessor = await ctx.db.get(dep.dependsOnTaskId);
+      if (predecessor && predecessor.status !== "done") {
+        return true;
+      }
+    }
+    return false;
   },
 });

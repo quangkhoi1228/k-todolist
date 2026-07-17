@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar } from "lucide-react";
+import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar, Link, Ban } from "lucide-react";
 import { differenceInCalendarDays, format, startOfDay } from "date-fns";
 import {
   DropdownMenu,
@@ -22,6 +22,7 @@ import { NewTaskSheet, TaskData } from "./NewTaskSheet";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
 import { cn } from "@/lib/utils";
 import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 interface Task extends TaskData {
   isOverflowing?: boolean;
@@ -103,7 +104,7 @@ function urgencyLabel(urgency: DueUrgency) {
   return undefined;
 }
 
-export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = false }: { task: Task; hideProjectBadge?: boolean; hideStatusBadge?: boolean }) {
+export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = false, isSelected = false, onTaskClick }: { task: Task; hideProjectBadge?: boolean; hideStatusBadge?: boolean; isSelected?: boolean; onTaskClick?: (e: React.MouseEvent) => void }) {
   const { userId } = useAuth();
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isQuickEditing, setIsQuickEditing] = useState(false);
@@ -116,6 +117,13 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   const [tempTitle, setTempTitle] = useState(task.title);
   const updateTask = useMutation(api.tasks.updateTask);
   const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
+
+  // Dependency queries
+  const isBlocked = useQuery(api.tasks.isTaskBlocked, { taskId: task._id as Id<"tasks"> });
+  const taskDependents = useQuery(api.tasks.getTaskDependents, { taskId: task._id as Id<"tasks"> });
+
+  // Resolve dependent/successor task names from IDs
+  const allTasksQuery = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
 
   const {
     attributes,
@@ -194,6 +202,16 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   const isCompact = hideProjectBadge && hideStatusBadge;
   const hasDate = Boolean(task.startDate || task.endDate);
   const dueUrgency = getDueUrgency(task.endDate, task.status);
+  // Resolve dependent/successor task names from IDs
+  const dependentTaskNames = useMemo(() => {
+    if (!taskDependents || !allTasksQuery) return [];
+    return taskDependents
+      .map((dep) => allTasksQuery.find((t) => t._id === dep.taskId))
+      .filter(Boolean)
+      .map((t) => t!.title);
+  }, [taskDependents, allTasksQuery]);
+  // Is this task blocking other tasks?
+  const isBlocking = taskDependents && taskDependents.length > 0 && !isDone;
   
   // Resolve project name from ID
   const projectName = task.project && task.project !== "none" 
@@ -316,12 +334,20 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
   return (
     <>
-      <div ref={setNodeRef} style={style} className={`${isCompact ? "mb-0.5" : "mb-2.5"} touch-none group/task relative hover:z-30`}>
+      <div ref={setNodeRef} style={style} data-task-card="true" data-task-id={task._id} className={`${isCompact ? "mb-0.5" : "mb-2.5"} touch-none group/task relative hover:z-30`}>
         <Card 
           {...(isQuickEditing ? {} : attributes)} 
           {...(isQuickEditing ? {} : listeners)} 
+          onClick={(e) => {
+            if (isQuickEditing || isTitleEditing || isTimeEditing) return;
+            if (onTaskClick) {
+              onTaskClick(e);
+            }
+          }}
           className={cn(
             "bg-card border-border group-hover/task:border-primary/50 transition-all duration-200",
+            isSelected && "ring-2 ring-primary border-primary",
+            !isSelected && "group-hover/task:ring-1 group-hover/task:ring-primary/30",
             isCompact ? "shadow-sm border rounded-lg group-hover/task:shadow-lg group-hover/task:bg-card" : "shadow-[0_8px_30px_rgb(0,0,0,0.12)] border-[1.5px]",
             !isCompact && "group-hover/task:shadow-[0_8px_30px_rgba(var(--primary),0.15)]",
             task.isOverflowing
@@ -412,6 +438,14 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                   )}
 
                   {task.priority && <PriorityIndicator priority={task.priority} compact />}
+
+                  {/* Blocked badge — compact */}
+                  {isBlocked && (
+                    <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold text-rose-500 bg-rose-500/10 border border-rose-500/25 rounded-full px-1 py-0 leading-none whitespace-nowrap" title="Dang cho cong viec phu thuoc hoan thanh">
+                      <Ban className="w-2 h-2" />
+                      Bi block
+                    </span>
+                  )}
 
                   {datePopover}
                 </div>
@@ -531,6 +565,22 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                 
                 {!isQuickEditing && task.priority && (
                   <PriorityIndicator priority={task.priority} />
+                )}
+
+                {/* Non-compact: Blocked badge */}
+                {!isQuickEditing && isBlocked && (
+                  <Badge variant="outline" className="text-rose-500 border-rose-500/30 bg-rose-500/10 text-[10px] py-0.5 px-2 flex items-center gap-1">
+                    <Ban className="w-3 h-3" />
+                    Bi block
+                  </Badge>
+                )}
+
+                {/* Non-compact: Blocking badge */}
+                {!isQuickEditing && isBlocking && (
+                  <Badge variant="outline" className="text-amber-500 border-amber-500/30 bg-amber-500/10 text-[10px] py-0.5 px-2 flex items-center gap-1" title={dependentTaskNames.length > 0 ? `Dang block: ${dependentTaskNames.slice(0, 3).join(", ")}${dependentTaskNames.length > 3 ? "..." : ""}` : undefined}>
+                    <Link className="w-3 h-3" />
+                    Dang block {taskDependents?.length || 0}
+                  </Badge>
                 )}
                 
                 {!isQuickEditing && !hideStatusBadge && (

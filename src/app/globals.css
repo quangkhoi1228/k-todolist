@@ -240,13 +240,19 @@
   stroke: var(--border) !important;
 }
 
-/* SVG text labels */
+/* Force text visibility - bottom date labels */
 .custom-gantt-container text._9w8d5 {
   fill: var(--foreground) !important;
   font-weight: 500 !important;
+  font-size: 12px !important;
+  pointer-events: auto !important;
 }
+/* Top calendar text (month/year) */
 .custom-gantt-container text._2q1Kt {
-  fill: var(--muted-foreground) !important;
+  fill: var(--foreground) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  pointer-events: auto !important;
 }
 .custom-gantt-container text._3zRJQ {
   fill: var(--primary-foreground) !important;
@@ -284,4 +290,25 @@
 .custom-gantt-container ._35nLX {
   fill: var(--muted) !important;
   stroke: var(--border) !important;
+}
+
+/* Calendar header — ensure all date text is visible and large enough */
+.custom-gantt-container .calendar text {
+  fill: var(--foreground) !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+/* Calendar header rectangle */
+.custom-gantt-container ._35nLX {
+  fill: var(--muted) !important;
+  stroke: var(--border) !important;
+}
+
+/* Force top-of-calendar text (month/year labels) to use visible color */
+.custom-gantt-container ._2q1Kt {
+  fill: var(--foreground) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
 }

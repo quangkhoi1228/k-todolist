@@ -7,9 +7,9 @@ import { Gantt, Task as GanttTask, ViewMode } from "gantt-task-react";
 import "gantt-task-react/dist/index.css";
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { addDays } from "date-fns";
+import { addDays, format } from "date-fns";
 import { NewTaskSheet, TaskData } from "@/components/board/NewTaskSheet";
-import { Id } from "../../../../convex/_generated/dataModel";
+import type { Id } from "../../../../convex/_generated/dataModel";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Briefcase, Circle, Search, Clock, PauseCircle, CheckCircle2, SlidersHorizontal, Plus } from "lucide-react";
@@ -20,6 +20,7 @@ export default function GanttPage() {
   const { userId } = useAuth();
   const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
   const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
+  const allDeps = useQuery(api.tasks.getAllDependencies, userId ? { userId } : "skip");
 
   // Automatically shift overdue processing tasks to today
   useAutoShiftTasks(tasks);
@@ -180,6 +181,16 @@ export default function GanttPage() {
 
       // Add child tasks
       for (const task of groupTasks) {
+        // Build dependencies list: find deps where this task is the successor
+        const depIds: string[] = [];
+        if (allDeps) {
+          for (const dep of allDeps) {
+            if (dep.taskId === task._id) {
+              depIds.push(dep.dependsOnTaskId);
+            }
+          }
+        }
+
         result.push({
           start: new Date(task.startDate!),
           end: new Date(
@@ -198,13 +209,14 @@ export default function GanttPage() {
                 ? 50
                 : 0,
           isDisabled: false,
+          dependencies: depIds.length > 0 ? depIds : undefined,
           styles: getTaskColors(task.status || "todo"),
         });
       }
     }
 
     return result;
-  }, [filteredTasks, projects]);
+  }, [filteredTasks, projects, allDeps]);
 
   const handleDateChange = async (task: GanttTask) => {
     // Skip project group rows (they are disabled)
@@ -254,7 +266,7 @@ export default function GanttPage() {
           {/* Desktop Filters (Hidden on mobile, inline on desktop) */}
           <div className="hidden md:flex items-center gap-1.5 flex-1 flex-wrap">
             {/* Search Bar */}
-            <div className="relative min-w-[10rem] flex-1 max-w-xs">
+            <div className="relative w-32">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
@@ -265,9 +277,9 @@ export default function GanttPage() {
             </div>
 
             {/* Project Filter */}
-            <div className="min-w-[8rem] flex-1 max-w-[14rem]">
+            <div>
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
                   <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Dự án: Tất cả">
                     {filterProject === "all"
@@ -290,9 +302,9 @@ export default function GanttPage() {
             </div>
 
             {/* Status Filter */}
-            <div className="min-w-[8rem] flex-1 max-w-[12rem]">
+            <div>
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
@@ -518,12 +530,12 @@ export default function GanttPage() {
         {tasks === undefined ? (
           <div className="text-neutral-500 text-center py-12 text-xs">Loading Gantt Chart...</div>
         ) : ganttTasks.length > 0 ? (
-          <div className="w-full h-full custom-gantt-container">
+          <div className="w-full h-full custom-gantt-container relative">
             <Gantt
               tasks={ganttTasks}
               viewMode={view}
               listCellWidth="155px"
-              columnWidth={60}
+              columnWidth={view === ViewMode.Day ? 80 : view === ViewMode.Week ? 120 : 100}
               rowHeight={40}
               barFill={55}
               barCornerRadius={6}

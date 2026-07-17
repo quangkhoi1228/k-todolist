@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
@@ -10,9 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { startOfDay, format, addDays } from "date-fns";
-import { Plus, Minus, X } from "lucide-react";
+import { Plus, Minus, X, Search, Link, Unlink, Circle, Clock, CheckCircle2, PauseCircle } from "lucide-react";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
 import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 export interface TaskData {
   _id: string;
@@ -80,6 +81,18 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
   const [isProjectDropdownOpen, setIsProjectDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Dependency state
+  const [dependencySearch, setDependencySearch] = useState("");
+  const [isDependencyDropdownOpen, setIsDependencyDropdownOpen] = useState(false);
+  const dependencyDropdownRef = useRef<HTMLDivElement>(null);
+  const taskDependencies = useQuery(
+    api.tasks.getTaskDependencies,
+    editTask ? { taskId: editTask._id as Id<"tasks"> } : "skip"
+  );
+  const createDependency = useMutation(api.tasks.createDependency);
+  const deleteDependency = useMutation(api.tasks.deleteDependency);
+  const allTasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
+
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
     if (project && project !== "none") {
@@ -104,38 +117,80 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
   }, []);
 
   useEffect(() => {
-    if (open) {
-      /* eslint-disable react-hooks/set-state-in-effect */
-      if (editTask) {
-        setTitle(editTask.title);
-        setEstimatedTime(formatHours(editTask.estimatedTime));
-        setStartDate(editTask.startDate ? format(new Date(editTask.startDate), "yyyy-MM-dd") : "");
-        setEndDate(editTask.endDate ? format(new Date(editTask.endDate), "yyyy-MM-dd'T'HH:mm") : "");
-        setPic(editTask.pic || "");
-        setProject(editTask.project || "");
-        setStatus(editTask.status || "todo");
-        setPriority(editTask.priority || "normal");
-      } else {
-        setTitle("");
-        setEstimatedTime("1h");
-        setStartDate(
-          defaultDate 
-            ? format(defaultDate, "yyyy-MM-dd") 
-            : format(new Date(), "yyyy-MM-dd")
-        );
-        setEndDate(
-          defaultDate 
-            ? format(defaultDate, "yyyy-MM-dd'T'17:30") 
-            : format(new Date(), "yyyy-MM-dd'T'17:30")
-        );
-        setPic("");
-        setProject(defaultProject || "");
-        setStatus(defaultStatus || "todo");
-        setPriority("normal");
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dependencyDropdownRef.current && !dependencyDropdownRef.current.contains(event.target as Node)) {
+        setIsDependencyDropdownOpen(false);
       }
-      /* eslint-enable react-hooks/set-state-in-effect */
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Compute predecessor task ids for quick lookup
+  const predecessorIds = useMemo(() => {
+    if (!taskDependencies) return new Set<string>();
+    return new Set(taskDependencies.map((d) => d.dependsOnTaskId));
+  }, [taskDependencies]);
+
+  // Tasks available to add as dependency (exclude self, exclude already added)
+  const availableDepTasks = useMemo(() => {
+    if (!allTasks || !editTask) return [];
+    return allTasks.filter((t) => {
+      if (t._id === editTask._id) return false;
+      if (predecessorIds.has(t._id)) return false;
+      return t.title.toLowerCase().includes(dependencySearch.toLowerCase());
+    });
+  }, [allTasks, editTask, predecessorIds, dependencySearch]);
+
+  // Resolve predecessor task details from IDs
+  const predecessorTasks = useMemo(() => {
+    if (!taskDependencies || !allTasks) return [];
+    return taskDependencies
+      .map((dep) => allTasks.find((t) => t._id === dep.dependsOnTaskId))
+      .filter(Boolean);
+  }, [taskDependencies, allTasks]);
+
+  // Track if form has been loaded from editTask to prevent reset on re-fetch
+  const isFormLoaded = useRef(false);
+
+  useEffect(() => {
+    if (open) {
+      // Only reload form fields from editTask on initial open, not when editTask ref changes
+      if (!isFormLoaded.current) {
+        if (editTask) {
+          setTitle(editTask.title);
+          setEstimatedTime(formatHours(editTask.estimatedTime));
+          setStartDate(editTask.startDate ? format(new Date(editTask.startDate), "yyyy-MM-dd") : "");
+          setEndDate(editTask.endDate ? format(new Date(editTask.endDate), "yyyy-MM-dd'T'HH:mm") : "");
+          setPic(editTask.pic || "");
+          setProject(editTask.project || "");
+          setStatus(editTask.status || "todo");
+          setPriority(editTask.priority || "normal");
+        } else {
+          setTitle("");
+          setEstimatedTime("1h");
+          setStartDate(
+            defaultDate 
+              ? format(defaultDate, "yyyy-MM-dd") 
+              : format(new Date(), "yyyy-MM-dd")
+          );
+          setEndDate(
+            defaultDate 
+              ? format(defaultDate, "yyyy-MM-dd'T'17:30") 
+              : format(new Date(), "yyyy-MM-dd'T'17:30")
+          );
+          setPic("");
+          setProject(defaultProject || "");
+          setStatus(defaultStatus || "todo");
+          setPriority("normal");
+        }
+        isFormLoaded.current = true;
+      }
+    } else {
+      // Reset loaded flag when dialog closes
+      isFormLoaded.current = false;
     }
-  }, [editTask, open, defaultDate, defaultProject, defaultStatus]);
+  }, [open]);
 
   const handleDelete = async () => {
     if (!editTask) return;
@@ -478,6 +533,131 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
             />
           </div>
 
+          {/* Dependency Section — only shows when editing */}
+          {editTask && (
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Phụ thuộc</Label>
+              
+              {/* List of current predecessor tasks */}
+              <div className="space-y-1.5">
+                {predecessorTasks.length === 0 ? (
+                  <div className="text-[11px] text-muted-foreground/60 italic px-1">
+                    Chưa có công việc phụ thuộc
+                  </div>
+                ) : (
+                  predecessorTasks.map((predTask) => {
+                    if (!predTask) return null;
+                    const predStatus = predTask.status || "todo";
+                    const predDone = predStatus === "done";
+                    return (
+                      <div
+                        key={predTask._id}
+                        className="flex items-center justify-between gap-2 bg-muted/40 border border-border/60 rounded-lg px-3 py-1.5"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            predDone ? "bg-emerald-500" : predStatus === "processing" ? "bg-blue-500" : predStatus === "pending" ? "bg-amber-500" : "bg-neutral-500"
+                          }`} />
+                          <span className="text-[11px] font-medium truncate">{predTask.title}</span>
+                          <span className={`text-[9px] shrink-0 ${
+                            predDone ? "text-emerald-500" : "text-muted-foreground"
+                          }`}>
+                            {predDone ? "Da hoan thanh" : predStatus === "processing" ? "Dang xu ly" : predStatus === "pending" ? "Tam dung" : "Chua thuc hien"}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const dep = taskDependencies?.find(
+                              (d) => d.dependsOnTaskId === predTask._id
+                            );
+                            if (dep) {
+                              await deleteDependency({ id: dep._id as Id<"taskDependencies"> });
+                            }
+                          }}
+                          className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors shrink-0 cursor-pointer"
+                          title="Xóa phụ thuộc"
+                        >
+                          <Unlink className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Add dependency button */}
+              <div className="relative" ref={dependencyDropdownRef}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsDependencyDropdownOpen(!isDependencyDropdownOpen)}
+                  className="w-full h-8 text-xs justify-start gap-2 border-dashed border-border/70 bg-muted/20 hover:bg-muted/40 rounded-lg cursor-pointer"
+                >
+                  <Link className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span className="text-muted-foreground">Thêm công việc phụ thuộc</span>
+                </Button>
+
+                {isDependencyDropdownOpen && (
+                  <div className="absolute z-50 left-0 right-0 mt-1 bg-popover border border-border rounded-xl shadow-xl max-h-[200px] overflow-y-auto p-1.5 space-y-0.5 scrollbar-thin">
+                    <div className="relative px-1 pb-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+                      <Input
+                        placeholder="Tìm công việc..."
+                        value={dependencySearch}
+                        onChange={(e) => setDependencySearch(e.target.value)}
+                        className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                      />
+                    </div>
+                    {availableDepTasks.length === 0 ? (
+                      <div className="text-center py-3 text-[10px] text-muted-foreground/60 italic">
+                        Không tìm thấy công việc
+                      </div>
+                    ) : (
+                      availableDepTasks.map((t) => {
+                        const depStatus = t.status || "todo";
+                        const statusLabel = depStatus === "done" ? "Da hoan thanh" : depStatus === "processing" ? "Dang xu ly" : depStatus === "pending" ? "Tam dung" : "Chua thuc hien";
+                        return (
+                          <button
+                            key={t._id}
+                            type="button"
+                            onClick={async () => {
+                              if (!userId) return;
+                              try {
+                                await createDependency({
+                                  userId,
+                                  taskId: editTask!._id as Id<"tasks">,
+                                  dependsOnTaskId: t._id as Id<"tasks">,
+                                });
+                                setIsDependencyDropdownOpen(false);
+                                setDependencySearch("");
+                              } catch (err: any) {
+                                alert(err.message || "Không thể thêm phụ thuộc");
+                              }
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 text-xs font-medium rounded-lg hover:bg-muted/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                          >
+                            <span className="truncate">{t.title}</span>
+                            <span className={`text-[9px] shrink-0 ${
+                              depStatus === "done" ? "text-emerald-500" :
+                              depStatus === "processing" ? "text-blue-500" :
+                              depStatus === "pending" ? "text-amber-500" :
+                              "text-neutral-500"
+                            }`}>
+                              {statusLabel}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Status */}
           <div className="space-y-2">
             <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Trạng thái</Label>
             <div className="flex flex-wrap gap-2 pt-1">
