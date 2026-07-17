@@ -1034,11 +1034,11 @@ export function KanbanBoard({
             </div>
 
             {/* Project Filter */}
-            <div className="w-full sm:w-auto sm:min-w-[7.5rem] sm:max-w-[11rem]">
+            <div className="w-full sm:w-auto sm:min-w-36">
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                   <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
-                  <SelectValue placeholder="Dự án: Tất cả">
+                  <SelectValue placeholder="Dự án: Tất cả" className="flex items-center gap-1 truncate min-w-0">
                     {filterProject === "all"
                       ? "Dự án: Tất cả"
                       : filterProject === "none"
@@ -1059,33 +1059,33 @@ export function KanbanBoard({
             </div>
 
             {/* Status Filter */}
-            <div className="w-full sm:w-28">
+            <div className="w-full sm:min-w-32">
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
                 <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
-                        <Circle className="w-2.5 h-2.5 text-muted-foreground" />
+                        <Circle className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
                         Trạng thái: Tất cả
                       </span>
                     ) : filterStatus === "todo" ? (
                       <span className="flex items-center gap-1 text-neutral-500">
-                        <Circle className="w-2.5 h-2.5 text-neutral-400" />
+                        <Circle className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
                         Chưa thực hiện
                       </span>
                     ) : filterStatus === "processing" ? (
                       <span className="flex items-center gap-1 text-blue-500">
-                        <Clock className="w-2.5 h-2.5 animate-pulse" />
+                        <Clock className="w-2.5 h-2.5 animate-pulse shrink-0" />
                         Đang xử lý
                       </span>
                     ) : filterStatus === "pending" ? (
                       <span className="flex items-center gap-1 text-amber-500">
-                        <PauseCircle className="w-2.5 h-2.5" />
+                        <PauseCircle className="w-2.5 h-2.5 shrink-0" />
                         Tạm dừng
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 text-emerald-500">
-                        <CheckCircle2 className="w-2.5 h-2.5" />
+                        <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
                         Đã hoàn thành
                       </span>
                     )}
@@ -1094,31 +1094,31 @@ export function KanbanBoard({
                 <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
                   <SelectItem value="all" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1">
-                      <Circle className="w-3 h-3 text-muted-foreground" />
+                      <Circle className="w-3 h-3 text-muted-foreground shrink-0" />
                       Trạng thái: Tất cả
                     </span>
                   </SelectItem>
                   <SelectItem value="todo" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-neutral-500">
-                      <Circle className="w-3 h-3 text-neutral-400" />
+                      <Circle className="w-3 h-3 text-neutral-400 shrink-0" />
                       Chưa thực hiện
                     </span>
                   </SelectItem>
                   <SelectItem value="processing" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-blue-500">
-                      <Clock className="w-3 h-3" />
+                      <Clock className="w-3 h-3 shrink-0" />
                       Đang xử lý
                     </span>
                   </SelectItem>
                   <SelectItem value="pending" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-amber-500">
-                      <PauseCircle className="w-3 h-3" />
+                      <PauseCircle className="w-3 h-3 shrink-0" />
                       Tạm dừng
                     </span>
                   </SelectItem>
                   <SelectItem value="done" className="text-[10px] cursor-pointer">
                     <span className="flex items-center gap-1 text-emerald-500">
-                      <CheckCircle2 className="w-3 h-3" />
+                      <CheckCircle2 className="w-3 h-3 shrink-0" />
                       Đã hoàn thành
                     </span>
                   </SelectItem>
@@ -1128,7 +1128,7 @@ export function KanbanBoard({
 
             {/* Sort Select */}
             {viewMode === "status" && (
-              <div className="w-full sm:w-28">
+              <div className="w-full sm:min-w-32">
                 <Select value={sortBy} onValueChange={(val) => setSortBy(val as any)}>
                   <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                     <SelectValue placeholder="Sắp xếp: Mặc định">
@@ -1241,11 +1241,11 @@ export function KanbanBoard({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {/* Project Filter */}
               <div className="w-full">
                 <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                     <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                     <SelectValue placeholder="Dự án: Tất cả">
                       {filterProject === "all"
@@ -1274,27 +1274,27 @@ export function KanbanBoard({
                     <SelectValue placeholder="Trạng thái: Tất cả">
                       {filterStatus === "all" ? (
                         <span className="flex items-center gap-1">
-                          <Circle className="w-2.5 h-2.5 text-muted-foreground" />
+                          <Circle className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
                           Trạng thái: Tất cả
                         </span>
                       ) : filterStatus === "todo" ? (
                         <span className="flex items-center gap-1 text-neutral-500">
-                          <Circle className="w-2.5 h-2.5 text-neutral-400" />
+                          <Circle className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
                           Chưa thực hiện
                         </span>
                       ) : filterStatus === "processing" ? (
                         <span className="flex items-center gap-1 text-blue-500">
-                          <Clock className="w-2.5 h-2.5 animate-pulse" />
+                          <Clock className="w-2.5 h-2.5 animate-pulse shrink-0" />
                           Đang xử lý
                         </span>
                       ) : filterStatus === "pending" ? (
                         <span className="flex items-center gap-1 text-amber-500">
-                          <PauseCircle className="w-2.5 h-2.5" />
+                          <PauseCircle className="w-2.5 h-2.5 shrink-0" />
                           Tạm dừng
                         </span>
                       ) : (
                         <span className="flex items-center gap-1 text-emerald-500">
-                          <CheckCircle2 className="w-2.5 h-2.5" />
+                          <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
                           Đã hoàn thành
                         </span>
                       )}
@@ -1303,31 +1303,31 @@ export function KanbanBoard({
                   <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
                     <SelectItem value="all" className="text-[10px] cursor-pointer">
                       <span className="flex items-center gap-1">
-                        <Circle className="w-3 h-3 text-muted-foreground" />
+                        <Circle className="w-3 h-3 text-muted-foreground shrink-0" />
                         Trạng thái: Tất cả
                       </span>
                     </SelectItem>
                     <SelectItem value="todo" className="text-[10px] cursor-pointer">
                       <span className="flex items-center gap-1 text-neutral-500">
-                        <Circle className="w-3 h-3 text-neutral-400" />
+                        <Circle className="w-3 h-3 text-neutral-400 shrink-0" />
                         Chưa thực hiện
                       </span>
                     </SelectItem>
                     <SelectItem value="processing" className="text-[10px] cursor-pointer">
                       <span className="flex items-center gap-1 text-blue-500">
-                        <Clock className="w-3 h-3" />
+                        <Clock className="w-3 h-3 shrink-0" />
                         Đang xử lý
                       </span>
                     </SelectItem>
                     <SelectItem value="pending" className="text-[10px] cursor-pointer">
                       <span className="flex items-center gap-1 text-amber-500">
-                        <PauseCircle className="w-3 h-3" />
+                        <PauseCircle className="w-3 h-3 shrink-0" />
                         Tạm dừng
                       </span>
                     </SelectItem>
                     <SelectItem value="done" className="text-[10px] cursor-pointer">
                       <span className="flex items-center gap-1 text-emerald-500">
-                        <CheckCircle2 className="w-3 h-3" />
+                        <CheckCircle2 className="w-3 h-3 shrink-0" />
                         Đã hoàn thành
                       </span>
                     </SelectItem>
