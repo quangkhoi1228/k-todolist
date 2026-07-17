@@ -70,10 +70,34 @@ export const deleteProject = mutation({
       await ctx.db.delete(task._id);
     }
 
-    // 2. Delete the project itself
+    // 2. Fetch and delete all notes associated with this project
+    const notes = await ctx.db
+      .query("notes")
+      .withIndex("by_project", (q) => q.eq("projectId", args.id))
+      .collect();
+
+    for (const note of notes) {
+      // Recursively delete child notes first
+      await deleteAllChildNotes(ctx, note._id);
+      await ctx.db.delete(note._id);
+    }
+
+    // 3. Delete the project itself
     return await ctx.db.delete(args.id);
   },
 });
+
+async function deleteAllChildNotes(ctx: any, noteId: string) {
+  const children = await ctx.db
+    .query("notes")
+    .withIndex("by_parent", (q) => q.eq("parentNoteId", noteId))
+    .collect();
+
+  for (const child of children) {
+    await deleteAllChildNotes(ctx, child._id);
+    await ctx.db.delete(child._id);
+  }
+}
 
 export const updateProjectOrders = mutation({
   args: {

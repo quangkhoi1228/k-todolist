@@ -32,13 +32,19 @@ import { NewTaskSheet } from "./NewTaskSheet";
 import { ProjectDetailPanel } from "./ProjectDetailPanel";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAuth } from "@clerk/nextjs";
+import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
 
 const KANBAN_COLUMN_WIDTH = 320;
 type BoardColumn = "todo" | "processing" | "dueToday" | "done";
 
 function isDueToday(task: { endDate?: number | null; status?: string }, todayStart = startOfDay(new Date()).getTime()) {
   if (!task.endDate || task.status === "done") return false;
-  return startOfDay(new Date(task.endDate)).getTime() === todayStart;
+  return startOfDay(new Date(task.endDate)).getTime() <= todayStart;
+}
+
+function isOverdue(task: { endDate?: number | null; status?: string }, todayStart = startOfDay(new Date()).getTime()) {
+  if (!task.endDate || task.status === "done") return false;
+  return startOfDay(new Date(task.endDate)).getTime() < todayStart;
 }
 
 function getBoardColumn(task: { endDate?: number | null; status?: string }): BoardColumn {
@@ -184,9 +190,14 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
   const createTask = useMutation(api.tasks.createTask);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
-  const [endDate, setEndDate] = useState(() => format(new Date(), "yyyy-MM-dd'T'17:30"));
+  const [endDate, setEndDate] = useState<number>(() => {
+    const d = new Date();
+    d.setHours(17, 30, 0, 0);
+    return d.getTime();
+  });
   const [priority, setPriority] = useState<"low" | "normal" | "high">("normal");
   const [isSaving, setIsSaving] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -202,15 +213,15 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
         startDate: startVal,
         endDate: isDueTodayColumn
           ? dueTodayEndTimestamp()
-          : endDate
-            ? new Date(endDate).getTime()
-            : startVal + 24 * 3600 * 1000,
+          : endDate,
         project: project === "none" ? undefined : (project as any),
         status: isDueTodayColumn ? "todo" : status,
         priority,
       });
       setTitle("");
-      setEndDate(format(new Date(), "yyyy-MM-dd'T'17:30"));
+      const d = new Date();
+      d.setHours(17, 30, 0, 0);
+      setEndDate(d.getTime());
       setPriority("normal");
       setOpen(false);
     } catch (err) {
@@ -256,13 +267,19 @@ function SwimlaneCell({ id, project, status, tasks }: SwimlaneCellProps) {
                     Hôm nay
                   </div>
                 ) : (
-                  <Input
-                    type="datetime-local"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="h-8 text-xs bg-background/50 border-border/60 rounded-lg px-2 cursor-pointer text-muted-foreground"
-                    onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
-                  />
+                  <DatePickerPopover
+                    date={endDate}
+                    onDateChange={(ts) => setEndDate(ts || Date.now())}
+                    showTime={true}
+                    placeholder="Chọn hạn chót"
+                    side="bottom"
+                    align="start"
+                  >
+                    <div className="flex items-center justify-between w-full h-8 text-xs bg-background/50 border border-border/60 rounded-lg px-2 cursor-pointer text-muted-foreground hover:text-foreground hover:border-primary/30 transition-colors">
+                      <span>{endDate ? format(new Date(endDate), "dd/MM HH:mm") : "Chọn hạn chót"}</span>
+                      <CalendarIcon className="w-3 h-3 shrink-0" />
+                    </div>
+                  </DatePickerPopover>
                 )}
               </div>
 
@@ -1356,7 +1373,14 @@ export function KanbanBoard({
                   { status: "processing", label: "Đang xử lý", colorClass: "text-blue-500 bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/10 dark:border-blue-500/20" },
                   { status: "dueToday", label: "Đến hạn", colorClass: "text-amber-500 bg-amber-500/5 dark:bg-amber-500/10 border-amber-500/10 dark:border-amber-500/20" },
                   { status: "done", label: "Đã hoàn thành", colorClass: "text-emerald-500 bg-emerald-500/5 dark:bg-emerald-500/10 border-emerald-500/10 dark:border-emerald-500/20" },
-                ].map(col => (
+                ].map(col => {
+                  const overdueCount = col.status === "dueToday"
+                    ? Object.values(tasksByProjectAndStatus).reduce((sum, cols) => {
+                        const dueTasks = cols.dueToday || [];
+                        return sum + dueTasks.filter(t => isOverdue(t)).length;
+                      }, 0)
+                    : 0;
+                  return (
                   <div 
                     key={col.status}
                     className={`shrink-0 py-1 px-2 rounded-lg border font-bold text-[10px] uppercase tracking-wider flex items-center justify-between gap-1 shadow-sm ${col.colorClass}`}
@@ -1369,6 +1393,12 @@ export function KanbanBoard({
                     )}
                     
                     <span className="flex-1 text-center">{col.label}</span>
+
+                    {overdueCount > 0 && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20 font-extrabold normal-case shrink-0 pointer-events-auto">
+                        {overdueCount} quá hạn
+                      </span>
+                    )}
                     
                     {col.status === "done" ? (
                       <button
@@ -1383,7 +1413,8 @@ export function KanbanBoard({
                       <div className="w-1 shrink-0" />
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Project sections */}

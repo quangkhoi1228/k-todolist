@@ -15,13 +15,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { NewTaskSheet, TaskData } from "./NewTaskSheet";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
 import { cn } from "@/lib/utils";
+import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
 
 interface Task extends TaskData {
   isOverflowing?: boolean;
@@ -41,7 +41,7 @@ function getDueUrgency(endDate?: number | null, status?: string): DueUrgency {
 }
 
 const urgencyDateClass: Record<Exclude<DueUrgency, null>, string> = {
-  overdue: "text-orange-600 dark:text-orange-400 bg-orange-500/10 border-orange-500/30",
+  overdue: "text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/30",
   today: "text-orange-500 dark:text-orange-400 bg-orange-500/8 border-orange-500/25",
   soon: "text-amber-600 dark:text-amber-400 bg-amber-500/8 border-amber-500/25",
 };
@@ -114,12 +114,8 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   const [tempTime, setTempTime] = useState(formatHours(task.estimatedTime));
   const [isTitleEditing, setIsTitleEditing] = useState(false);
   const [tempTitle, setTempTitle] = useState(task.title);
-  const [isDateEditing, setIsDateEditing] = useState(false);
-  const [tempStartDate, setTempStartDate] = useState("");
-  const [tempEndDate, setTempEndDate] = useState("");
-
   const updateTask = useMutation(api.tasks.updateTask);
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
 
   const {
     attributes,
@@ -128,7 +124,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: task._id, data: { type: "Task", task }, disabled: isQuickEditing || isDateEditing || isTitleEditing || isTimeEditing });
+  } = useSortable({ id: task._id, data: { type: "Task", task }, disabled: isQuickEditing || isTitleEditing || isTimeEditing });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -180,40 +176,24 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     setIsTitleEditing(false);
   };
 
-  const openDateEditor = () => {
-    setTempStartDate(task.startDate ? format(new Date(task.startDate), "yyyy-MM-dd") : "");
-    setTempEndDate(
-      task.endDate
-        ? format(new Date(task.endDate), "yyyy-MM-dd'T'HH:mm")
-        : task.startDate
-          ? format(new Date(task.startDate), "yyyy-MM-dd'T'17:30")
-          : format(new Date(), "yyyy-MM-dd'T'17:30")
-    );
-    setIsDateEditing(true);
-  };
-
-  const handleDateOpenChange = (open: boolean) => {
-    if (open) openDateEditor();
-    else setIsDateEditing(false);
-  };
-
-  const handleSaveDates = async () => {
-    const startTimestamp = tempStartDate ? startOfDay(new Date(tempStartDate)).getTime() : null;
-    const endTimestamp = tempEndDate ? new Date(tempEndDate).getTime() : null;
+  const handleUpdateDates = async (start: number | null) => {
     await updateTask({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       id: task._id as any,
-      startDate: startTimestamp,
-      endDate: endTimestamp,
+      startDate: start,
     });
-    setIsDateEditing(false);
+  };
+
+  const handleUpdateEndDate = async (end: number | null) => {
+    await updateTask({
+      id: task._id as any,
+      endDate: end,
+    });
   };
 
   const isDone = task.status === "done";
   const isCompact = hideProjectBadge && hideStatusBadge;
   const hasDate = Boolean(task.startDate || task.endDate);
   const dueUrgency = getDueUrgency(task.endDate, task.status);
-  const forceExpanded = isTitleEditing || isDateEditing || isTimeEditing;
   
   // Resolve project name from ID
   const projectName = task.project && task.project !== "none" 
@@ -226,142 +206,77 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     dueUrgency
       ? urgencyDateClass[dueUrgency]
       : "text-muted-foreground/80 bg-muted/30 border-border/40 hover:bg-muted/50 hover:border-primary/30",
-    !hasDate && !isDateEditing && "opacity-0 max-h-0 py-0 px-0 border-transparent overflow-hidden pointer-events-none group-hover/task:opacity-100 group-hover/task:max-h-8 group-hover/task:py-0.5 group-hover/task:px-1.5 group-hover/task:border-dashed group-hover/task:border-border/60 group-hover/task:pointer-events-auto group-hover/task:bg-muted/20 group-hover/task:text-muted-foreground"
+    !hasDate && "opacity-0 max-h-0 py-0 px-0 border-transparent overflow-hidden pointer-events-none group-hover/task:opacity-100 group-hover/task:max-h-8 group-hover/task:py-0.5 group-hover/task:px-1.5 group-hover/task:border-dashed group-hover/task:border-border/60 group-hover/task:pointer-events-auto group-hover/task:bg-muted/20 group-hover/task:text-muted-foreground"
   );
 
   const datePopover = (
-    <Popover open={isDateEditing} onOpenChange={handleDateOpenChange}>
-      <PopoverTrigger
-        type="button"
-        className={dateTriggerClass}
-        title={urgencyLabel(dueUrgency) ?? (hasDate ? "Sửa ngày" : "Thêm ngày")}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
-        {hasDate ? (
-          isCompact ? (
-            <span>{formatCompactDates(task.startDate, task.endDate)}</span>
-          ) : (
-            <>
-              {task.startDate && <span>{format(new Date(task.startDate), "dd/MM/yyyy")}</span>}
-              {task.startDate && task.endDate && <span className="opacity-50">—</span>}
-              {task.endDate && <span>{format(new Date(task.endDate), "dd/MM/yyyy HH:mm")}</span>}
-            </>
-          )
-        ) : (
-          <span className="italic">Thêm ngày</span>
-        )}
-      </PopoverTrigger>
-      <PopoverContent
-        side="bottom"
+    <div className="flex items-center gap-1">
+      <DatePickerPopover
+        date={task.startDate}
+        onDateChange={handleUpdateDates}
+        placeholder="Bắt đầu"
+        label="Ngày bắt đầu"
+        allowClear={true}
+        side="top"
         align="start"
-        sideOffset={8}
-        className="w-80 p-3.5 bg-card/98 backdrop-blur-xl border border-border shadow-2xl rounded-xl z-[100]"
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
+        triggerClassName={dateTriggerClass}
       >
-        <div className="flex flex-col gap-3">
-          <div className="text-sm font-bold text-foreground flex items-center gap-1.5">
-            <Calendar className="w-4 h-4 text-primary" />
-            {hasDate ? "Chỉnh sửa ngày" : "Thêm ngày cho công việc"}
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-semibold text-muted-foreground">Ngày bắt đầu</label>
-            <div className="flex items-center gap-1.5">
-              <Input
-                type="date"
-                value={tempStartDate}
-                onChange={(e) => {
-                  setTempStartDate(e.target.value);
-                  if (e.target.value && tempEndDate && new Date(e.target.value) > new Date(tempEndDate)) {
-                    setTempEndDate(`${e.target.value}T17:30`);
-                  }
-                }}
-                onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
-                className="h-9 text-sm bg-background border-border rounded-lg cursor-pointer"
-              />
-              {tempStartDate && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
-                  onClick={() => setTempStartDate("")}
-                  title="Xóa ngày bắt đầu"
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-semibold text-muted-foreground">Hạn chót</label>
-            <div className="flex items-center gap-1.5">
-              <Input
-                type="datetime-local"
-                value={tempEndDate}
-                onChange={(e) => setTempEndDate(e.target.value)}
-                onClick={(e) => { try { e.currentTarget.showPicker(); } catch { /* unsupported */ } }}
-                className="h-9 text-sm bg-background border-border rounded-lg cursor-pointer flex-1"
-              />
-              {tempEndDate && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
-                  onClick={() => setTempEndDate("")}
-                  title="Xóa hạn chót"
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 pt-1 border-t border-border/60">
-            <Button
-              type="button"
-              variant="ghost"
-              className="flex-1 h-9 cursor-pointer"
-              onClick={() => setIsDateEditing(false)}
-            >
-              Hủy
-            </Button>
-            <Button
-              type="button"
-              className="flex-1 h-9 font-semibold cursor-pointer gap-1.5"
-              onClick={() => void handleSaveDates()}
-            >
-              <Check className="w-4 h-4" />
-              Lưu ngày
-            </Button>
-          </div>
+        <div className={dateTriggerClass} title={urgencyLabel(dueUrgency) ?? (hasDate ? "Sửa ngày" : "Thêm ngày")}>
+          <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
+          {task.startDate ? (
+            <span className="whitespace-nowrap">{format(new Date(task.startDate), "dd/MM")}</span>
+          ) : task.endDate ? null : (
+            <span className="italic">Thêm ngày</span>
+          )}
         </div>
-      </PopoverContent>
-    </Popover>
+      </DatePickerPopover>
+
+      {task.startDate && task.endDate && (
+        <span className="text-[10px] text-muted-foreground/50">—</span>
+      )}
+
+      <DatePickerPopover
+        date={task.endDate}
+        onDateChange={handleUpdateEndDate}
+        placeholder="Hạn chót"
+        showTime={true}
+        label="Hạn chót"
+        allowClear={true}
+        side="top"
+        align={task.startDate ? "end" : "start"}
+        triggerClassName={dateTriggerClass}
+      >
+        <div className={dateTriggerClass} title={urgencyLabel(dueUrgency) ?? (hasDate ? "Sửa ngày" : "Thêm ngày")}>
+          <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
+          {task.endDate ? (
+            <span className="whitespace-nowrap">{format(new Date(task.endDate), "dd/MM HH:mm")}</span>
+          ) : task.startDate ? null : (
+            <span className="italic">Thêm ngày</span>
+          )}
+        </div>
+      </DatePickerPopover>
+    </div>
   );
 
   return (
     <>
       <div ref={setNodeRef} style={style} className={`${isCompact ? "mb-0.5" : "mb-2.5"} touch-none group/task relative hover:z-30`}>
         <Card 
-          {...(isQuickEditing || isDateEditing ? {} : attributes)} 
-          {...(isQuickEditing || isDateEditing ? {} : listeners)} 
+          {...(isQuickEditing ? {} : attributes)} 
+          {...(isQuickEditing ? {} : listeners)} 
           className={cn(
             "bg-card border-border group-hover/task:border-primary/50 transition-all duration-200",
             isCompact ? "shadow-sm border rounded-lg group-hover/task:shadow-lg group-hover/task:bg-card" : "shadow-[0_8px_30px_rgb(0,0,0,0.12)] border-[1.5px]",
             !isCompact && "group-hover/task:shadow-[0_8px_30px_rgba(var(--primary),0.15)]",
             task.isOverflowing
               ? "border-destructive shadow-[0_0_15px_rgba(239,68,68,0.15)] group-hover/task:border-destructive"
-              : isCompact
-                ? "group-hover/task:shadow-md"
-                : "group-hover/task:shadow-lg group-hover/task:-translate-y-0.5",
+              : dueUrgency === "overdue"
+                ? "border-l-[3px] border-l-red-500 dark:border-l-red-400"
+                : isCompact
+                  ? "group-hover/task:shadow-md"
+                  : "group-hover/task:shadow-lg group-hover/task:-translate-y-0.5",
             isDone && "opacity-60 grayscale-[0.5]",
-            (isQuickEditing || isTitleEditing || isDateEditing) && "ring-2 ring-primary border-primary"
+            (isQuickEditing || isTitleEditing) && "ring-2 ring-primary border-primary"
           )}
         >
           {isCompact ? (

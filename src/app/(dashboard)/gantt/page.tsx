@@ -5,7 +5,7 @@ import { api } from "../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { Gantt, Task as GanttTask, ViewMode } from "gantt-task-react";
 import "gantt-task-react/dist/index.css";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { addDays } from "date-fns";
 import { NewTaskSheet, TaskData } from "@/components/board/NewTaskSheet";
@@ -19,7 +19,7 @@ import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
 export default function GanttPage() {
   const { userId } = useAuth();
   const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
 
   // Automatically shift overdue processing tasks to today
   useAutoShiftTasks(tasks);
@@ -30,6 +30,26 @@ export default function GanttPage() {
   const [view, setView] = useState<ViewMode>(ViewMode.Day);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<TaskData | undefined>(undefined);
+
+  const ganttContainerRef = useRef<HTMLDivElement>(null);
+  const [ganttHeight, setGanttHeight] = useState(0);
+
+  useEffect(() => {
+    const el = ganttContainerRef.current;
+    if (!el) return;
+    let timeout: ReturnType<typeof setTimeout>;
+    const obs = new ResizeObserver(([entry]) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        setGanttHeight(Math.floor(entry.contentRect.height));
+      }, 100);
+    });
+    obs.observe(el);
+    return () => {
+      obs.disconnect();
+      clearTimeout(timeout);
+    };
+  }, []);
 
   // Filtering states
   const [showFilters, setShowFilters] = useState(false);
@@ -108,21 +128,87 @@ export default function GanttPage() {
   }, [tasks, projects, searchQuery, filterProject, filterStatus]);
 
   const ganttTasks: GanttTask[] = useMemo(() => {
-    return filteredTasks
-      .filter((task) => task.startDate && task.endDate)
-      .map((task) => ({
-        start: new Date(task.startDate!),
-        end: new Date(task.endDate! > task.startDate! ? task.endDate! : addDays(new Date(task.startDate!), 1).getTime()), // ensure end is after start for display
-        name: task.title,
-        id: task._id,
-        type: "task",
-        progress: task.status === "done" ? 100 : task.status === "processing" ? 50 : 0,
-        isDisabled: false,
-        styles: getTaskColors(task.status || "todo"),
+    const tasksWithDates = filteredTasks.filter(
+      (task) => task.startDate && task.endDate
+    );
+
+    // Group tasks by project
+    const projectGroups = new Map<string, typeof tasksWithDates>();
+    for (const task of tasksWithDates) {
+      const projId = task.project || "none";
+      const group = projectGroups.get(projId) || [];
+      group.push(task);
+      projectGroups.set(projId, group);
+    }
+
+    const result: GanttTask[] = [];
+
+    for (const [projId, groupTasks] of projectGroups) {
+      const project = projects?.find((p) => p._id === projId);
+      const projectName = project?.name || "Không có dự án";
+      const projectId = `proj-${projId}`;
+
+      // Compute project date range from children
+      const dates = groupTasks.map((t) => ({
+        start: new Date(t.startDate!),
+        end: new Date(t.endDate!),
       }));
-  }, [filteredTasks]);
+      const minStart = new Date(Math.min(...dates.map((d) => d.start.getTime())));
+      const maxEnd = new Date(Math.max(...dates.map((d) => d.end.getTime())));
+
+      // Add project group header
+      result.push({
+        start: minStart,
+        end: maxEnd,
+        name: `📁 ${projectName}`,
+        id: projectId,
+        type: "project",
+        progress: 0,
+        isDisabled: true,
+        hideChildren: false,
+        styles: {
+          backgroundColor: project?.color
+            ? `${project.color}30`
+            : "rgba(168, 85, 247, 0.15)",
+          backgroundSelectedColor: project?.color
+            ? `${project.color}50`
+            : "rgba(168, 85, 247, 0.25)",
+          progressColor: project?.color || "#a855f7",
+          progressSelectedColor: project?.color || "#9333ea",
+        },
+      });
+
+      // Add child tasks
+      for (const task of groupTasks) {
+        result.push({
+          start: new Date(task.startDate!),
+          end: new Date(
+            task.endDate! > task.startDate!
+              ? task.endDate!
+              : addDays(new Date(task.startDate!), 1).getTime()
+          ),
+          name: task.title,
+          id: task._id,
+          parent: projectId,
+          type: "task",
+          progress:
+            task.status === "done"
+              ? 100
+              : task.status === "processing"
+                ? 50
+                : 0,
+          isDisabled: false,
+          styles: getTaskColors(task.status || "todo"),
+        });
+      }
+    }
+
+    return result;
+  }, [filteredTasks, projects]);
 
   const handleDateChange = async (task: GanttTask) => {
+    // Skip project group rows (they are disabled)
+    if (task.type === "project" || task.isDisabled) return;
     try {
       await updateTask({
         id: task.id as Id<"tasks">,
@@ -135,6 +221,8 @@ export default function GanttPage() {
   };
 
   const handleDoubleClick = (task: GanttTask) => {
+    // Skip project group rows
+    if (task.type === "project") return;
     const originalTask = tasks?.find((t) => t._id === task.id);
     if (originalTask) {
       setSelectedTask(originalTask);
@@ -164,22 +252,22 @@ export default function GanttPage() {
           </div>
 
           {/* Desktop Filters (Hidden on mobile, inline on desktop) */}
-          <div className="hidden md:flex items-center gap-1.5 flex-1">
+          <div className="hidden md:flex items-center gap-1.5 flex-1 flex-wrap">
             {/* Search Bar */}
-            <div className="relative w-full sm:w-44">
+            <div className="relative min-w-[10rem] flex-1 max-w-xs">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-7 min-h-7 h-auto py-1.5 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
               />
             </div>
 
             {/* Project Filter */}
-            <div className="w-full sm:w-auto sm:min-w-[7.5rem] sm:max-w-[11rem]">
+            <div className="min-w-[8rem] flex-1 max-w-[14rem]">
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                   <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Dự án: Tất cả">
                     {filterProject === "all"
@@ -202,9 +290,9 @@ export default function GanttPage() {
             </div>
 
             {/* Status Filter */}
-            <div className="w-full sm:w-28">
+            <div className="min-w-[8rem] flex-1 max-w-[12rem]">
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
@@ -323,15 +411,15 @@ export default function GanttPage() {
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-7 min-h-7 h-auto py-1.5 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col sm:grid sm:grid-cols-2 gap-2">
               {/* Project Filter */}
               <div className="w-full">
                 <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                     <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
                     <SelectValue placeholder="Dự án: Tất cả">
                       {filterProject === "all"
@@ -356,7 +444,7 @@ export default function GanttPage() {
               {/* Status Filter */}
               <div className="w-full">
                 <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                  <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
                     <SelectValue placeholder="Trạng thái: Tất cả">
                       {filterStatus === "all" ? (
                         <span className="flex items-center gap-1">
@@ -426,16 +514,20 @@ export default function GanttPage() {
       </div>
 
       {/* Gantt Body */}
-      <div className="flex-1 min-h-0 glass-panel rounded-2xl overflow-hidden p-4">
+      <div ref={ganttContainerRef} className="flex-1 min-h-0 glass-panel rounded-2xl overflow-hidden p-4">
         {tasks === undefined ? (
           <div className="text-neutral-500 text-center py-12 text-xs">Loading Gantt Chart...</div>
         ) : ganttTasks.length > 0 ? (
-          <div className="h-full w-full custom-gantt-container">
+          <div className="w-full h-full custom-gantt-container">
             <Gantt
               tasks={ganttTasks}
               viewMode={view}
               listCellWidth="155px"
               columnWidth={60}
+              rowHeight={40}
+              barFill={55}
+              barCornerRadius={6}
+              ganttHeight={ganttHeight}
               onDateChange={handleDateChange}
               onDoubleClick={handleDoubleClick}
               todayColor="rgba(168, 85, 247, 0.1)"

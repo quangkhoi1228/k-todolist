@@ -10,7 +10,7 @@ export default function BoardPage() {
   const { userId } = useAuth();
   
   const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
   
   // Automatically shift overdue processing tasks to today
   useAutoShiftTasks(tasks);

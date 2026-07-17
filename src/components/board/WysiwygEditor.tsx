@@ -5,7 +5,6 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import Placeholder from "@tiptap/extension-placeholder";
-import LinkExtension from "@tiptap/extension-link";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
 import {
@@ -86,12 +85,6 @@ export function WysiwygEditor({ content, onChange, placeholder }: WysiwygEditorP
       Placeholder.configure({
         placeholder: placeholder || "Bắt đầu viết...",
       }),
-      LinkExtension.configure({
-        openOnClick: true,
-        HTMLAttributes: {
-          class: "text-blue-600 dark:text-blue-400 underline hover:no-underline cursor-pointer",
-        },
-      }),
     ],
     content,
     contentType: "markdown",
@@ -153,6 +146,15 @@ export function WysiwygEditor({ content, onChange, placeholder }: WysiwygEditorP
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [colorPickerOpen]);
+
+  // Sync content prop to editor when it changes (e.g. after data loads)
+  useEffect(() => {
+    if (!editor) return;
+    const currentMd = editor.getMarkdown();
+    if (currentMd !== content) {
+      editor.commands.setContent(content, { emitUpdate: false });
+    }
+  }, [editor, content]);
 
   if (!editor) return null;
 

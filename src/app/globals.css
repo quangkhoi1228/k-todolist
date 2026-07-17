@@ -165,7 +165,17 @@
   }
 }
 
-/* Gantt Chart Custom Theme Sync */
+/* Gantt Chart Layout */
+.custom-gantt-container > div {
+  height: 100% !important;
+}
+
+/* Gantt Chart Layout */
+.custom-gantt-container > div {
+  height: 100% !important;
+}
+
+/* Gantt Chart Theme */
 .custom-gantt-container ._3_ygE,
 .custom-gantt-container ._3ZbQT {
   border-color: var(--border) !important;
@@ -173,27 +183,46 @@
   color: var(--foreground) !important;
 }
 
+/* Task list rows */
 .custom-gantt-container ._34SS0 {
   background-color: var(--card) !important;
   color: var(--foreground) !important;
-  border-color: var(--border) !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-left: 3px solid transparent !important;
+  transition: background-color 0.15s ease !important;
 }
-.custom-gantt-container ._34SS0:nth-of-type(even) {
+.custom-gantt-container ._34SS0:nth-child(even) {
   background-color: color-mix(in srgb, var(--card) 96%, var(--foreground) 4%) !important;
 }
 
+/* Project rows — rows with expander icon (not empty expander) */
+.custom-gantt-container ._34SS0:has(._2QjE6) {
+  background-color: color-mix(in srgb, var(--primary) 8%, var(--card)) !important;
+  border-bottom: 2px solid color-mix(in srgb, var(--primary) 25%, transparent) !important;
+  border-left: 3px solid var(--primary) !important;
+  font-weight: 700 !important;
+}
+.custom-gantt-container ._34SS0:has(._2QjE6) * {
+  font-weight: 700 !important;
+}
+.custom-gantt-container ._34SS0:has(._2QjE6) + ._34SS0 {
+  border-top: 1px dashed color-mix(in srgb, var(--primary) 15%, var(--border)) !important;
+}
+
+/* Cells */
 .custom-gantt-container ._3lLk3 {
   color: var(--foreground) !important;
   border-color: var(--border) !important;
 }
 
+/* Header cells */
 .custom-gantt-container ._WuQ0f {
   color: var(--muted-foreground) !important;
   background-color: var(--muted) !important;
   border-color: var(--border) !important;
 }
 
-/* SVG overrides */
+/* SVG grid rows */
 .custom-gantt-container rect._2dZTy {
   fill: var(--card) !important;
 }
@@ -201,12 +230,14 @@
   fill: color-mix(in srgb, var(--card) 96%, var(--foreground) 4%) !important;
 }
 
+/* SVG grid lines */
 .custom-gantt-container line._3rUKi,
 .custom-gantt-container line._RuwuK,
 .custom-gantt-container line._1rLuZ {
   stroke: var(--border) !important;
 }
 
+/* SVG text labels */
 .custom-gantt-container text._9w8d5 {
   fill: var(--foreground) !important;
   font-weight: 500 !important;
@@ -214,7 +245,6 @@
 .custom-gantt-container text._2q1Kt {
   fill: var(--muted-foreground) !important;
 }
-
 .custom-gantt-container text._3zRJQ {
   fill: var(--primary-foreground) !important;
   font-weight: 600 !important;
@@ -224,7 +254,7 @@
   font-weight: 500 !important;
 }
 
-/* Tooltip styling */
+/* Tooltip */
 .custom-gantt-container ._3T42e {
   background-color: var(--popover) !important;
   color: var(--popover-foreground) !important;
@@ -239,7 +269,7 @@
   color: var(--muted-foreground) !important;
 }
 
-/* Force text visibility inside rows and headers */
+/* Force text visibility */
 .custom-gantt-container ._34SS0 * {
   color: var(--foreground) !important;
 }
@@ -247,7 +277,7 @@
   color: var(--foreground) !important;
 }
 
-/* Gantt timeline calendar header background */
+/* Timeline header */
 .custom-gantt-container ._35nLX {
   fill: var(--muted) !important;
   stroke: var(--border) !important;

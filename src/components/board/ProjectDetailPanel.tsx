@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
-import { ListTodo, FileText, BarChart3, Copy, Check } from "lucide-react";
+import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X } from "lucide-react";
 import { format } from "date-fns";
 import type { Doc } from "../../../convex/_generated/dataModel";
 import { WysiwygEditor } from "./WysiwygEditor";
@@ -120,9 +120,179 @@ function TaskTimelineEntry({ task }: { task: Doc<"tasks"> }) {
   );
 }
 
+interface NoteItemProps {
+  note: Doc<"notes">;
+  depth: number;
+  childNotes: Doc<"notes">[];
+  getChildNotes: (parentId: string) => Doc<"notes">[];
+  expandedNotes: Set<string>;
+  toggleNoteExpand: (noteId: string) => void;
+  editingNoteId: string | null;
+  editingNoteTitle: string;
+  editingNoteContent: string;
+  setEditingNoteTitle: (v: string) => void;
+  setEditingNoteContent: (v: string) => void;
+  startEditNote: (note: Doc<"notes">) => void;
+  cancelEditNote: () => void;
+  handleDeleteNote: (noteId: string) => void;
+  allNotes: Doc<"notes">[];
+}
+
+function NoteItem({
+  note,
+  depth,
+  childNotes,
+  getChildNotes,
+  expandedNotes,
+  toggleNoteExpand,
+  editingNoteId,
+  editingNoteTitle,
+  editingNoteContent,
+  setEditingNoteTitle,
+  setEditingNoteContent,
+  startEditNote,
+  cancelEditNote,
+  handleDeleteNote,
+  allNotes,
+}: NoteItemProps) {
+  const isEditing = editingNoteId === note._id;
+  const isExpanded = expandedNotes.has(note._id);
+  const hasChildren = childNotes.length > 0;
+  const contentPreview = note.content
+    ? note.content.replace(/[#*_`~>\-\[\]()!]/g, "").trim().slice(0, 120)
+    : "";
+
+  return (
+    <div>
+      <div
+        className={`group flex items-start gap-1.5 p-2 rounded-lg border transition-all ${
+          isEditing
+            ? "border-primary/40 bg-primary/5"
+            : "border-transparent hover:border-border/40 hover:bg-muted/20"
+        }`}
+        style={{ marginLeft: depth * 16 }}
+      >
+        {/* Expand toggle */}
+        <button
+          type="button"
+          onClick={() => toggleNoteExpand(note._id)}
+          className={`shrink-0 mt-0.5 p-0.5 rounded transition-colors cursor-pointer ${
+            hasChildren
+              ? "text-muted-foreground hover:text-foreground"
+              : "text-transparent pointer-events-none"
+          }`}
+        >
+          <ChevronRight
+            className={`w-3 h-3 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+          />
+        </button>
+
+        {/* Note content */}
+        <div className="flex-1 min-w-0">
+          {isEditing ? (
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={editingNoteTitle}
+                onChange={(e) => setEditingNoteTitle(e.target.value)}
+                className="w-full text-xs font-semibold bg-transparent border-none outline-none text-foreground"
+                autoFocus
+              />
+              <div className="min-h-[120px] border border-border/50 rounded-md overflow-hidden">
+                <WysiwygEditor
+                  content={editingNoteContent}
+                  onChange={setEditingNoteContent}
+                  placeholder="Viết nội dung ghi chú..."
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => { cancelEditNote(); }}
+                  className="text-[10px] px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  Đóng
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="cursor-pointer"
+              onClick={() => startEditNote(note)}
+            >
+              <p className="text-xs font-semibold text-foreground truncate">
+                {note.icon || ""} {note.title}
+              </p>
+              {contentPreview && (
+                <p className="text-[10px] text-muted-foreground/70 truncate mt-0.5">
+                  {contentPreview}
+                </p>
+              )}
+              <p className="text-[9px] text-muted-foreground/40 mt-0.5">
+                {format(new Date(note._creationTime), "dd/MM/yyyy HH:mm")}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        {!isEditing && (
+          <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              type="button"
+              onClick={() => startEditNote(note)}
+              className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+              title="Chỉnh sửa"
+            >
+              <FileText className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDeleteNote(note._id)}
+              className="p-1 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
+              title="Xóa"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Children */}
+      {isExpanded && hasChildren && (
+        <div className="space-y-0.5">
+          {childNotes.map((child) => {
+            const grandchildren = getChildNotes(child._id);
+            return (
+              <NoteItem
+                key={child._id}
+                note={child}
+                depth={depth + 1}
+                childNotes={grandchildren}
+                getChildNotes={getChildNotes}
+                expandedNotes={expandedNotes}
+                toggleNoteExpand={toggleNoteExpand}
+                editingNoteId={editingNoteId}
+                editingNoteTitle={editingNoteTitle}
+                editingNoteContent={editingNoteContent}
+                setEditingNoteTitle={setEditingNoteTitle}
+                setEditingNoteContent={setEditingNoteContent}
+                startEditNote={startEditNote}
+                cancelEditNote={cancelEditNote}
+                handleDeleteNote={handleDeleteNote}
+                allNotes={allNotes}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
   const { userId } = useAuth();
-  const [tab, setTab] = useState<"info" | "summary" | "history">("info");
+  const [tab, setTab] = useState<"info" | "notes" | "summary" | "history">("info");
   const [editorContent, setEditorContent] = useState(project.notes || DEFAULT_NOTES);
 
   const [copied, setCopied] = useState(false);
@@ -159,6 +329,110 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
   // Fetch tasks for history
   const projectTasks =
     useQuery(api.tasks.getTasksByProject, { projectId: project._id as any }) ?? [];
+
+  // Fetch notes for this project
+  const projectNotes =
+    useQuery(api.notes.getNotesByProject, { projectId: project._id as any }) ?? [];
+
+  const createNote = useMutation(api.notes.createNote);
+  const updateNote = useMutation(api.notes.updateNote);
+  const deleteNote = useMutation(api.notes.deleteNote);
+
+  // Notes tab state
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteContent, setEditingNoteContent] = useState("");
+  const [editingNoteTitle, setEditingNoteTitle] = useState("");
+  const [creatingNote, setCreatingNote] = useState(false);
+  const [newNoteTitle, setNewNoteTitle] = useState("");
+  const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
+  const noteDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Sort notes: root notes first, then children nested
+  const noteTree = useMemo(() => {
+    const roots = projectNotes
+      .filter((n) => !n.parentNoteId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    return roots;
+  }, [projectNotes]);
+
+  const getChildNotes = useCallback(
+    (parentId: string) => {
+      return projectNotes
+        .filter((n) => n.parentNoteId === parentId)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    },
+    [projectNotes]
+  );
+
+  const toggleNoteExpand = (noteId: string) => {
+    setExpandedNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(noteId)) next.delete(noteId);
+      else next.add(noteId);
+      return next;
+    });
+  };
+
+  const handleCreateNote = async () => {
+    if (!newNoteTitle.trim() || !userId) return;
+    try {
+      await createNote({
+        userId,
+        title: newNoteTitle.trim(),
+        projectId: project._id as any,
+      });
+      setNewNoteTitle("");
+      setCreatingNote(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const startEditNote = (note: Doc<"notes">) => {
+    setEditingNoteId(note._id);
+    setEditingNoteTitle(note.title);
+    setEditingNoteContent(note.content || "");
+  };
+
+  const cancelEditNote = () => {
+    setEditingNoteId(null);
+    setEditingNoteTitle("");
+    setEditingNoteContent("");
+  };
+
+  const saveNote = useCallback(async () => {
+    if (!editingNoteId) return;
+    try {
+      await updateNote({
+        id: editingNoteId as any,
+        title: editingNoteTitle,
+        content: editingNoteContent || undefined,
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }, [editingNoteId, editingNoteTitle, editingNoteContent, updateNote]);
+
+  // Auto-save note content with debounce
+  useEffect(() => {
+    if (!editingNoteId) return;
+    if (noteDebounceRef.current) clearTimeout(noteDebounceRef.current);
+    noteDebounceRef.current = setTimeout(() => {
+      saveNote();
+    }, 800);
+    return () => {
+      if (noteDebounceRef.current) clearTimeout(noteDebounceRef.current);
+    };
+  }, [editingNoteContent, editingNoteTitle, editingNoteId, saveNote]);
+
+  const handleDeleteNote = async (noteId: string) => {
+    try {
+      await deleteNote({ id: noteId as any });
+      if (editingNoteId === noteId) cancelEditNote();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   // Sort by creation time descending (newest first) for timeline
   const timelineTasks = useMemo(() => {
@@ -314,6 +588,18 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
           <ListTodo className="w-3 h-3" />
           Lịch sử ({projectTasks.length})
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("notes")}
+          className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
+            tab === "notes"
+              ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+          }`}
+        >
+          <StickyNote className="w-3 h-3" />
+          Ghi chú ({projectNotes.length})
+        </button>
       </div>
 
       {/* Tab Content */}
@@ -328,6 +614,84 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
                 onChange={(md) => setEditorContent(md)}
               />
             </div>
+          </div>
+        ) : tab === "notes" ? (
+          /* Notes Tab — project notes from notes table */
+          <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
+            {/* Add Note Button */}
+            {creatingNote ? (
+              <div className="flex items-center gap-2 p-2 border border-primary/30 rounded-lg bg-primary/5">
+                <input
+                  type="text"
+                  placeholder="Tiêu đề ghi chú..."
+                  value={newNoteTitle}
+                  onChange={(e) => setNewNoteTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateNote();
+                    if (e.key === "Escape") {
+                      setCreatingNote(false);
+                      setNewNoteTitle("");
+                    }
+                  }}
+                  autoFocus
+                  className="flex-1 text-xs bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground"
+                />
+                <button
+                  type="button"
+                  onClick={handleCreateNote}
+                  disabled={!newNoteTitle.trim()}
+                  className="text-[10px] px-2 py-1 rounded-md bg-primary text-primary-foreground font-medium disabled:opacity-40 cursor-pointer hover:bg-primary/90 transition-colors"
+                >
+                  Tạo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setCreatingNote(false); setNewNoteTitle(""); }}
+                  className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setCreatingNote(true)}
+                className="w-full flex items-center justify-center gap-1.5 p-2 text-[11px] text-muted-foreground hover:text-foreground border border-dashed border-border/60 hover:border-primary/40 rounded-lg hover:bg-primary/5 transition-all cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                Thêm ghi chú mới
+              </button>
+            )}
+
+            {/* Notes List */}
+            {noteTree.length === 0 && !creatingNote ? (
+              <div className="text-center py-8 text-[11px] text-muted-foreground italic">
+                Chưa có ghi chú nào cho dự án này
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {noteTree.map((note) => (
+                  <NoteItem
+                    key={note._id}
+                    note={note}
+                    depth={0}
+                    childNotes={getChildNotes(note._id)}
+                    getChildNotes={getChildNotes}
+                    expandedNotes={expandedNotes}
+                    toggleNoteExpand={toggleNoteExpand}
+                    editingNoteId={editingNoteId}
+                    editingNoteTitle={editingNoteTitle}
+                    editingNoteContent={editingNoteContent}
+                    setEditingNoteTitle={setEditingNoteTitle}
+                    setEditingNoteContent={setEditingNoteContent}
+                    startEditNote={startEditNote}
+                    cancelEditNote={cancelEditNote}
+                    handleDeleteNote={handleDeleteNote}
+                    allNotes={projectNotes}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         ) : tab === "summary" ? (
           /* Summary Tab — compact, copyable report */

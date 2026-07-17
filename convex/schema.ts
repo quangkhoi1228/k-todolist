@@ -30,4 +30,19 @@ export default defineSchema({
     userId: v.string(),
     hideDoneTasks: v.boolean(),
   }).index("by_user", ["userId"]),
+
+  notes: defineTable({
+    userId: v.string(),
+    title: v.string(),
+    content: v.optional(v.string()),
+    projectId: v.optional(v.id("projects")),
+    parentNoteId: v.optional(v.id("notes")),
+    order: v.optional(v.number()),
+    icon: v.optional(v.string()),
+    shareSlug: v.optional(v.string()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_project", ["projectId"])
+    .index("by_parent", ["parentNoteId"])
+    .index("by_shareSlug", ["shareSlug"]),
 });

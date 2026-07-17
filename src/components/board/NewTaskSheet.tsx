@@ -10,8 +10,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { startOfDay, format, addDays } from "date-fns";
-import { Plus, Minus } from "lucide-react";
+import { Plus, Minus, X } from "lucide-react";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
+import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
 
 export interface TaskData {
   _id: string;
@@ -42,7 +43,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
   const createTask = useMutation(api.tasks.createTask);
   const updateTask = useMutation(api.tasks.updateTask);
   const deleteTask = useMutation(api.tasks.deleteTask);
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
   const createProject = useMutation(api.projects.createProject);
   const [internalOpen, setInternalOpen] = useState(false);
 
@@ -224,81 +225,91 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
 
           <div className="flex flex-col sm:flex-row gap-4 w-full">
             <div className="space-y-1.5 sm:flex-1 w-full">
-              <Label htmlFor="startDate" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày bắt đầu</Label>
-              <Input 
-                id="startDate" 
-                type="date" 
-                value={startDate} 
-                onChange={(e) => {
-                  setStartDate(e.target.value);
-                  if (e.target.value && endDate && new Date(e.target.value) > new Date(endDate)) {
-                    setEndDate(`${e.target.value}T17:30`);
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày bắt đầu</Label>
+              <DatePickerPopover
+                date={startDate ? startOfDay(new Date(startDate)).getTime() : null}
+                onDateChange={(ts) => {
+                  const newStartStr = ts ? format(new Date(ts), "yyyy-MM-dd") : "";
+                  setStartDate(newStartStr);
+                  if (newStartStr && endDate && new Date(newStartStr) > new Date(endDate)) {
+                    setEndDate(`${newStartStr}T17:30`);
                   }
-                }} 
-                onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
-                className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
-              />
-              <div className="flex gap-1.5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const todayStr = format(new Date(), "yyyy-MM-dd");
-                    setStartDate(todayStr);
-                    if (endDate && new Date(todayStr) > new Date(endDate)) {
-                      setEndDate(`${todayStr}T17:30`);
-                    }
-                  }}
-                  className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
-                    startDate === format(new Date(), "yyyy-MM-dd")
-                      ? "bg-primary/20 text-primary border-primary/40 font-semibold"
-                      : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
-                  }`}
-                >
-                  Hôm nay
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const tomorrowStr = format(addDays(new Date(), 1), "yyyy-MM-dd");
-                    setStartDate(tomorrowStr);
-                    if (endDate && new Date(tomorrowStr) > new Date(endDate)) {
-                      setEndDate(`${tomorrowStr}T17:30`);
-                    }
-                  }}
-                  className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
-                    startDate === format(addDays(new Date(), 1), "yyyy-MM-dd")
-                      ? "bg-primary/20 text-primary border-primary/40 font-semibold"
-                      : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
-                  }`}
-                >
-                  Ngày mai
-                </button>
-              </div>
+                }}
+                label="Ngày bắt đầu"
+                allowClear={true}
+                quickDates={[
+                  { label: "Hôm nay", getDate: () => new Date() },
+                  { label: "Ngày mai", getDate: () => addDays(new Date(), 1) },
+                ]}
+                placeholder="Chọn ngày bắt đầu"
+                className="w-full"
+              >
+                <div className="flex items-center justify-between w-full bg-muted/50 border border-border rounded-lg px-3 py-2 h-10 text-sm hover:bg-muted/80 transition-colors">
+                  <span className={startDate ? "text-foreground" : "text-muted-foreground"}>
+                    {startDate
+                      ? (() => {
+                          const d = new Date(startDate);
+                          const today = new Date();
+                          const tomorrow = addDays(today, 1);
+                          if (format(d, "yyyy-MM-dd") === format(today, "yyyy-MM-dd")) return "Hôm nay";
+                          if (format(d, "yyyy-MM-dd") === format(tomorrow, "yyyy-MM-dd")) return "Ngày mai";
+                          return format(d, "dd/MM/yyyy");
+                        })()
+                      : "Chọn ngày"}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {startDate && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setStartDate("");
+                        }}
+                        className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-destructive cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </DatePickerPopover>
             </div>
 
             <div className="space-y-1.5 sm:flex-1 w-full">
-              <Label htmlFor="endDate" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày kết thúc</Label>
-              <Input 
-                id="endDate" 
-                type="datetime-local" 
-                value={endDate} 
-                onChange={(e) => setEndDate(e.target.value)} 
-                onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
-                className="bg-muted/50 border-border text-foreground block w-full h-10 px-3 rounded-lg focus-visible:ring-primary/50 text-sm"
-              />
-              <div className="flex gap-1.5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => startDate && setEndDate(`${startDate}T17:30`)}
-                  className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer ${
-                    endDate === `${startDate}T17:30`
-                      ? "bg-primary/20 text-primary border-primary/40 font-semibold"
-                      : "bg-muted/40 text-muted-foreground border-border/50 hover:bg-muted/80 hover:text-foreground"
-                  }`}
-                >
-                  Bằng ngày bắt đầu
-                </button>
-              </div>
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ngày kết thúc</Label>
+              <DatePickerPopover
+                date={endDate ? new Date(endDate).getTime() : null}
+                onDateChange={(ts) => {
+                  setEndDate(ts ? format(new Date(ts), "yyyy-MM-dd'T'HH:mm") : "");
+                }}
+                showTime={true}
+                label="Hạn chót"
+                allowClear={true}
+                placeholder="Chọn hạn chót"
+                className="w-full"
+              >
+                <div className="flex items-center justify-between w-full bg-muted/50 border border-border rounded-lg px-3 py-2 h-10 text-sm hover:bg-muted/80 transition-colors">
+                  <span className={endDate ? "text-foreground" : "text-muted-foreground"}>
+                    {endDate
+                      ? format(new Date(endDate), "dd/MM/yyyy HH:mm")
+                      : "Chọn ngày kết thúc"}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {endDate && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEndDate("");
+                        }}
+                        className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-destructive cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </DatePickerPopover>
             </div>
           </div>
 

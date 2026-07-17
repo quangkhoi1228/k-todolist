@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Menu, Download } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Menu, Download, FileText } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
@@ -43,6 +43,10 @@ export default function MobileSidebar() {
             <Link onClick={() => setOpen(false)} href="/gantt" className="group flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/50 hover:shadow-lg transition-all duration-300">
               <BarChartHorizontal className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
               Biểu đồ Gantt
+            </Link>
+            <Link onClick={() => setOpen(false)} href="/notes" className="group flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/50 hover:shadow-lg transition-all duration-300">
+              <FileText className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
+              Ghi chú
             </Link>
 
             {isInstallable && (
