@@ -211,26 +211,58 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
   const datePopover = isCompact ? (
     <div className="flex items-center gap-1">
-      {hasDate ? (
-        <div className={dateTriggerClass}>
-          <Calendar className="w-2.5 h-2.5 shrink-0" />
-          {task.startDate && task.endDate ? (
-            <span className="whitespace-nowrap">
-              {format(new Date(task.startDate), "dd/MM")}
-              <span className="mx-0.5 opacity-50">-</span>
-              {format(new Date(task.endDate), "dd/MM HH:mm")}
-            </span>
-          ) : task.startDate ? (
+      {task.startDate && (
+        <DatePickerPopover
+          date={task.startDate}
+          onDateChange={handleUpdateDates}
+          placeholder="Bắt đầu"
+          label="Ngày bắt đầu"
+          allowClear={true}
+          side="top"
+          align="start"
+        >
+          <div className={dateTriggerClass} title="Sửa ngày bắt đầu">
+            <Calendar className="w-2.5 h-2.5 shrink-0" />
             <span className="whitespace-nowrap">{format(new Date(task.startDate), "dd/MM")}</span>
-          ) : task.endDate ? (
+          </div>
+        </DatePickerPopover>
+      )}
+      {task.startDate && task.endDate && (
+        <span className="text-[9px] text-muted-foreground/50">-</span>
+      )}
+      {task.endDate && (
+        <DatePickerPopover
+          date={task.endDate}
+          onDateChange={handleUpdateEndDate}
+          placeholder="Hạn chót"
+          showTime={true}
+          label="Hạn chót"
+          allowClear={true}
+          side="top"
+          align={task.startDate ? "end" : "start"}
+        >
+          <div className={dateTriggerClass} title="Sửa hạn chót">
+            <Calendar className="w-2.5 h-2.5 shrink-0" />
             <span className="whitespace-nowrap">{format(new Date(task.endDate), "dd/MM HH:mm")}</span>
-          ) : null}
-        </div>
-      ) : (
-        <div className="flex items-center gap-0.5 text-[9px] text-muted-foreground/50">
-          <Calendar className="w-2.5 h-2.5 shrink-0" />
-          <span className="italic">Thêm ngày</span>
-        </div>
+          </div>
+        </DatePickerPopover>
+      )}
+      {!task.startDate && !task.endDate && (
+        <DatePickerPopover
+          date={task.endDate}
+          onDateChange={handleUpdateEndDate}
+          placeholder="Thêm ngày"
+          label="Hạn chót"
+          showTime={true}
+          allowClear={true}
+          side="top"
+          align="start"
+        >
+          <div className="flex items-center gap-0.5 text-[9px] text-muted-foreground/50 cursor-pointer">
+            <Calendar className="w-2.5 h-2.5 shrink-0" />
+            <span className="italic">Thêm ngày</span>
+          </div>
+        </DatePickerPopover>
       )}
     </div>
   ) : (
