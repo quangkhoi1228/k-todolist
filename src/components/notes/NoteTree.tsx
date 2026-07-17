@@ -454,7 +454,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
                     <TreeNode
                       key={note._id}
                       note={note}
-                      allNotes={allNotes}
+                      allNotes={allNotes || []}
                       depth={0}
                       selectedNoteId={selectedNoteId}
                       onSelect={onSelectNote}
@@ -486,7 +486,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
                   <TreeNode
                     key={note._id}
                     note={note}
-                    allNotes={allNotes}
+                    allNotes={allNotes || []}
                     depth={0}
                     selectedNoteId={selectedNoteId}
                     onSelect={onSelectNote}

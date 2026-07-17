@@ -1,5 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 
 export const getProjects = query({
   args: {
@@ -87,7 +89,7 @@ export const deleteProject = mutation({
   },
 });
 
-async function deleteAllChildNotes(ctx: any, noteId: string) {
+async function deleteAllChildNotes(ctx: MutationCtx, noteId: Id<"notes">) {
   const children = await ctx.db
     .query("notes")
     .withIndex("by_parent", (q) => q.eq("parentNoteId", noteId))

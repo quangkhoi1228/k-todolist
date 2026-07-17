@@ -2,9 +2,10 @@
 
 import { use } from "react";
 import { useQuery } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
+import { api } from "../../../../../convex/_generated/api";
 import { FileText, ChevronRight, Folder } from "lucide-react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export default function SharedNotePage({
   params,
@@ -74,7 +75,7 @@ export default function SharedNotePage({
       {noteData.breadcrumb.length > 0 && (
         <div className="max-w-4xl mx-auto px-6 pt-4">
           <div className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
-            {noteData.breadcrumb.map((b, i) => (
+            {noteData.breadcrumb.map((b: { id: string; title: string }, i: number) => (
               <span key={b.id} className="flex items-center gap-1">
                 {i > 0 && <ChevronRight className="w-3 h-3" />}
                 <span>{b.title}</span>
@@ -105,7 +106,7 @@ export default function SharedNotePage({
           {/* Rendered content */}
           {noteData.content ? (
             <div className="prose prose-neutral dark:prose-invert max-w-none prose-headings:font-bold prose-p:text-foreground/90 prose-a:text-primary prose-code:text-primary/80 prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-muted/30 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-xl prose-li:text-foreground/90 prose-strong:text-foreground">
-              <Markdown>{noteData.content}</Markdown>
+              <Markdown remarkPlugins={[remarkGfm]}>{noteData.content}</Markdown>
             </div>
           ) : (
             <p className="text-muted-foreground/50 italic">Ghi chú này chưa có nội dung.</p>
@@ -116,7 +117,7 @@ export default function SharedNotePage({
             <div className="mt-10 pt-6 border-t border-border/30">
               <h3 className="text-sm font-semibold text-foreground mb-3">Note con</h3>
               <div className="space-y-1.5">
-                {noteData.childNotes.map((child) => (
+                {noteData.childNotes.map((child: { id: string; title: string; icon?: string | null }) => (
                   <div
                     key={child.id}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/20 border border-border/30 text-sm text-muted-foreground"

@@ -209,7 +209,31 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     !hasDate && "opacity-0 max-h-0 py-0 px-0 border-transparent overflow-hidden pointer-events-none group-hover/task:opacity-100 group-hover/task:max-h-8 group-hover/task:py-0.5 group-hover/task:px-1.5 group-hover/task:border-dashed group-hover/task:border-border/60 group-hover/task:pointer-events-auto group-hover/task:bg-muted/20 group-hover/task:text-muted-foreground"
   );
 
-  const datePopover = (
+  const datePopover = isCompact ? (
+    <div className="flex items-center gap-1">
+      {hasDate ? (
+        <div className={dateTriggerClass}>
+          <Calendar className="w-2.5 h-2.5 shrink-0" />
+          {task.startDate && task.endDate ? (
+            <span className="whitespace-nowrap">
+              {format(new Date(task.startDate), "dd/MM")}
+              <span className="mx-0.5 opacity-50">-</span>
+              {format(new Date(task.endDate), "dd/MM HH:mm")}
+            </span>
+          ) : task.startDate ? (
+            <span className="whitespace-nowrap">{format(new Date(task.startDate), "dd/MM")}</span>
+          ) : task.endDate ? (
+            <span className="whitespace-nowrap">{format(new Date(task.endDate), "dd/MM HH:mm")}</span>
+          ) : null}
+        </div>
+      ) : (
+        <div className="flex items-center gap-0.5 text-[9px] text-muted-foreground/50">
+          <Calendar className="w-2.5 h-2.5 shrink-0" />
+          <span className="italic">Thêm ngày</span>
+        </div>
+      )}
+    </div>
+  ) : (
     <div className="flex items-center gap-1">
       <DatePickerPopover
         date={task.startDate}
@@ -222,7 +246,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
         triggerClassName={dateTriggerClass}
       >
         <div className={dateTriggerClass} title={urgencyLabel(dueUrgency) ?? (hasDate ? "Sửa ngày" : "Thêm ngày")}>
-          <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
+          <Calendar className={cn("w-2.5 h-2.5", "shrink-0")} />
           {task.startDate ? (
             <span className="whitespace-nowrap">{format(new Date(task.startDate), "dd/MM")}</span>
           ) : task.endDate ? null : (
@@ -247,7 +271,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
         triggerClassName={dateTriggerClass}
       >
         <div className={dateTriggerClass} title={urgencyLabel(dueUrgency) ?? (hasDate ? "Sửa ngày" : "Thêm ngày")}>
-          <Calendar className={cn(isCompact ? "w-2.5 h-2.5" : "w-2.5 h-2.5", "shrink-0")} />
+          <Calendar className={cn("w-2.5 h-2.5", "shrink-0")} />
           {task.endDate ? (
             <span className="whitespace-nowrap">{format(new Date(task.endDate), "dd/MM HH:mm")}</span>
           ) : task.startDate ? null : (

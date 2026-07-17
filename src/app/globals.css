@@ -190,6 +190,9 @@
   border-bottom: 1px solid var(--border) !important;
   border-left: 3px solid transparent !important;
   transition: background-color 0.15s ease !important;
+  content-visibility: auto;
+  contain-intrinsic-size: 40px;
+  contain: layout style;
 }
 .custom-gantt-container ._34SS0:nth-child(even) {
   background-color: color-mix(in srgb, var(--card) 96%, var(--foreground) 4%) !important;

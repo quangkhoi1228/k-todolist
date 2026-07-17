@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 
 export const getNotes = query({
   args: { userId: v.string() },
@@ -114,7 +115,7 @@ export const deleteNote = mutation({
   },
 });
 
-async function deleteNoteHandler(ctx: any, noteId: string) {
+async function deleteNoteHandler(ctx: MutationCtx, noteId: Id<"notes">) {
   const children = await ctx.db
     .query("notes")
     .withIndex("by_parent", (q) => q.eq("parentNoteId", noteId))
@@ -181,8 +182,8 @@ export const moveNoteToProject = mutation({
 });
 
 async function updateChildrenProject(
-  ctx: any,
-  parentNoteId: string,
+  ctx: MutationCtx,
+  parentNoteId: Id<"notes">,
   projectId: string | null | undefined
 ) {
   const children = await ctx.db
@@ -255,11 +256,11 @@ export const getNoteByShareSlug = query({
 
     // Build breadcrumb of parent notes
     const breadcrumb: { id: string; title: string }[] = [];
-    let current = note;
+    let current: any = note;
     while (current.parentNoteId) {
       const parent = await ctx.db.get(current.parentNoteId as any);
       if (parent) {
-        breadcrumb.unshift({ id: parent._id, title: parent.title });
+        breadcrumb.unshift({ id: parent._id, title: (parent as any).title });
         current = parent as any;
       } else {
         break;

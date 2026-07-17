@@ -7,6 +7,10 @@ import { Markdown } from "@tiptap/markdown";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
+import { Table } from "@tiptap/extension-table";
+import { TableRow } from "@tiptap/extension-table-row";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
 import {
   Bold,
   Italic,
@@ -23,6 +27,8 @@ import {
   Undo2,
   Redo2,
   Palette,
+  Table as TableIcon,
+  Trash2,
 } from "lucide-react";
 
 interface WysiwygEditorProps {
@@ -85,6 +91,15 @@ export function WysiwygEditor({ content, onChange, placeholder }: WysiwygEditorP
       Placeholder.configure({
         placeholder: placeholder || "Bắt đầu viết...",
       }),
+      Table.configure({
+        resizable: true,
+        HTMLAttributes: {
+          class: 'tiptap-table w-full border-collapse',
+        },
+      }),
+      TableRow,
+      TableCell,
+      TableHeader,
     ],
     content,
     contentType: "markdown",
@@ -260,6 +275,78 @@ export function WysiwygEditor({ content, onChange, placeholder }: WysiwygEditorP
 
         <div className="w-px h-5 bg-border/50 mx-0.5" />
 
+        {/* Table tools */}
+        <div className="flex items-center gap-0.5 mr-1">
+          {editor.isActive("table") ? (
+            <span className="flex items-center gap-0.5">
+              <ToolbarButton
+                onClick={() => editor.chain().focus().addColumnBefore().run()}
+                title="Cột trước"
+              >
+                <span className="flex items-center gap-0.5 text-[9px] font-bold">&#x2190;Col</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().addColumnAfter().run()}
+                title="Cột sau"
+              >
+                <span className="flex items-center gap-0.5 text-[9px] font-bold">Col&#x2192;</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().addRowBefore().run()}
+                title="Hàng trước"
+              >
+                <span className="flex items-center gap-0.5 text-[9px] font-bold">&#x2191;Row</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().addRowAfter().run()}
+                title="Hàng sau"
+              >
+                <span className="flex items-center gap-0.5 text-[9px] font-bold">Row&#x2193;</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().deleteColumn().run()}
+                title="Xoá cột"
+              >
+                <span className="text-[9px] font-bold">ColX</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().deleteRow().run()}
+                title="Xoá hàng"
+              >
+                <span className="text-[9px] font-bold">RowX</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().toggleHeaderCell().run()}
+                active={editor.isActive("tableHeader")}
+                title="Header cell"
+              >
+                <span className="text-[9px] font-bold">TH</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().mergeOrSplit().run()}
+                title="Merge / Split"
+              >
+                <span className="text-[9px] font-bold">M/S</span>
+              </ToolbarButton>
+              <ToolbarButton
+                onClick={() => editor.chain().focus().deleteTable().run()}
+                title="Xoá bảng"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-destructive" />
+              </ToolbarButton>
+            </span>
+          ) : (
+            <ToolbarButton
+              onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+              title="Thêm bảng"
+            >
+              <TableIcon className="w-3.5 h-3.5" />
+            </ToolbarButton>
+          )}
+        </div>
+
+        <div className="w-px h-5 bg-border/50 mx-0.5" />
+
         <div ref={colorPickerRef} className="relative flex items-center">
           <ToolbarButton
             onClick={() => setColorPickerOpen(!colorPickerOpen)}
@@ -420,6 +507,47 @@ export function WysiwygEditor({ content, onChange, placeholder }: WysiwygEditorP
         }
         .wysiwyg-editor .tiptap s {
           text-decoration: line-through;
+        }
+        .wysiwyg-editor .tiptap table {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 0.5em 0;
+          font-size: 0.8125rem;
+          overflow: hidden;
+        }
+        .wysiwyg-editor .tiptap th,
+        .wysiwyg-editor .tiptap td {
+          border: 2px solid var(--border);
+          padding: 0.5em 0.75em;
+          vertical-align: top;
+          text-align: left;
+          min-width: 80px;
+        }
+        .wysiwyg-editor .tiptap th {
+          background: var(--muted);
+          font-weight: 600;
+        }
+        .wysiwyg-editor .tiptap td {
+          background: var(--card);
+        }
+        .wysiwyg-editor .tiptap .selectedCell {
+          background: color-mix(in srgb, var(--primary) 15%, transparent);
+          border-color: var(--primary);
+        }
+        .wysiwyg-editor .tiptap th p,
+        .wysiwyg-editor .tiptap td p {
+          margin: 0;
+          font-size: 0.8125rem;
+        }
+        /* Resize handle */
+        .wysiwyg-editor .tiptap .column-resize-handle {
+          position: absolute;
+          right: -2px;
+          top: 0;
+          bottom: 0;
+          width: 4px;
+          background: var(--primary);
+          pointer-events: none;
         }
       `}</style>
     </div>

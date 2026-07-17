@@ -189,7 +189,7 @@ export default function GanttPage() {
           ),
           name: task.title,
           id: task._id,
-          parent: projectId,
+          project: projectId,
           type: "task",
           progress:
             task.status === "done"
