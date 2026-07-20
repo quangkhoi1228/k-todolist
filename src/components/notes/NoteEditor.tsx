@@ -37,6 +37,8 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
   const moveNoteToProject = useMutation(api.notes.moveNoteToProject);
   const generateShareSlug = useMutation(api.notes.generateShareSlug);
   const removeShareSlug = useMutation(api.notes.removeShareSlug);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const getImageUrl = useMutation(api.storage.getImageUrl);
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -47,6 +49,7 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
   const shareMenuRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [contentVersion, setContentVersion] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Keep stale note data to avoid flash when switching notes
@@ -57,7 +60,6 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
   useEffect(() => {
     if (noteId !== staleNoteId) {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      // If we have current note data, freeze it for display while new data loads
       if (note) {
         staleNoteRef.current = note;
       }
@@ -65,12 +67,13 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
     }
   }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When note data arrives: update title/content and clear stale reference
+  // When note data arrives: update title/content and bump version to force editor re-creation
   useEffect(() => {
     if (note) {
       staleNoteRef.current = null;
       setTitle(note.title || "");
       setContent(note.content || "");
+      setContentVersion((v) => v + 1);
     }
   }, [note]);
 
@@ -128,6 +131,23 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
     },
     [noteId, moveNoteToProject]
   );
+
+  const handleImageUpload = useCallback(async (file: File): Promise<string> => {
+    const uploadUrl = await generateUploadUrl();
+    const result = await fetch(uploadUrl, {
+      method: "POST",
+      body: file,
+    });
+    if (!result.ok) {
+      const errorText = await result.text();
+      console.error("Upload failed:", result.status, errorText);
+      throw new Error("Upload failed");
+    }
+    const { storageId } = await result.json();
+    const url = await getImageUrl({ storageId });
+    if (!url) throw new Error("Failed to get image URL");
+    return url;
+  }, [generateUploadUrl, getImageUrl]);
 
   const handleGenerateShareSlug = useCallback(async () => {
     const slug = await generateShareSlug({ noteId: noteId as any });
@@ -359,12 +379,13 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
 
       {/* Editor content */}
       <div className="flex-1 overflow-y-auto p-4">
-        <div className="max-w-3xl mx-auto">
-          <div className="border border-border/50 rounded-xl overflow-hidden bg-card/30">
+        <div className="max-w-5xl mx-auto">
+          <div className="border border-border/50 rounded-xl overflow-hidden bg-card/30" key={`${noteId}-${contentVersion}`}>
             <WysiwygEditor
               content={content}
               onChange={(md) => setContent(md)}
               placeholder="Bắt đầu viết..."
+              onImageUpload={handleImageUpload}
             />
           </div>
 
