@@ -7,6 +7,10 @@ import { FileText, ChevronRight, Folder } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+function isHtml(str: string): boolean {
+  return /^\s*<[^>]+>/i.test(str);
+}
+
 export default function SharedNotePage({
   params,
 }: {
@@ -42,6 +46,8 @@ export default function SharedNotePage({
       </div>
     );
   }
+
+  const contentIsHtml = noteData.content ? isHtml(noteData.content) : false;
 
   const createdDate = new Date(noteData._creationTime).toLocaleDateString("vi-VN", {
     day: "2-digit",
@@ -105,9 +111,16 @@ export default function SharedNotePage({
 
           {/* Rendered content */}
           {noteData.content ? (
-            <div className="prose prose-neutral dark:prose-invert max-w-none prose-headings:font-bold prose-p:text-foreground/90 prose-a:text-primary prose-code:text-primary/80 prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-muted/30 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-xl prose-li:text-foreground/90 prose-strong:text-foreground">
-              <Markdown remarkPlugins={[remarkGfm]}>{noteData.content}</Markdown>
-            </div>
+            contentIsHtml ? (
+              <div
+                className="wysiwyg-content prose prose-neutral dark:prose-invert max-w-none prose-headings:font-bold prose-p:text-foreground/90 prose-a:text-primary prose-code:text-primary/80 prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-muted/30 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-xl prose-li:text-foreground/90 prose-strong:text-foreground prose-img:rounded-xl prose-img:shadow-md"
+                dangerouslySetInnerHTML={{ __html: noteData.content }}
+              />
+            ) : (
+              <div className="prose prose-neutral dark:prose-invert max-w-none prose-headings:font-bold prose-p:text-foreground/90 prose-a:text-primary prose-code:text-primary/80 prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-muted/30 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-xl prose-li:text-foreground/90 prose-strong:text-foreground prose-img:rounded-xl prose-img:shadow-md">
+                <Markdown remarkPlugins={[remarkGfm]}>{noteData.content}</Markdown>
+              </div>
+            )
           ) : (
             <p className="text-muted-foreground/50 italic">Ghi chú này chưa có nội dung.</p>
           )}
@@ -132,6 +145,37 @@ export default function SharedNotePage({
               </p>
             </div>
           )}
+
+          {/* Styles for HTML content */}
+          <style jsx global>{`
+            .wysiwyg-content img {
+              max-width: 100%;
+              height: auto;
+              border-radius: 0.5rem;
+              margin: 0.75em 0;
+              display: block;
+              box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            }
+            .wysiwyg-content table {
+              width: 100%;
+              border-collapse: collapse;
+              margin: 0.5em 0;
+            }
+            .wysiwyg-content th,
+            .wysiwyg-content td {
+              border: 2px solid var(--border);
+              padding: 0.5em 0.75em;
+              vertical-align: top;
+            }
+            .wysiwyg-content th {
+              background: var(--muted);
+              font-weight: 600;
+            }
+            .wysiwyg-content mark {
+              padding: 0.1em 0.2em;
+              border-radius: 0.2em;
+            }
+          `}</style>
         </article>
       </main>
     </div>

@@ -10,6 +10,7 @@
 
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
+import type * as storage from "../storage.js";
 import type * as tasks from "../tasks.js";
 import type * as userPreferences from "../userPreferences.js";
 
@@ -22,6 +23,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   notes: typeof notes;
   projects: typeof projects;
+  storage: typeof storage;
   tasks: typeof tasks;
   userPreferences: typeof userPreferences;
 }>;
