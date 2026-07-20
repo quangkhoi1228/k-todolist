@@ -72,49 +72,51 @@ function PriorityBadge({ priority }: { priority?: string }) {
 function TaskTimelineEntry({ task }: { task: Doc<"tasks"> }) {
 
   return (
-    <div className="flex items-start gap-2.5 p-2 rounded-lg border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors">
+    <div className="group flex items-start gap-3 p-2.5 rounded-xl border transition-all hover:shadow-sm border-border/30 hover:border-border/50 bg-muted/[0.02] hover:bg-muted/[0.04]">
       {/* Timeline dot */}
       <div className="flex flex-col items-center gap-0.5 shrink-0">
         <div
-          className={`w-2 h-2 rounded-full mt-1.5 ring-2 ring-background ${
+          className={`w-2.5 h-2.5 rounded-full mt-1.5 ring-4 ring-background ${
             task.status === "done"
-              ? "bg-emerald-500"
+              ? "bg-emerald-500 shadow-[0_0_6px_rgba(52,211,153,0.5)]"
               : task.status === "processing"
-                ? "bg-blue-500"
+                ? "bg-blue-500 shadow-[0_0_6px_rgba(96,165,250,0.5)]"
                 : task.status === "pending"
-                  ? "bg-amber-500"
+                  ? "bg-amber-500 shadow-[0_0_6px_rgba(251,191,36,0.5)]"
                   : "bg-neutral-400"
           }`}
         />
-        <div className="w-px flex-1 min-h-[20px] bg-border/40" />
+        <div className="w-px flex-1 min-h-[20px] bg-border/20" />
       </div>
 
-      <div className="flex-1 min-w-0 pb-2">
+      <div className="flex-1 min-w-0 pb-1">
         <div className="flex items-center gap-1.5 flex-wrap">
           <p className="text-xs font-medium text-foreground">{task.title}</p>
         </div>
 
-        <div className="flex items-center gap-1.5 flex-wrap mt-1">
+        <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
           <StatusBadge status={task.status} />
           {task.priority && task.priority !== "normal" && (
             <PriorityBadge priority={task.priority} />
           )}
-          {task.estimatedTime > 0 && (
-            <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded">
-              {task.estimatedTime}h
-            </span>
-          )}
         </div>
 
-        {task.endDate && (
-          <p className="text-[10px] text-muted-foreground mt-0.5">
-            Hạn: {format(new Date(task.endDate), "dd/MM/yyyy HH:mm")}
-          </p>
-        )}
-
-        <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-          Tạo: {format(new Date(task._creationTime), "dd/MM/yyyy HH:mm")}
-        </p>
+        <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+          {task.endDate && (
+            <span className="text-[9px] text-muted-foreground/60 flex items-center gap-1">
+              <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Hạn: {format(new Date(task.endDate), "dd/MM/yyyy HH:mm")}
+            </span>
+          )}
+          <span className="text-[9px] text-muted-foreground/40 flex items-center gap-1">
+            <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {format(new Date(task._creationTime), "dd/MM/yyyy HH:mm")}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -159,7 +161,7 @@ function NoteItem({
   const isExpanded = expandedNotes.has(note._id);
   const hasChildren = childNotes.length > 0;
   const contentPreview = note.content
-    ? note.content.replace(/[#*_`~>\-\[\]()!]/g, "").trim().slice(0, 120)
+    ? note.content.replace(/<[^>]+>/g, "").trim().slice(0, 120)
     : "";
 
   return (
@@ -298,6 +300,8 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
   const [copied, setCopied] = useState(false);
 
   const updateProjectDetail = useMutation(api.projects.updateProjectDetail);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const getImageUrl = useMutation(api.storage.getImageUrl);
 
   // Auto-save with debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -498,38 +502,63 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
     return [...withDate, ...(withoutDate.length > 0 ? [withoutDate[0]] : [])];
   }, [projectTasks]);
 
-  // Generate plain text summary for copying
+  // Generate JIRA-friendly markdown summary for copying
   const summaryText = useMemo(() => {
     const lines: string[] = [];
-    lines.push("CURRENT STATUS:");
+    lines.push("h2. Summary");
     lines.push("");
 
+    // Stats
+    lines.push(`h3. Tổng quan tiến độ`);
+    lines.push(`* Tổng số: *${stats.total}* (Hoàn thành: ${stats.done}, Đang XL: ${stats.processing}, Tạm dừng: ${stats.pending}, Chưa TH: ${stats.todo})`);
+    lines.push("");
+
+    // Completed tasks
+    lines.push("h3. Công việc đã hoàn thành");
     if (summaryEntries.length === 0) {
-      lines.push("Chưa có công việc nào trong dự án này");
+      lines.push("Chưa có công việc nào được hoàn thành");
     } else {
       for (const [date, tasks] of summaryEntries) {
-        lines.push(`${date}:`);
+        lines.push(`*${date}* (${tasks.length} việc):`);
         for (const task of tasks) {
-          lines.push(`  - ${task.title} [Done]`);
+          lines.push(`- [Done] ${task.title}`);
         }
         lines.push("");
       }
     }
 
-    lines.push("NEXT ACTION:");
-    lines.push("");
+    // Next actions
+    lines.push("h3. Công việc tiếp theo");
     if (nextActions.length === 0) {
       lines.push("Đợi thêm yêu cầu mới từ sales");
     } else {
       for (const task of nextActions) {
         const sl = STATUS_LABELS[task.status || "todo"]?.short || "Todo";
-        const dl = task.endDate ? ` (Hạn: ${format(new Date(task.endDate), "dd/MM")})` : "";
-        lines.push(`- ${task.title} [${sl}]${dl}`);
+        const priority = task.priority && task.priority !== "normal" ? ` [${PRIORITY_CONFIG[task.priority]?.label || task.priority}]` : "";
+        const deadline = task.endDate ? ` (Hạn: ${format(new Date(task.endDate), "dd/MM")})` : "";
+        lines.push(`- [${sl}]${priority} ${task.title}${deadline}`);
       }
     }
 
     return lines.join("\n");
-  }, [summaryEntries, nextActions]);
+  }, [summaryEntries, nextActions, stats]);
+
+  const handleImageUpload = useCallback(async (file: File): Promise<string> => {
+    const uploadUrl = await generateUploadUrl();
+    const result = await fetch(uploadUrl, {
+      method: "POST",
+      body: file,
+    });
+    if (!result.ok) {
+      const errorText = await result.text();
+      console.error("Upload failed:", result.status, errorText);
+      throw new Error("Upload failed");
+    }
+    const { storageId } = await result.json();
+    const url = await getImageUrl({ storageId });
+    if (!url) throw new Error("Failed to get image URL");
+    return url;
+  }, [generateUploadUrl, getImageUrl]);
 
   const handleCopySummary = useCallback(async () => {
     try {
@@ -611,7 +640,8 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
               <WysiwygEditor
                 key={project._id}
                 content={editorContent}
-                onChange={(md) => setEditorContent(md)}
+                onChange={(html) => setEditorContent(html)}
+                onImageUpload={handleImageUpload}
               />
             </div>
           </div>
@@ -694,77 +724,148 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
             )}
           </div>
         ) : tab === "summary" ? (
-          /* Summary Tab — compact, copyable report */
-          <div className="space-y-4 max-h-[440px] overflow-y-auto pr-1">
-            {/* Stats row */}
-            <div className="flex items-center gap-2 flex-wrap pb-1 border-b border-border/20">
-              <span className="text-[10px] text-muted-foreground bg-muted/40 px-2 py-0.5 rounded">
-                Tổng: <strong className="text-foreground">{stats.total}</strong>
-              </span>
-              <span className="text-[10px] text-neutral-500 bg-neutral-500/5 px-2 py-0.5 rounded">
-                Chưa TH: <strong>{stats.todo}</strong>
-              </span>
-              <span className="text-[10px] text-blue-500 bg-blue-500/5 px-2 py-0.5 rounded">
-                Đang XL: <strong>{stats.processing}</strong>
-              </span>
-              <span className="text-[10px] text-amber-500 bg-amber-500/5 px-2 py-0.5 rounded">
-                Tạm dừng: <strong>{stats.pending}</strong>
-              </span>
-              <span className="text-[10px] text-emerald-500 bg-emerald-500/5 px-2 py-0.5 rounded">
-                Done: <strong>{stats.done}</strong>
-              </span>
-              <div className="flex-1" />
+          /* Summary Tab — JIRA-ready copy */
+          <div className="space-y-3 max-h-[440px] overflow-y-auto pr-1">
+            {/* Copy header */}
+            <div className="flex items-center justify-between bg-gradient-to-br from-primary/5 to-primary/[0.02] border border-primary/20 rounded-xl px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-primary" />
+                <span className="text-[11px] font-semibold text-foreground">
+                  Báo cáo — {project.name}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={handleCopySummary}
-                className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                title="Copy summary"
+                className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-all cursor-pointer shadow-sm"
+                title="Copy JIRA summary"
               >
                 {copied ? (
-                  <Check className="w-3 h-3 text-emerald-500" />
+                  <Check className="w-3.5 h-3.5" />
                 ) : (
-                  <Copy className="w-3 h-3" />
+                  <Copy className="w-3.5 h-3.5" />
                 )}
-                {copied ? "Đã copy" : "Copy"}
+                {copied ? "Đã copy!" : "Copy to JIRA"}
               </button>
             </div>
 
-            {/* Copyable text area */}
-            <div className="text-[11px] font-sans leading-relaxed text-foreground whitespace-pre-wrap m-0 select-all">
-              {summaryText.split("\n").map((line, i) => {
-                if (line === "CURRENT STATUS:" || line === "NEXT ACTION:") {
-                  return <strong key={i}>{line}<br /></strong>;
-                }
-                return <span key={i}>{line}<br /></span>;
-              })}
+            {/* JIRA markup preview */}
+            <div className="relative">
+              <div className="absolute top-2 left-2 px-1.5 py-0.5 bg-muted/80 text-[9px] font-mono text-muted-foreground rounded">
+                JIRA Markup
+              </div>
+              <div
+                className="bg-[#1e1e1e] text-[12px] font-mono leading-relaxed rounded-xl p-3 pt-7 select-all whitespace-pre-wrap overflow-x-auto border border-border/30 cursor-text"
+                onClick={() => {
+                  const ta = document.createElement("textarea");
+                  ta.value = summaryText;
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand("copy");
+                  document.body.removeChild(ta);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+              >
+                {summaryText.split("\n").map((line, i) => {
+                  if (line.startsWith("h2.")) {
+                    return (
+                      <span key={i} className="block text-[14px] font-bold text-blue-400 mt-1 first:mt-0">
+                        {line.replace("h2.", "").trim()}
+                        {"\n"}
+                      </span>
+                    );
+                  }
+                  if (line.startsWith("h3.")) {
+                    return (
+                      <span key={i} className="block text-[13px] font-semibold text-amber-400 mt-2">
+                        {line.replace("h3.", "").trim()}
+                        {"\n"}
+                      </span>
+                    );
+                  }
+                  if (line.startsWith("*") && line.endsWith("*)")) {
+                    const match = line.match(/^\* (.+)/);
+                    return (
+                      <span key={i} className="block text-gray-300">
+                        <span className="text-gray-500"># </span>{match?.[1] || line}
+                        {"\n"}
+                      </span>
+                    );
+                  }
+                  if (line.startsWith("*") && line.includes("* (")) {
+                    return (
+                      <span key={i} className="block text-emerald-400">
+                        <span className="text-gray-500">## </span>{line}
+                        {"\n"}
+                      </span>
+                    );
+                  }
+                  if (line.startsWith("- [") || line.startsWith("- *")) {
+                    return (
+                      <span key={i} className="block text-gray-300 ml-2">
+                        <span className="text-gray-600">-</span> {line.replace(/^- /, "")}
+                        {"\n"}
+                      </span>
+                    );
+                  }
+                  if (line.trim() === "") {
+                    return <span key={i}>{"\n"}</span>;
+                  }
+                  return (
+                    <span key={i} className="block text-gray-400 italic">
+                      {line}
+                      {"\n"}
+                    </span>
+                  );
+                })}
+              </div>
             </div>
+
+            {/* Hint */}
+            <p className="text-[9px] text-muted-foreground/50 text-center">
+              Click vào preview để copy nhanh, hoặc dùng nút Copy to JIRA
+            </p>
           </div>
         ) : (
           /* History Tab — timeline view */
-          <div className="space-y-3">
-            {/* Stats summary */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[10px] text-muted-foreground bg-muted/40 px-2 py-0.5 rounded">
-                Tổng: <strong className="text-foreground">{stats.total}</strong>
-              </span>
-              <span className="text-[10px] text-neutral-500 bg-neutral-500/5 px-2 py-0.5 rounded">
-                Chưa TH: <strong>{stats.todo}</strong>
-              </span>
-              <span className="text-[10px] text-blue-500 bg-blue-500/5 px-2 py-0.5 rounded">
-                Đang XL: <strong>{stats.processing}</strong>
-              </span>
-              <span className="text-[10px] text-amber-500 bg-amber-500/5 px-2 py-0.5 rounded">
-                Tạm dừng: <strong>{stats.pending}</strong>
-              </span>
-              <span className="text-[10px] text-emerald-500 bg-emerald-500/5 px-2 py-0.5 rounded">
-                Hoàn thành: <strong>{stats.done}</strong>
-              </span>
+          <div className="space-y-3 max-h-[440px] overflow-y-auto pr-1">
+            {/* Stats card */}
+            <div className="bg-gradient-to-br from-card to-muted/30 border border-border/50 rounded-xl p-3 shadow-sm">
+              <div className="flex items-center justify-between mb-2.5">
+                <h3 className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <ListTodo className="w-3.5 h-3.5 text-primary" />
+                  Lịch sử công việc
+                </h3>
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                <div className="flex flex-col items-center p-2 rounded-lg bg-background/60 border border-border/30">
+                  <span className="text-sm font-bold text-foreground">{stats.total}</span>
+                  <span className="text-[9px] text-muted-foreground mt-0.5">Tổng</span>
+                </div>
+                <div className="flex flex-col items-center p-2 rounded-lg bg-neutral-500/5 border border-neutral-500/15">
+                  <span className="text-sm font-bold text-neutral-500">{stats.todo}</span>
+                  <span className="text-[9px] text-neutral-500/70 mt-0.5">Chưa TH</span>
+                </div>
+                <div className="flex flex-col items-center p-2 rounded-lg bg-blue-500/5 border border-blue-500/15">
+                  <span className="text-sm font-bold text-blue-500">{stats.processing}</span>
+                  <span className="text-[9px] text-blue-500/70 mt-0.5">Đang XL</span>
+                </div>
+                <div className="flex flex-col items-center p-2 rounded-lg bg-amber-500/5 border border-amber-500/15">
+                  <span className="text-sm font-bold text-amber-500">{stats.pending}</span>
+                  <span className="text-[9px] text-amber-500/70 mt-0.5">Tạm dừng</span>
+                </div>
+                <div className="flex flex-col items-center p-2 rounded-lg bg-emerald-500/5 border border-emerald-500/15">
+                  <span className="text-sm font-bold text-emerald-500">{stats.done}</span>
+                  <span className="text-[9px] text-emerald-500/70 mt-0.5">Done</span>
+                </div>
+              </div>
             </div>
 
             {/* Timeline task list */}
-            <div className="space-y-0 max-h-[320px] overflow-y-auto pr-1">
+            <div className="space-y-1">
               {timelineTasks.length === 0 ? (
-                <div className="text-center py-8 text-[11px] text-muted-foreground italic">
+                <div className="text-center py-10 text-[11px] text-muted-foreground italic bg-muted/20 rounded-xl border border-dashed border-border/40">
                   Chưa có công việc nào trong dự án này
                 </div>
               ) : (
@@ -780,12 +881,12 @@ export function ProjectDetailPanel({ project }: ProjectDetailPanelProps) {
                   return (
                     <div key={task._id}>
                       {showDateHeader && (
-                        <div className="flex items-center gap-2 pt-3 pb-1">
-                          <div className="h-px flex-1 bg-border/30" />
-                          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                        <div className="flex items-center gap-2 pt-2 pb-1.5">
+                          <div className="h-px flex-1 bg-border/20" />
+                          <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">
                             {taskDate}
                           </span>
-                          <div className="h-px flex-1 bg-border/30" />
+                          <div className="h-px flex-1 bg-border/20" />
                         </div>
                       )}
                       <TaskTimelineEntry task={task} />
