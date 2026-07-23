@@ -384,7 +384,7 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
       {/* Editor content — scrollable */}
       <div className="flex-1 overflow-y-auto p-4">
         <div className="max-w-5xl mx-auto">
-          <div className="border border-border/50 rounded-xl overflow-hidden bg-card/30" key={`${noteId}-${contentVersion}`}>
+          <div className="border border-border/50 rounded-xl bg-card/30" key={`${noteId}-${contentVersion}`}>
             <WysiwygEditor
               content={content}
               onChange={(md) => setContent(md)}
