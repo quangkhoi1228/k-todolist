@@ -209,24 +209,22 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
   const isLoading = !note && staleNoteRef.current;
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
-      {/* Note title — scrolls with content */}
-      <div className="px-4 pt-3 pb-1">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          className="w-full bg-transparent text-lg font-bold text-foreground outline-none placeholder:text-muted-foreground/40"
-          placeholder="Tiêu đề ghi chú..."
-        />
-        {isLoading && (
-          <div className="absolute right-0 top-1/2 -translate-y-1/2">
-            <span className="w-3.5 h-3.5 block border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-          </div>
-        )}
-      </div>
-
-      {/* Editor toolbar — sticky on top when scrolling */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-2 border-b border-border/50 bg-background/95 backdrop-blur-sm shrink-0">
+    <div className="flex flex-col h-full">
+      {/* Note title + toolbar row — scrolls with content */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/50 bg-muted/10 shrink-0">
+        <div className="flex-1 min-w-0">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="w-full bg-transparent text-lg font-bold text-foreground outline-none placeholder:text-muted-foreground/40"
+            placeholder="Tiêu đề ghi chú..."
+          />
+          {isLoading && (
+            <div className="absolute right-0 top-1/2 -translate-y-1/2">
+              <span className="w-3.5 h-3.5 block border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+            </div>
+          )}
+        </div>
           {/* Project assignment */}
           <div className="relative" ref={projectMenuRef}>
             <button
@@ -382,10 +380,9 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
-      </div>
 
-      {/* Editor content */}
-      <div className="p-4">
+      {/* Editor content — scrollable */}
+      <div className="flex-1 overflow-y-auto p-4">
         <div className="max-w-5xl mx-auto">
           <div className="border border-border/50 rounded-xl overflow-hidden bg-card/30" key={`${noteId}-${contentVersion}`}>
             <WysiwygEditor

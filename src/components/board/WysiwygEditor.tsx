@@ -439,8 +439,8 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
 
   return (
     <div className="wysiwyg-editor relative">
-      {/* === TOOLBAR (single row) === */}
-      <div className="flex items-center gap-0.5 p-1.5 border-b border-border/40 flex-wrap bg-muted/20 rounded-t-lg">
+      {/* === TOOLBAR (single row) — sticky when scrolling editor content === */}
+      <div className="sticky top-0 z-10 flex items-center gap-0.5 p-1.5 border-b border-border/40 flex-wrap bg-muted/20 rounded-t-lg">
 
         {/* ─── GROUP 1: History ─── */}
         <div className="flex items-center gap-0.5">
