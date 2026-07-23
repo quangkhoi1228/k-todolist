@@ -268,6 +268,7 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
         const items = event.clipboardData?.items;
         if (!items) return false;
 
+        // Handle image file paste (e.g. screenshots from clipboard)
         for (const item of Array.from(items)) {
           if (item.kind === "file" && item.type.startsWith("image/")) {
             event.preventDefault();
@@ -277,29 +278,7 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
           }
         }
 
-        for (const item of Array.from(items)) {
-          if (item.kind === "string" && item.type === "text/html") {
-            item.getAsString((html) => {
-              const match = html.match(/<img[^>]+src=["']([^"']+)["']/i);
-              if (match) {
-                const src = match[1];
-                if (src.startsWith("data:") || src.startsWith("http://") || src.startsWith("https://")) {
-                  fetch(src)
-                    .then((res) => res.blob())
-                    .then((blob) => {
-                      const ext = blob.type.split("/")[1] || "png";
-                      const file = new File([blob], `pasted-image.${ext}`, { type: blob.type });
-                      handleImageFileRef.current(file);
-                    })
-                    .catch((err) => console.error("Failed to handle pasted image:", err));
-                }
-              }
-            });
-            event.preventDefault();
-            return true;
-          }
-        }
-
+        // For text/HTML paste without images, let TipTap handle it natively
         return false;
       },
     },
