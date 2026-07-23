@@ -51,6 +51,9 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
   const [copied, setCopied] = useState(false);
   const [contentVersion, setContentVersion] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Tracks which note the editor contentVersion corresponds to.
+  // Only bump contentVersion on actual note switch, not on every refetch after save.
+  const prevNoteIdForVersionRef = useRef<string | null>(null);
 
   // Keep stale note data to avoid flash when switching notes
   const staleNoteRef = useRef<Doc<"notes"> | null>(null);
@@ -67,13 +70,19 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
     }
   }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When note data arrives: update title/content and bump version to force editor re-creation
+  // When note data arrives: update title/content.
+  // Only bump contentVersion (forcing editor re-creation) when actually switching to a different note,
+  // not on every refetch after save — otherwise focus is lost and in-flight image uploads break.
   useEffect(() => {
     if (note) {
       staleNoteRef.current = null;
       setTitle(note.title || "");
       setContent(note.content || "");
-      setContentVersion((v) => v + 1);
+
+      if (prevNoteIdForVersionRef.current !== note._id) {
+        prevNoteIdForVersionRef.current = note._id;
+        setContentVersion((v) => v + 1);
+      }
     }
   }, [note]);
 
