@@ -382,16 +382,15 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
         </div>
 
       {/* Editor content — scrollable */}
-      <div className="flex-1 overflow-y-auto p-4">
-        <div className="max-w-5xl mx-auto">
-          <div className="border border-border/50 rounded-xl bg-card/30" key={`${noteId}-${contentVersion}`}>
-            <WysiwygEditor
-              content={content}
-              onChange={(md) => setContent(md)}
-              placeholder="Bắt đầu viết..."
-              onImageUpload={handleImageUpload}
-            />
-          </div>
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-5xl mx-auto p-4 pt-0">
+          <WysiwygEditor
+            key={`${noteId}-${contentVersion}`}
+            content={content}
+            onChange={(md) => setContent(md)}
+            placeholder="Bắt đầu viết..."
+            onImageUpload={handleImageUpload}
+          />
 
           {/* Note metadata */}
           <div className="mt-4 p-3 rounded-xl bg-muted/20 border border-border/30">
