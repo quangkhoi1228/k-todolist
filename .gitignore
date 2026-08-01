@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.teams-session
+.zalo-session
+zalo-messages.json
+teams-messages.json
+.history

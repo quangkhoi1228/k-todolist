@@ -211,16 +211,13 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Note title + toolbar row — scrolls with content */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/50 bg-muted/10 shrink-0">
-        <div className="flex-1 min-w-0">
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full bg-transparent text-lg font-bold text-foreground outline-none placeholder:text-muted-foreground/40"
-            placeholder="Tiêu đề ghi chú..."
-          />
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/40 bg-card/30 dark:bg-zinc-900/30 backdrop-blur-sm shrink-0">
+        <div className="flex-1 min-w-0 relative flex items-center">
+          <span className="text-sm font-semibold text-muted-foreground truncate">
+            {title || "Ghi chú không tên"}
+          </span>
           {isLoading && (
-            <div className="absolute right-0 top-1/2 -translate-y-1/2">
+            <div className="ml-3">
               <span className="w-3.5 h-3.5 block border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
             </div>
           )}
@@ -230,7 +227,7 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
             <button
               type="button"
               onClick={() => setProjectMenuOpen(!projectMenuOpen)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-muted/40 hover:bg-muted border border-border/50 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-card/50 dark:bg-zinc-800/50 backdrop-blur-md hover:bg-muted border border-border/40 text-muted-foreground hover:text-foreground transition-colors cursor-pointer shadow-sm"
             >
               <Folder className="w-3.5 h-3.5" />
               <span className="truncate max-w-[120px]">
@@ -240,7 +237,7 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
             </button>
 
             {projectMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] bg-popover border border-border rounded-xl shadow-xl p-1.5">
+              <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] bg-card/95 backdrop-blur-xl border border-border/40 rounded-xl shadow-xl p-1.5">
                 <button
                   type="button"
                   onClick={() => handleMoveToProject(null)}
@@ -302,7 +299,7 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
 
             {shareMenuOpen && (
               <div
-                className="absolute right-0 top-full mt-1 z-50 min-w-[260px] bg-popover border border-border rounded-xl shadow-xl p-3"
+                className="absolute right-0 top-full mt-1 z-50 min-w-[260px] bg-card/95 backdrop-blur-xl border border-border/40 rounded-xl shadow-xl p-3"
               >
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-foreground">Chia sẻ ghi chú</span>
@@ -383,7 +380,13 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
 
       {/* Editor content — scrollable */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto p-4 pt-0">
+        <div className="max-w-4xl mx-auto p-6 md:p-10 pt-8">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="w-full bg-transparent text-3xl md:text-4xl font-extrabold text-foreground outline-none placeholder:text-muted-foreground/30 mb-6"
+            placeholder="Tiêu đề ghi chú..."
+          />
           <WysiwygEditor
             key={`${noteId}-${contentVersion}`}
             content={content}

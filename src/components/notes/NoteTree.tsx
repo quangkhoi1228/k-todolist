@@ -78,9 +78,9 @@ function TreeNode({
   return (
     <div>
       <div
-        className={`group flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer transition-all text-xs ${
+        className={`group flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer transition-all duration-200 text-xs ${
           isSelected
-            ? "bg-primary/15 text-primary font-semibold"
+            ? "bg-primary/15 text-primary font-semibold shadow-sm"
             : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
         }`}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -351,7 +351,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-3 py-2.5 border-b border-border/50">
+      <div className="px-3 py-2.5 border-b border-border/40">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-1.5">
             <FileText className="w-3.5 h-3.5 text-primary" />

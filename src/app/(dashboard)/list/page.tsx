@@ -237,9 +237,9 @@ export default function ListPage() {
   });
 
   return (
-    <div className="p-3 h-full min-h-0 flex flex-col gap-2">
+    <div className="p-3 h-full min-h-0 flex flex-col gap-3">
       {/* Combined Single-Row Header & Filter Bar */}
-      <div className="flex flex-col gap-2 glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full">
+      <div className="flex flex-col gap-2 bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md p-3 rounded-[1.25rem] border border-border/40 shadow-sm shrink-0 w-full">
         {/* Main Row */}
         <div className="flex items-center justify-between gap-2 w-full">
           {/* Left section: Title + Toggle button */}
@@ -261,20 +261,20 @@ export default function ListPage() {
           <div className="hidden md:flex items-center gap-1.5 flex-1">
             {/* Search Bar */}
             <div className="relative w-full sm:w-44">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-8 h-8 text-[11px] bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 rounded-xl w-full shadow-sm hover:border-border/60 focus-visible:ring-primary/30 transition-all duration-300"
               />
             </div>
 
             {/* Project Filter */}
             <div className="w-full sm:w-auto sm:min-w-[7.5rem] sm:max-w-[11rem]">
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full truncate">
-                  <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
+                <SelectTrigger className="bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md hover:bg-card border-border/40 text-foreground h-8 px-2.5 rounded-xl text-[11px] font-medium focus-visible:ring-primary/30 cursor-pointer flex items-center gap-1.5 shadow-sm w-full truncate transition-all duration-300 hover:border-border/60">
+                  <Briefcase className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Dự án: Tất cả">
                     {filterProject === "all"
                       ? "Dự án: Tất cả"
@@ -296,9 +296,9 @@ export default function ListPage() {
             </div>
 
             {/* Status Filter */}
-            <div className="w-full sm:w-28">
+            <div className="w-full sm:w-32">
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-full">
+                <SelectTrigger className="bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md hover:bg-card border-border/40 text-foreground h-8 px-2.5 rounded-xl text-[11px] font-medium focus-visible:ring-primary/30 cursor-pointer flex items-center gap-1.5 shadow-sm w-full transition-all duration-300 hover:border-border/60">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
@@ -405,12 +405,12 @@ export default function ListPage() {
           <div className="md:hidden flex flex-col gap-2 pt-2 border-t border-border/40 w-full">
             {/* Search Bar */}
             <div className="relative w-full">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-8 h-8 text-[11px] bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 rounded-xl w-full shadow-sm hover:border-border/60 focus-visible:ring-primary/30 transition-all duration-300"
               />
             </div>
 
@@ -513,14 +513,14 @@ export default function ListPage() {
       </div>
 
       {/* Tasks Table */}
-      <div className="flex-1 min-h-0 overflow-hidden glass-panel rounded-2xl">
+      <div className="flex-1 min-h-0 overflow-hidden bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border border-border/40 rounded-[1.25rem] shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)]">
         {tasks === undefined ? (
-          <div className="p-8 text-center text-neutral-400">Loading tasks...</div>
+          <div className="p-8 text-center text-muted-foreground">Loading tasks...</div>
         ) : (
           <div className="h-full overflow-auto">
             <Table>
-              <TableHeader className="bg-black/40 sticky top-0 z-10">
-                <TableRow className="border-white/5 hover:bg-transparent">
+              <TableHeader className="bg-muted/30 dark:bg-zinc-800/40 backdrop-blur-md sticky top-0 z-10 border-b border-border/40 shadow-sm">
+                <TableRow className="border-border/40 hover:bg-transparent">
                   <TableHead 
                     className="text-neutral-400 font-bold text-[10px] uppercase tracking-wider cursor-pointer hover:bg-white/5 select-none transition-colors group py-2"
                     onClick={() => handleSort("title")}
@@ -593,8 +593,8 @@ export default function ListPage() {
                       : null;
 
                     return (
-                      <TableRow key={task._id} className="border-white/5 hover:bg-white/5 transition-colors group">
-                        <TableCell className="font-semibold text-neutral-200 group-hover:text-white transition-colors">
+                      <TableRow key={task._id} className="border-border/40 hover:bg-muted/30 dark:hover:bg-zinc-800/50 transition-all duration-200 group">
+                        <TableCell className="font-semibold text-foreground group-hover:text-primary transition-colors">
                           <div className="flex flex-col gap-1 w-full max-w-md">
                             {editingTitleId === task._id ? (
                               <Input
@@ -622,7 +622,7 @@ export default function ListPage() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-neutral-400 text-xs">
+                        <TableCell className="text-muted-foreground text-xs">
                           {projectName ? (
                             <div className="flex">
                               <Badge variant="outline" className="text-[8px] font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20 py-0 px-1.5 flex items-center gap-0.5 rounded-md w-fit">
@@ -634,7 +634,7 @@ export default function ListPage() {
                             "-"
                           )}
                         </TableCell>
-                        <TableCell className="text-neutral-400 group-hover:text-neutral-300 text-xs transition-colors">
+                        <TableCell className="text-muted-foreground group-hover:text-foreground text-xs transition-colors">
                           {editingDateId === task._id ? (
                             <Input
                               type="date"
@@ -662,7 +662,7 @@ export default function ListPage() {
                             </span>
                           )}
                         </TableCell>
-                        <TableCell className="text-neutral-400 group-hover:text-neutral-300 text-xs transition-colors">
+                        <TableCell className="text-muted-foreground group-hover:text-foreground text-xs transition-colors">
                           {editingEndDateId === task._id ? (
                             <Input
                               type="datetime-local"
@@ -712,19 +712,19 @@ export default function ListPage() {
                               className="focus:outline-none cursor-pointer"
                               title="Nhấp để sửa nhanh thời gian dự kiến"
                             >
-                              <Badge variant="outline" className={task.isOverflowing ? 'text-red-300 border-red-500/30 bg-red-950/30 text-[9px] py-0 px-1.5' : 'text-neutral-400 border-white/10 bg-black/20 hover:bg-white/5 transition-colors text-[9px] py-0 px-1.5'}>
+                              <Badge variant="outline" className={task.isOverflowing ? 'text-red-600 dark:text-red-400 border-red-500/30 bg-red-500/10 text-[10px] py-0.5 px-2 font-bold shadow-sm' : 'text-muted-foreground border-border/40 bg-muted/30 hover:bg-muted/60 transition-colors text-[10px] py-0.5 px-2 font-semibold shadow-sm'}>
                                 {formatHours(task.estimatedTime)}
                               </Badge>
                             </button>
                           )}
                         </TableCell>
-                        <TableCell className="text-neutral-400 text-xs">
+                        <TableCell className="text-muted-foreground text-xs">
                           {task.pic ? (
                             <div className="inline-flex items-center gap-1.5 bg-black/30 px-1.5 py-0 rounded-full border border-white/5">
                               <div className="w-4 h-4 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center text-[8px] font-bold text-primary">
                                 {task.pic.charAt(0).toUpperCase()}
                               </div>
-                              <span className="text-[10px] font-medium text-neutral-300">{task.pic}</span>
+                              <span className="text-[10px] font-medium text-foreground">{task.pic}</span>
                             </div>
                           ) : "-"}
                         </TableCell>

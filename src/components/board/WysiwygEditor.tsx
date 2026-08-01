@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Markdown } from "@tiptap/markdown";
 import StarterKit from "@tiptap/starter-kit";
@@ -8,8 +8,6 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
 import Underline from "@tiptap/extension-underline";
-import Superscript from "@tiptap/extension-superscript";
-import Subscript from "@tiptap/extension-subscript";
 import TextAlign from "@tiptap/extension-text-align";
 import { Highlight } from "@tiptap/extension-highlight";
 import { Table } from "@tiptap/extension-table";
@@ -27,8 +25,6 @@ import {
   Underline as UnderlineIcon,
   Strikethrough,
   Code,
-  Subscript as SubscriptIcon,
-  Superscript as SuperscriptIcon,
   List,
   ListOrdered,
   ListIndentIncrease,
@@ -199,52 +195,52 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
   const [keepAspect, setKeepAspect] = useState(true);
   const imageEditorRef = useRef<HTMLDivElement>(null);
 
+  const extensions = useMemo(() => [
+    StarterKit.configure({
+      heading: { levels: [1, 2, 3] },
+      link: false,
+    }),
+    Markdown,
+    TextStyle,
+    Color.configure({ types: ['textStyle'] }),
+    FontSize,
+    Underline.configure(),
+    TextAlign.configure({
+      types: ['heading', 'paragraph'],
+    }),
+    Highlight.configure({ multicolor: true }),
+    Placeholder.configure({
+      placeholder: placeholder || "Bắt đầu viết...",
+    }),
+    Table.configure({
+      resizable: true,
+      HTMLAttributes: {
+        class: 'tiptap-table w-full border-collapse',
+      },
+    }),
+    TableRow,
+    TableCell,
+    TableHeader,
+    ImageEx.configure({
+      inline: false,
+      allowBase64: false,
+      HTMLAttributes: {
+        class: 'tiptap-image',
+      },
+    }),
+    LinkExt.configure({
+      openOnClick: true,
+      HTMLAttributes: {
+        rel: 'noopener noreferrer',
+        target: '_blank',
+      },
+    }),
+  ], [placeholder]);
+
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: { levels: [1, 2, 3] },
-        link: false,
-      }),
-      Markdown,
-      TextStyle,
-      Color.configure({ types: ['textStyle'] }),
-      FontSize,
-      Underline,
-      Superscript,
-      Subscript,
-      TextAlign.configure({
-        types: ['heading', 'paragraph'],
-      }),
-      Highlight.configure({ multicolor: true }),
-      Placeholder.configure({
-        placeholder: placeholder || "Bắt đầu viết...",
-      }),
-      Table.configure({
-        resizable: true,
-        HTMLAttributes: {
-          class: 'tiptap-table w-full border-collapse',
-        },
-      }),
-      TableRow,
-      TableCell,
-      TableHeader,
-      ImageEx.configure({
-        inline: false,
-        allowBase64: false,
-        HTMLAttributes: {
-          class: 'tiptap-image',
-        },
-      }),
-      LinkExt.configure({
-        openOnClick: false,
-        HTMLAttributes: {
-          rel: 'noopener noreferrer',
-          target: '_blank',
-        },
-      }),
-    ],
+    extensions,
     content,
-    contentType: "markdown",
+    contentType: "html",
     immediatelyRender: false,
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
@@ -440,7 +436,7 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
   return (
     <div className="wysiwyg-editor relative">
       {/* === TOOLBAR (single row) — sticky when scrolling editor content === */}
-      <div className="sticky top-0 z-20 flex items-center gap-0.5 px-2 py-1 border-b border-border flex-nowrap bg-background shadow-sm overflow-x-auto rounded-t-lg">
+      <div className="sticky top-0 z-20 flex flex-wrap items-center gap-0.5 px-2 py-1 border-b border-border bg-background shadow-sm rounded-t-lg">
 
         {/* ─── GROUP 1: History ─── */}
         <div className="flex items-center gap-0.5">
@@ -532,20 +528,6 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
             title="Inline code"
           >
             <Code className="w-4 h-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleSuperscript().run()}
-            active={editor.isActive("superscript")}
-            title="Superscript"
-          >
-            <SuperscriptIcon className="w-4 h-4" />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleSubscript().run()}
-            active={editor.isActive("subscript")}
-            title="Subscript"
-          >
-            <SubscriptIcon className="w-4 h-4" />
           </ToolbarButton>
         </div>
 
@@ -903,10 +885,12 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
       </div>
 
       {/* Editor content */}
-      <EditorContent
-        editor={editor}
-        className="max-w-none p-4 min-h-[200px] focus:outline-none text-sm leading-relaxed"
-      />
+      <div className="overflow-y-auto max-h-[350px] custom-scrollbar">
+        <EditorContent
+          editor={editor}
+          className="max-w-none p-4 min-h-[200px] focus:outline-none text-sm leading-relaxed"
+        />
+      </div>
 
       {/* ─── Image Edit Popover ─── */}
       {imageEditorOpen && imageEditorAttrs && (
@@ -1093,11 +1077,11 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
           opacity: 0.4;
         }
         .wysiwyg-editor .tiptap a {
-          color: var(--blue-600);
+          color: #2563eb; /* blue-600 */
           text-decoration: underline;
         }
         .dark .wysiwyg-editor .tiptap a {
-          color: var(--blue-400);
+          color: #60a5fa; /* blue-400 */
         }
         .wysiwyg-editor .tiptap s {
           text-decoration: line-through;

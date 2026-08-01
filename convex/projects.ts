@@ -7,12 +7,18 @@ export const getProjects = query({
   args: {
     userId: v.string(),
     includeArchived: v.optional(v.boolean()),
+    includeTrashed: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const projects = await ctx.db
       .query("projects")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
+
+    // Filter out trashed projects unless explicitly requested
+    if (!args.includeTrashed) {
+      return projects.filter((p) => !p.deletedAt);
+    }
 
     if (args.includeArchived) {
       return projects;
@@ -38,6 +44,12 @@ export const updateProject = mutation({
     name: v.optional(v.string()),
     color: v.optional(v.string()),
     archived: v.optional(v.boolean()),
+    ticketId: v.optional(v.string()),
+    teamsGroups: v.optional(v.array(v.object({
+      name: v.string(),
+      type: v.string(),
+      platform: v.optional(v.string()), // "teams" | "zalo"
+    }))),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
@@ -45,6 +57,8 @@ export const updateProject = mutation({
     if (updates.name !== undefined) patch.name = updates.name;
     if (updates.color !== undefined) patch.color = updates.color;
     if (updates.archived !== undefined) patch.archived = updates.archived;
+    if (updates.ticketId !== undefined) patch.ticketId = updates.ticketId;
+    if (updates.teamsGroups !== undefined) patch.teamsGroups = updates.teamsGroups;
     return await ctx.db.patch(id, patch);
   },
 });
@@ -56,6 +70,20 @@ export const setProjectArchived = mutation({
   },
   handler: async (ctx, args) => {
     return await ctx.db.patch(args.id, { archived: args.archived });
+  },
+});
+
+export const softDeleteProject = mutation({
+  args: { id: v.id("projects") },
+  handler: async (ctx, args) => {
+    return await ctx.db.patch(args.id, { deletedAt: Date.now() });
+  },
+});
+
+export const restoreProject = mutation({
+  args: { id: v.id("projects") },
+  handler: async (ctx, args) => {
+    return await ctx.db.patch(args.id, { deletedAt: undefined });
   },
 });
 
@@ -170,5 +198,67 @@ export const updateProjectDetail = mutation({
     const patch: Record<string, unknown> = {};
     if (updates.notes !== undefined) patch.notes = updates.notes;
     return await ctx.db.patch(id, patch);
+  },
+});
+
+export const updateProjectTeamsGroups = mutation({
+  args: {
+    id: v.id("projects"),
+    internalGroupUrl: v.optional(v.union(v.string(), v.null())), // Deprecated
+    customerGroupUrl: v.optional(v.union(v.string(), v.null())), // Deprecated
+    teamsGroups: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          type: v.string(),
+          platform: v.optional(v.string()), // "teams" | "zalo"
+        })
+      )
+    ),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...groups } = args;
+    const patch: Record<string, unknown> = {};
+    if (groups.internalGroupUrl !== undefined) patch.internalGroupUrl = groups.internalGroupUrl ?? undefined;
+    if (groups.customerGroupUrl !== undefined) patch.customerGroupUrl = groups.customerGroupUrl ?? undefined;
+    if (groups.teamsGroups !== undefined) patch.teamsGroups = groups.teamsGroups;
+    return await ctx.db.patch(id, patch);
+  },
+});
+
+export const updateProjectIsdStatus = mutation({
+  args: {
+    id: v.id("projects"),
+    ticketId: v.optional(v.string()),
+    isdStatus: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...updates } = args;
+    const patch: Record<string, unknown> = {};
+    if (updates.ticketId !== undefined) patch.ticketId = updates.ticketId;
+    if (updates.isdStatus !== undefined) patch.isdStatus = updates.isdStatus;
+    patch.isdUpdatedAt = Date.now();
+    return await ctx.db.patch(id, patch);
+  },
+});
+
+export const getActiveProjectsWithTeamsGroups = query({
+  args: {
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const projects = await ctx.db
+      .query("projects")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    // Only active projects: not archived, not deleted, and have at least one Teams group link
+    return projects.filter((p) => {
+      if (p.archived) return false;
+      if (p.deletedAt) return false;
+      if (p.teamsGroups && p.teamsGroups.length > 0) return true;
+      if (!p.internalGroupUrl && !p.customerGroupUrl) return false;
+      return true;
+    });
   },
 });

@@ -54,18 +54,18 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
   };
 
   return (
-    <div className={`flex flex-col w-[345px] shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group ${
+    <div className={`flex flex-col w-[300px] shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)] ${
       statusMode
         ? statusStyles[statusMode]
         : isOverdue
-          ? 'bg-amber-500/5 dark:bg-amber-500/5 border-amber-500/30 shadow-[0_0_20px_rgba(245,158,11,0.08)]'
+          ? 'bg-amber-500/5 dark:bg-amber-500/5 border-amber-500/30'
           : isOverflow 
             ? 'bg-destructive/10 border-destructive/30 glow-red' 
             : isTodayColumn 
               ? 'bg-primary/5 dark:bg-primary/5 border-primary/40 shadow-[0_0_20px_rgba(139,92,246,0.12)]' 
-              : 'glass-panel border-border/50'
+              : 'bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 hover:border-border/60'
     }`}>
-      <div className={`p-3 py-2.5 border-b flex justify-between items-center rounded-t-2xl relative shrink-0 ${
+      <div className={`p-3 border-b flex justify-between items-center rounded-t-2xl relative shrink-0 ${
         statusMode
           ? statusHeaderStyles[statusMode]
           : isOverdue
@@ -74,7 +74,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
               ? 'border-destructive/20 bg-destructive/10' 
               : isTodayColumn 
                 ? 'border-primary/20 bg-primary/10' 
-                : 'border-border/50 bg-muted/20'
+                : 'border-border/40 bg-muted/20 dark:bg-zinc-800/40 backdrop-blur-md'
       }`}>
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
@@ -130,7 +130,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
       
       <div
         ref={setNodeRef}
-        className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 transition-colors ${isOver ? "bg-white/5" : ""}`}
+        className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 transition-colors ${isOver ? "bg-foreground/5 dark:bg-white/5" : ""}`}
       >
         <div className="min-h-[150px] pt-1.5 pb-1.5 px-0.5">
           <SortableContext items={tasks.map((t) => t._id)} strategy={verticalListSortingStrategy}>

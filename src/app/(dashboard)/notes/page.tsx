@@ -38,7 +38,7 @@ export default function NotesPage() {
       <div
         className={`${
           sidebarOpen ? "w-72" : "w-0"
-        } transition-all duration-300 ease-in-out overflow-hidden shrink-0 border-r border-border/50 bg-card/30`}
+        } transition-all duration-300 ease-in-out overflow-hidden shrink-0 border-r border-border/40 bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md`}
       >
         {sidebarOpen && (
           <NoteTree
@@ -52,7 +52,7 @@ export default function NotesPage() {
       <button
         type="button"
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 rounded-r-lg bg-muted/80 hover:bg-muted border border-border/50 border-l-0 text-muted-foreground hover:text-foreground transition-colors cursor-pointer shadow-sm"
+        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 rounded-r-lg bg-card/80 dark:bg-zinc-800/80 backdrop-blur-md hover:bg-muted border border-border/40 border-l-0 text-muted-foreground hover:text-foreground transition-colors cursor-pointer shadow-sm"
       >
         {sidebarOpen ? (
           <PanelLeftClose className="w-3.5 h-3.5" />

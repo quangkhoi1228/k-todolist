@@ -7,35 +7,41 @@ import { useAuth } from "@clerk/nextjs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Trash2, FolderPlus, Folder, Pencil, Check, X, Archive, ArchiveRestore } from "lucide-react";
+import { Trash2, FolderPlus, Folder, Pencil, Check, X, Archive, ArchiveRestore, RotateCcw, AlertTriangle } from "lucide-react";
 
 export function ManageProjectsDialog({ children }: { children: React.ReactNode }) {
   const { userId } = useAuth();
   const [open, setOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
-  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [tab, setTab] = useState<"active" | "archived" | "trash">("active");
   
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
 
   const projects = useQuery(
     api.projects.getProjects,
-    userId ? { userId, includeArchived: true } : "skip"
+    userId ? { userId, includeArchived: true, includeTrashed: true } : "skip"
   );
   const createProject = useMutation(api.projects.createProject);
   const updateProject = useMutation(api.projects.updateProject);
   const setProjectArchived = useMutation(api.projects.setProjectArchived);
+  const softDeleteProject = useMutation(api.projects.softDeleteProject);
+  const restoreProject = useMutation(api.projects.restoreProject);
   const deleteProject = useMutation(api.projects.deleteProject);
 
   const activeProjects = useMemo(
-    () => (projects ?? []).filter((p) => !p.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    () => (projects ?? []).filter((p) => !p.archived && !p.deletedAt).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     [projects]
   );
   const archivedProjects = useMemo(
-    () => (projects ?? []).filter((p) => p.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    () => (projects ?? []).filter((p) => p.archived && !p.deletedAt).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     [projects]
   );
-  const visibleProjects = tab === "active" ? activeProjects : archivedProjects;
+  const trashedProjects = useMemo(
+    () => (projects ?? []).filter((p) => p.deletedAt).sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0)),
+    [projects]
+  );
+  const visibleProjects = tab === "active" ? activeProjects : tab === "archived" ? archivedProjects : trashedProjects;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,9 +75,27 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
     await setProjectArchived({ id: id as any, archived: false });
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm("Cảnh báo: Bạn có chắc chắn muốn xoá dự án này? TẤT CẢ các công việc liên quan thuộc dự án này cũng sẽ bị xoá vĩnh viễn và không thể khôi phục!")) {
+  const handleSoftDelete = async (id: string) => {
+    if (confirm("Đưa dự án vào thùng rác? Bạn có thể khôi phục sau.")) {
+      await softDeleteProject({ id: id as any });
+    }
+  };
+
+  const handleRestore = async (id: string) => {
+    await restoreProject({ id: id as any });
+  };
+
+  const handlePermanentDelete = async (id: string) => {
+    if (confirm("Xóa vĩnh viễn dự án này? Tất cả công việc và ghi chú liên quan sẽ bị xóa. Hành động này KHÔNG THỂ hoàn tác!")) {
       await deleteProject({ id: id as any });
+    }
+  };
+
+  const handleEmptyTrash = async () => {
+    if (confirm("Dọn sạch thùng rác? Tất cả dự án trong thùng rác sẽ bị xóa vĩnh viễn.")) {
+      for (const p of trashedProjects) {
+        await deleteProject({ id: p._id as any });
+      }
     }
   };
 
@@ -118,18 +142,75 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
             >
               Đã lưu trữ ({archivedProjects.length})
             </button>
+            <button
+              type="button"
+              onClick={() => setTab("trash")}
+              className={`flex-1 h-7 text-[11px] font-semibold rounded-md transition-colors cursor-pointer ${
+                tab === "trash" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              🗑 Thùng rác ({trashedProjects.length})
+            </button>
           </div>
 
           <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
             {!projects && <div className="text-sm text-muted-foreground text-center py-4">Đang tải...</div>}
             {projects && visibleProjects.length === 0 && (
               <div className="text-sm text-muted-foreground text-center py-8 bg-muted/20 rounded-xl border border-dashed border-border">
-                {tab === "active" ? "Chưa có dự án nào" : "Chưa có dự án đã lưu trữ"}
+                {tab === "active" ? "Chưa có dự án nào" : tab === "archived" ? "Chưa có dự án đã lưu trữ" : "Thùng rác trống"}
               </div>
             )}
+
+            {/* Trash tab UI */}
+            {tab === "trash" && trashedProjects.length > 0 && (
+              <div className="flex justify-end mb-2">
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="h-6 text-[10px] text-red-500 hover:text-red-600 hover:bg-red-500/10 cursor-pointer"
+                  onClick={handleEmptyTrash}
+                >
+                  <Trash2 className="w-3 h-3 mr-1" />
+                  Dọn sạch
+                </Button>
+              </div>
+            )}
+
             {visibleProjects.map((project) => (
               <div key={project._id} className="flex items-center justify-between p-3 rounded-xl border border-border bg-muted/20 hover:bg-muted/40 transition-colors">
-                {editingId === project._id ? (
+                {tab === "trash" ? (
+                  <>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                      <div className="min-w-0">
+                        <span className="font-medium text-sm">{project.name}</span>
+                        <p className="text-[10px] text-muted-foreground">
+                          Đã xóa {project.deletedAt ? new Date(project.deletedAt).toLocaleDateString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10 cursor-pointer"
+                        onClick={() => handleRestore(project._id)}
+                        title="Khôi phục"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </Button>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                        onClick={() => handlePermanentDelete(project._id)}
+                        title="Xóa vĩnh viễn"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </>
+                ) : editingId === project._id ? (
                   <div className="flex items-center gap-1.5 flex-1 mr-2">
                     <Input 
                       value={editingName} 
@@ -188,7 +269,7 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
                         variant="ghost" 
                         size="icon" 
                         className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                        onClick={() => handleDelete(project._id)}
+                        onClick={() => handleSoftDelete(project._id)}
                         title="Xoá dự án"
                       >
                         <Trash2 className="w-4 h-4" />

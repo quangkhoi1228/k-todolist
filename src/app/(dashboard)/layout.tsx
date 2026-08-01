@@ -2,6 +2,9 @@ import { auth } from "@clerk/nextjs/server";
 import Sidebar from "@/components/layout/Sidebar";
 import MobileSidebar from "@/components/layout/MobileSidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { SuggestionsPopupClient } from "@/components/layout/SuggestionsPopupClient";
+import { GlobalSyncManager } from "@/components/layout/GlobalSyncManager";
+import { DashboardSplitView } from "@/components/layout/DashboardSplitView";
 
 export default async function DashboardLayout({
   children,
@@ -11,22 +14,13 @@ export default async function DashboardLayout({
   await auth.protect({ unauthenticatedUrl: "/" });
 
   return (
-    <div className="flex h-screen bg-transparent text-foreground overflow-hidden">
+    <div className="flex h-screen bg-gradient-to-br from-background via-background to-primary/5 dark:to-primary/10 text-foreground overflow-hidden">
       <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Mobile Header */}
-        <header className="md:hidden h-16 border-b border-border bg-card/60 backdrop-blur-md flex items-center justify-between px-4 shrink-0 z-20">
-          <div className="flex items-center gap-3">
-            <MobileSidebar />
-            <h1 className="text-lg font-bold tracking-tight">KFlow</h1>
-          </div>
-          <ThemeToggle />
-        </header>
-        
-        <main className="flex-1 min-h-0 overflow-hidden">
-          {children}
-        </main>
-      </div>
+      <DashboardSplitView>
+        {children}
+      </DashboardSplitView>
+      <SuggestionsPopupClient />
+      <GlobalSyncManager />
     </div>
   );
 }

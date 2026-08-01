@@ -237,10 +237,10 @@ function SwimlaneCell({ id, project, status, tasks, selectedTaskIds, onTaskClick
   return (
     <div
       ref={setNodeRef}
-      className={`shrink-0 p-1.5 rounded-xl border transition-all duration-200 min-h-[80px] flex flex-col gap-1 relative group/cell ${
+      className={`shrink-0 p-2 rounded-2xl border transition-all duration-300 min-h-[80px] flex flex-col gap-1 relative group/cell ${
         isOver 
           ? "bg-primary/10 border-primary/40 shadow-sm" 
-          : "bg-muted/10 border-border/30 hover:border-border/60"
+          : "bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 hover:border-border/60 hover:shadow-sm"
       }`}
       style={{ width: KANBAN_COLUMN_WIDTH }}
     >
@@ -438,8 +438,8 @@ function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }:
       style={style}
       {...(project._id === "none" ? {} : attributes)}
       {...(project._id === "none" ? {} : listeners)}
-      className={`flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 bg-zinc-50 dark:bg-zinc-900 shadow-sm ${
-        project._id === "none" ? "" : "cursor-grab active:cursor-grabbing hover:border-primary/40 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      className={`flex items-center gap-2 px-3 py-2.5 rounded-[1.25rem] border border-border/40 bg-card/80 dark:bg-zinc-900/80 backdrop-blur-md shadow-sm transition-all duration-300 ${
+        project._id === "none" ? "" : "cursor-grab active:cursor-grabbing hover:border-primary/40 hover:bg-card hover:shadow-md dark:hover:bg-zinc-800"
       }`}
     >
       {/* Expand toggle */}
@@ -1400,12 +1400,12 @@ export function KanbanBoard({
 
             {/* Search Bar */}
             <div className="relative w-full">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-8 h-8 text-[11px] bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 rounded-xl w-full shadow-sm hover:border-border/60 focus-visible:ring-primary/30 transition-all duration-300"
               />
             </div>
 
@@ -1551,7 +1551,7 @@ export function KanbanBoard({
                   return (
                   <div 
                     key={col.status}
-                    className={`shrink-0 py-1 px-2 rounded-lg border font-bold text-[10px] uppercase tracking-wider flex items-center justify-between gap-1 shadow-sm ${col.colorClass}`}
+                    className={`shrink-0 py-1.5 px-3 rounded-xl border font-bold text-[10px] uppercase tracking-wider flex items-center justify-between gap-1 shadow-sm backdrop-blur-md ${col.colorClass}`}
                     style={{ width: KANBAN_COLUMN_WIDTH }}
                   >
                     {col.status === "done" ? (

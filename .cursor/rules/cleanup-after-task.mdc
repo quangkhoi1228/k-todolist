@@ -1,0 +1,42 @@
+---
+description: Sau khi hoàn thành mỗi tác vụ, agent phải dọn dẹp file test/tạm trong source code
+alwaysApply: true
+---
+
+# Dọn dẹp sau khi hoàn thành tác vụ
+
+Sau khi làm xong **mỗi tác vụ**, agent **bắt buộc** chạy thêm 1 bước dọn dẹp trước khi kết thúc.
+
+## Phạm vi dọn dẹp: CHỈ source code
+
+Bước dọn dẹp này **chỉ xoá file rác/test trong source code** (các file `.ts`, `.py`, `.html`, `.txt`, `.json`, screenshot, v.v. được tạo ra trong quá trình debug/test).
+
+**KHÔNG được** tự ý xoá/sửa dữ liệu ở các bên liên quan:
+
+- **Convex database** — không tự xoá project, messages, suggestions, members, logs... trừ khi user yêu cầu cụ thể
+- **ISD / Teams / Zalo / Outlook** — không xoá ticket, group, message, email, session, config runtime
+- **File cấu hình đang dùng** — ví dụ `teams-monitor-config.json` (được route API đọc/ghi)
+
+## 1. Xoá test/debug scripts
+
+Xoá các file tạm được tạo ra trong quá trình debug/test, trừ khi file đó:
+
+- Được import hoặc chạy bởi code chính thức (`src/`, `agents/pm/lib/`, API routes, `sync-*.ts`)
+- Là công cụ dùng thường xuyên mà user yêu cầu giữ lại
+
+Danh sách mẫu cần xoá: `debug_*.ts`, `test-*.ts`, `check_*.ts` (nếu không được dùng), `*.dump.*`, `*_eval.ts`, script seed test, v.v.
+
+## 2. Xoá file rác khác
+
+- Screenshot chụp tạm khi debug (`teams-screenshots/`, `zalo-screenshots/` chứa file test không cần)
+- File dump DOM/html/json (`compose-*.txt`, `zalo-dom.html`, `*-dump.*`, v.v.)
+- Script một-lần (`patch_*.py`, `fix_*.py`, `recover.py`, v.v.) nếu không còn dùng
+
+## 3. Kiểm tra trước khi kết thúc
+
+Chạy `git status --porcelain` và rà soát các file untracked mới phát sinh; nếu là file test/tạm thì xoá trước khi báo cáo xong tác vụ.
+
+## Ngoại lệ
+
+- Các script trong `agents/pm/scripts/` được gọi từ `src/app/api/agents/*/route.ts` **không được xoá** (teams-health, teams-list-chats, zalo-health, zalo-list-chats, teams-extractor, zalo-extractor, teams-automator, zalo-automator, sync-*)
+- File cấu hình dùng thật (`teams-monitor-config.json`) nếu đang dùng

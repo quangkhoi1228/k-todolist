@@ -4,7 +4,8 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { useRouter, useParams } from "next/navigation";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,6 +18,12 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight as ChevronRightIcon,
+  Trash2,
+  RotateCcw,
+  AlertTriangle,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { TaskCard } from "@/components/board/TaskCard";
 import { ProjectDetailPanel } from "@/components/board/ProjectDetailPanel";
@@ -222,15 +229,26 @@ export default function ProjectDetailPage() {
   const { userId } = useAuth();
   const router = useRouter();
 
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
+  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true, includeTrashed: true } : "skip");
   const allTasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
   const updateTask = useMutation(api.tasks.updateTask);
   const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
+  const softDeleteProject = useMutation(api.projects.softDeleteProject);
+  const restoreProject = useMutation(api.projects.restoreProject);
+  const hardDeleteProject = useMutation(api.projects.deleteProject);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
   const [showDetail, setShowDetail] = useState(true);
+  const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members">("info");
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteMode, setDeleteMode] = useState<"soft" | "hard" | null>(null);
+  const [deleteProcessing, setDeleteProcessing] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [editedName, setEditedName] = useState("");
+  const updateProject = useMutation(api.projects.updateProject);
+  const updateProjectIsdStatus = useMutation(api.projects.updateProjectIsdStatus);
 
   const project = useMemo(() => {
     return projects?.find((p) => p._id === id);
@@ -376,6 +394,98 @@ export default function ProjectDetailPage() {
     }
   }
 
+  // ─── Delete/Restore handlers ──────────────────────────
+  const handleSoftDelete = useCallback(async () => {
+    setDeleteProcessing(true);
+    try {
+      await softDeleteProject({ id: id as Id<"projects"> });
+      router.push("/projects");
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDeleteProcessing(false);
+      setDeleteConfirmOpen(false);
+    }
+  }, [id, softDeleteProject, router]);
+
+  const handleRestore = useCallback(async () => {
+    setDeleteProcessing(true);
+    try {
+      await restoreProject({ id: id as Id<"projects"> });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDeleteProcessing(false);
+    }
+  }, [id, restoreProject]);
+
+  const handleHardDelete = useCallback(async () => {
+    setDeleteProcessing(true);
+    try {
+      await hardDeleteProject({ id: id as Id<"projects"> });
+      router.push("/projects");
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDeleteProcessing(false);
+      setDeleteConfirmOpen(false);
+    }
+  }, [id, hardDeleteProject, router]);
+
+  // ─── Rename handler ──────────────────────────────────
+  const handleRename = useCallback(async () => {
+    const name = editedName.trim();
+    if (!name || name === project?.name) {
+      setEditingName(false);
+      return;
+    }
+    try {
+      await updateProject({ id: id as Id<"projects">, name });
+    } catch (err) {
+      console.error(err);
+    }
+    setEditingName(false);
+  }, [editedName, id, project, updateProject]);
+
+  // ─── Auto-fetch ISD status on mount + every 5 min ───
+  const fetchIsdStatus = useCallback(async () => {
+    if (!project) return;
+    const ticketId = (project as any).ticketId;
+    if (!ticketId) return;
+    try {
+      const res = await fetch("/api/agents/refresh-isd-statuses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projects: [{ _id: project._id, ticketId }] }),
+      });
+      const data = await res.json();
+      if (data.ok && data.results?.[0]?.ok) {
+        await updateProjectIsdStatus({
+          id: project._id as Id<"projects">,
+          isdStatus: data.results[0].status,
+        });
+      }
+    } catch (err) {
+      console.error("[ISD] Failed to fetch status:", err);
+    }
+  }, [project, updateProjectIsdStatus]);
+
+  const initialFetchDone = useRef(false);
+
+  useEffect(() => {
+    if (!project || !(project as any).ticketId) return;
+
+    // Fetch on mount (only once)
+    if (!initialFetchDone.current) {
+      initialFetchDone.current = true;
+      fetchIsdStatus();
+    }
+
+    // Fetch every 5 minutes
+    const interval = setInterval(fetchIsdStatus, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [project, fetchIsdStatus]);
+
   if (projects === undefined) {
     return (
       <div className="p-3 h-full flex items-center justify-center">
@@ -408,12 +518,12 @@ export default function ProjectDetailPage() {
     <div className="p-3 h-full min-h-0 flex flex-col gap-2">
       {/* Header Bar */}
       <div className="glass p-3 rounded-xl border border-border/60 shadow-md shrink-0">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 w-7 p-0 rounded-lg cursor-pointer shrink-0"
+              className="h-8 w-8 p-0 rounded-lg cursor-pointer shrink-0"
               onClick={() => router.push("/projects")}
             >
               <ArrowLeft className="w-4 h-4" />
@@ -422,84 +532,201 @@ export default function ProjectDetailPage() {
               className="w-3 h-3 rounded-full shrink-0"
               style={{ backgroundColor: project.color || "#8b5cf6" }}
             />
-            <h1 className="text-sm font-bold text-foreground truncate">{project.name}</h1>
-
-            <div className="flex items-center gap-1.5 ml-2">
-              <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded">
-                Tổng: <strong className="text-foreground">{stats.total}</strong>
-              </span>
-              <span className="text-[10px] text-neutral-500 bg-neutral-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                <Circle className="w-1.5 h-1.5" /> {stats.todo}
-              </span>
-              <span className="text-[10px] text-blue-500 bg-blue-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                <Clock className="w-1.5 h-1.5" /> {stats.processing}
-              </span>
-              <span className="text-[10px] text-amber-500 bg-amber-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                <PauseCircle className="w-1.5 h-1.5" /> {stats.dueToday}
-              </span>
-              <span className="text-[10px] text-emerald-500 bg-emerald-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                <CheckCircle2 className="w-1.5 h-1.5" /> {stats.done}
-              </span>
+            <div className="group flex items-center min-w-0 flex-1">
+              {editingName ? (
+                <form onSubmit={(e) => { e.preventDefault(); handleRename(); }} className="flex items-center gap-1 w-full max-w-[600px]">
+                  <Input
+                    value={editedName}
+                    onChange={(e) => setEditedName(e.target.value)}
+                    className="h-7 text-sm font-bold px-2 py-0 w-full min-w-[200px] bg-background/80 border-border rounded-md"
+                    autoFocus
+                    onBlur={handleRename}
+                    onKeyDown={(e) => { if (e.key === "Escape") { setEditingName(false); setEditedName(project.name); } }}
+                  />
+                  <Button type="submit" variant="ghost" size="sm" className="h-7 w-7 p-0 rounded-md hover:bg-primary/10 text-primary transition-colors cursor-pointer shrink-0" title="Lưu">
+                    <Check className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => { setEditingName(false); setEditedName(project.name); }} className="h-7 w-7 p-0 rounded-md hover:bg-foreground/10 text-muted-foreground transition-colors cursor-pointer shrink-0" title="Huỷ">
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </form>
+              ) : (
+                <>
+                  <h1 className="text-sm font-bold text-foreground truncate" title={project.name}>
+                    {project.name}
+                  </h1>
+                  <button type="button" onClick={() => { setEditedName(project.name); setEditingName(true); }} className="ml-1.5 p-1 rounded-md hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition-colors cursor-pointer opacity-0 group-hover:opacity-100 shrink-0" title="Đổi tên">
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  {/* ISD Status Badge — shown in the header next to project name */}
+                  {(project as any).ticketId && (
+                    <a
+                      href={`https://servicedesk.fci.vn/browse/${(project as any).ticketId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border/40 bg-card/50 hover:bg-card transition-colors group shrink-0"
+                    >
+                      <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 group-hover:underline">
+                        {(project as any).ticketId}
+                      </span>
+                      {(project as any).isdStatus && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
+                          {(project as any).isdStatus}
+                        </span>
+                      )}
+                    </a>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {/* Search */}
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+            {/* Search — compact */}
             <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
-                placeholder="Tìm công việc..."
+                placeholder="Tìm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-6 h-7 text-[10px] bg-background/50 border-border/60 rounded-lg w-36"
+                className="pl-8 h-8 text-xs bg-background/50 border-border/60 rounded-lg w-28 lg:w-40 transition-all focus:w-48"
               />
             </div>
 
             {/* Sort */}
             <Select value={sortBy} onValueChange={(val) => setSortBy(val as typeof sortBy)}>
-              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-7 px-1.5 rounded-lg text-[10px] font-medium cursor-pointer w-32">
+              <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground h-8 px-2.5 rounded-lg text-xs font-medium cursor-pointer w-28 lg:w-32">
                 <SelectValue>
-                  {sortBy === "order" ? "Sắp xếp: Mặc định" : sortBy === "endDate" ? "Sắp xếp: Hạn chót" : "Sắp xếp: Ưu tiên"}
+                  {sortBy === "order" ? "Mặc định" : sortBy === "endDate" ? "Hạn chót" : "Ưu tiên"}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent className="bg-card/95 backdrop-blur-xl border-border">
-                <SelectItem value="order" className="text-[10px] cursor-pointer">Mặc định</SelectItem>
-                <SelectItem value="endDate" className="text-[10px] cursor-pointer">Hạn chót</SelectItem>
-                <SelectItem value="priority" className="text-[10px] cursor-pointer">Độ ưu tiên</SelectItem>
+                <SelectItem value="order" className="text-xs cursor-pointer">Mặc định</SelectItem>
+                <SelectItem value="endDate" className="text-xs cursor-pointer">Hạn chót</SelectItem>
+                <SelectItem value="priority" className="text-xs cursor-pointer">Ưu tiên</SelectItem>
               </SelectContent>
             </Select>
 
+            <div className="w-px h-6 bg-border/40 mx-1" />
+
             {/* Toggle Detail */}
             <Button
-              variant={showDetail ? "default" : "outline"}
+              variant="outline"
               size="sm"
-              className="h-7 text-[10px] rounded-lg cursor-pointer"
               onClick={() => setShowDetail(!showDetail)}
+              className="w-8 h-8 p-0 rounded-lg text-muted-foreground hover:text-foreground cursor-pointer shadow-sm bg-background/50"
+              title={showDetail ? "Thu gọn chi tiết" : "Mở chi tiết"}
             >
-              {showDetail ? <ChevronDown className="w-3 h-3 mr-1" /> : <ChevronRightIcon className="w-3 h-3 mr-1" />}
-              Chi tiết
+              {showDetail ? <ChevronDown className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
             </Button>
 
             {/* Add Task */}
             <NewTaskSheet>
-              <button className="px-2 h-7 bg-foreground text-background text-[10px] font-semibold rounded-lg hover:opacity-90 cursor-pointer shadow-sm flex items-center gap-1">
-                <Plus className="w-3 h-3" /> Công Việc
-              </button>
+              <Button
+                size="sm"
+                className="h-8 rounded-lg cursor-pointer shadow-sm px-3 ml-0.5 gap-1.5"
+                title="Thêm công việc"
+              >
+                <Plus className="w-4 h-4" />
+                <span className="hidden sm:inline text-xs font-semibold">Thêm việc</span>
+              </Button>
             </NewTaskSheet>
+
+            <div className="w-px h-6 bg-border/40 mx-1" />
+
+            {/* ─── Project actions ─────────────────────────── */}
+            {project.deletedAt ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleRestore}
+                  disabled={deleteProcessing}
+                  className="w-8 h-8 p-0 rounded-lg text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/20 transition-colors cursor-pointer"
+                  title="Khôi phục"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setDeleteMode("hard"); setDeleteConfirmOpen(true); }}
+                  disabled={deleteProcessing}
+                  className="w-8 h-8 p-0 rounded-lg text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/20 transition-colors cursor-pointer"
+                  title="Xoá vĩnh viễn"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setDeleteMode("soft"); setDeleteConfirmOpen(true); }}
+                disabled={deleteProcessing}
+                className="w-8 h-8 p-0 rounded-lg text-red-500 hover:text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/20 transition-colors cursor-pointer"
+                title="Xoá dự án"
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
 
       {/* Detail Panel */}
       {showDetail && (
-        <div className="shrink-0">
-          <ProjectDetailPanel project={project} />
+        <div className={detailTab === "chats" || detailTab === "emails" ? "flex-1 min-h-0 flex flex-col" : "shrink-0"}>
+          <ProjectDetailPanel project={project} tab={detailTab} onTabChange={setDetailTab} />
         </div>
       )}
 
+      {/* ─── Delete Confirmation Dialog ──────────────────── */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent className="sm:max-w-md" showCloseButton={false}>
+          <DialogHeader>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
+              </div>
+              <div>
+                <DialogTitle>
+                  {deleteMode === "soft" ? "Xoá dự án" : "Xoá vĩnh viễn"}
+                </DialogTitle>
+                <DialogDescription className="mt-1">
+                  {deleteMode === "soft"
+                    ? `Dự án "${project.name}" sẽ được đưa vào thùng rác. Bạn có thể khôi phục sau.`
+                    : `Dự án "${project.name}" sẽ bị xoá vĩnh viễn, bao gồm tất cả công việc và ghi chú. Hành động này không thể hoàn tác.`}
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          <DialogFooter className="gap-2 mt-4">
+            <DialogClose render={<Button variant="outline" size="sm" className="rounded-lg text-xs cursor-pointer" disabled={deleteProcessing} />}>
+                Huỷ
+              </DialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="rounded-lg text-xs cursor-pointer"
+              disabled={deleteProcessing}
+              onClick={deleteMode === "soft" ? handleSoftDelete : handleHardDelete}
+            >
+              {deleteProcessing ? (
+                <Clock className="w-3 h-3 mr-1 animate-pulse" />
+              ) : (
+                <Trash2 className="w-3 h-3 mr-1" />
+              )}
+              {deleteMode === "soft" ? "Xoá" : "Xoá vĩnh viễn"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Kanban Board */}
-      <div className="flex-1 min-h-0 overflow-auto">
-        <DndContext
+      {(!showDetail || (detailTab !== "chats" && detailTab !== "emails")) && (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <DndContext
           sensors={sensors}
           collisionDetection={kanbanCollisionDetection}
           onDragStart={handleDragStart}
@@ -532,6 +759,7 @@ export default function ProjectDetailPage() {
           </DragOverlay>
         </DndContext>
       </div>
+      )}
     </div>
   );
 }

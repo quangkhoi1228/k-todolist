@@ -243,9 +243,9 @@ export default function GanttPage() {
   };
 
   return (
-    <div className="p-3 h-full min-h-0 flex flex-col gap-2">
+    <div className="p-3 h-full min-h-0 flex flex-col gap-3">
       {/* Combined Single-Row Header & Filter Bar */}
-      <div className="flex flex-col gap-2 glass p-2 rounded-xl border border-border/60 shadow-md shrink-0 w-full">
+      <div className="flex flex-col gap-2 bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md p-3 rounded-[1.25rem] border border-border/40 shadow-sm shrink-0 w-full">
         {/* Main Row */}
         <div className="flex items-center justify-between gap-2 w-full">
           {/* Left section: Title + Toggle button */}
@@ -267,20 +267,20 @@ export default function GanttPage() {
           <div className="hidden md:flex items-center gap-1.5 flex-1 flex-wrap">
             {/* Search Bar */}
             <div className="relative w-32">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 min-h-7 h-auto py-1.5 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-8 min-h-8 h-auto py-1.5 text-[11px] bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 rounded-xl w-full shadow-sm hover:border-border/60 focus-visible:ring-primary/30 transition-all duration-300"
               />
             </div>
 
             {/* Project Filter */}
             <div>
               <Select value={filterProject} onValueChange={(val) => setFilterProject(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
-                  <Briefcase className="w-3 h-3 text-muted-foreground shrink-0" />
+                <SelectTrigger className="bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md hover:bg-card border-border/40 text-foreground min-h-8 h-auto py-1.5 px-2.5 rounded-xl text-[11px] font-medium focus-visible:ring-primary/30 cursor-pointer flex items-center gap-1.5 shadow-sm w-fit transition-all duration-300 hover:border-border/60">
+                  <Briefcase className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Dự án: Tất cả">
                     {filterProject === "all"
                       ? "Dự án: Tất cả"
@@ -304,7 +304,7 @@ export default function GanttPage() {
             {/* Status Filter */}
             <div>
               <Select value={filterStatus} onValueChange={(val) => setFilterStatus(val || "all")}>
-                <SelectTrigger className="bg-background/50 hover:bg-background border-border/60 text-foreground min-h-7 h-auto py-1.5 px-1.5 rounded-lg text-[10px] font-medium focus-visible:ring-primary/50 cursor-pointer flex items-center gap-1 shadow-sm w-fit">
+                <SelectTrigger className="bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md hover:bg-card border-border/40 text-foreground min-h-8 h-auto py-1.5 px-2.5 rounded-xl text-[11px] font-medium focus-visible:ring-primary/30 cursor-pointer flex items-center gap-1.5 shadow-sm w-fit transition-all duration-300 hover:border-border/60">
                   <SelectValue placeholder="Trạng thái: Tất cả">
                     {filterStatus === "all" ? (
                       <span className="flex items-center gap-1">
@@ -418,12 +418,12 @@ export default function GanttPage() {
           <div className="md:hidden flex flex-col gap-2 pt-2 border-t border-border/40 w-full">
             {/* Search Bar */}
             <div className="relative w-full">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 placeholder="Tìm kiếm..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 min-h-7 h-auto py-1.5 text-[10px] bg-background/50 border-border/60 rounded-lg w-full"
+                className="pl-8 min-h-8 h-auto py-1.5 text-[11px] bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 rounded-xl w-full shadow-sm hover:border-border/60 focus-visible:ring-primary/30 transition-all duration-300"
               />
             </div>
 
@@ -526,7 +526,7 @@ export default function GanttPage() {
       </div>
 
       {/* Gantt Body */}
-      <div ref={ganttContainerRef} className="flex-1 min-h-0 glass-panel rounded-2xl overflow-hidden p-4">
+      <div ref={ganttContainerRef} className="flex-1 min-h-0 bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border border-border/40 rounded-[1.25rem] shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)] overflow-hidden p-4">
         {tasks === undefined ? (
           <div className="text-neutral-500 text-center py-12 text-xs">Loading Gantt Chart...</div>
         ) : ganttTasks.length > 0 ? (

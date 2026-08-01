@@ -334,7 +334,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
   return (
     <>
-      <div ref={setNodeRef} style={style} data-task-card="true" data-task-id={task._id} className={`${isCompact ? "mb-0.5" : "mb-2.5"} touch-none group/task relative hover:z-30`}>
+      <div ref={setNodeRef} style={style} data-task-card="true" data-task-id={task._id} className={`${isCompact ? "mb-0.5" : "mb-2"} touch-none group/task relative hover:z-30`}>
         <Card 
           {...(isQuickEditing ? {} : attributes)} 
           {...(isQuickEditing ? {} : listeners)} 
@@ -345,19 +345,20 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
             }
           }}
           className={cn(
-            "bg-card border-border group-hover/task:border-primary/50 transition-all duration-200",
+            "!p-0 !gap-0",
+            "bg-card/90 dark:bg-zinc-800/90 backdrop-blur-md border-border/50 group-hover/task:border-primary/50 transition-all duration-300",
             isSelected && "ring-2 ring-primary border-primary",
             !isSelected && "group-hover/task:ring-1 group-hover/task:ring-primary/30",
-            isCompact ? "shadow-sm border rounded-lg group-hover/task:shadow-lg group-hover/task:bg-card" : "shadow-[0_8px_30px_rgb(0,0,0,0.12)] border-[1.5px]",
+            isCompact ? "shadow-sm border rounded-lg group-hover/task:shadow-md group-hover/task:bg-card dark:group-hover/task:bg-zinc-800" : "shadow-[0_4px_20px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.2)] border-[1px] rounded-xl",
             !isCompact && "group-hover/task:shadow-[0_8px_30px_rgba(var(--primary),0.15)]",
             task.isOverflowing
               ? "border-destructive shadow-[0_0_15px_rgba(239,68,68,0.15)] group-hover/task:border-destructive"
               : dueUrgency === "overdue"
-                ? "border-l-[3px] border-l-red-500 dark:border-l-red-400"
+                ? "border-l-[4px] border-l-red-500 dark:border-l-red-400"
                 : isCompact
-                  ? "group-hover/task:shadow-md"
-                  : "group-hover/task:shadow-lg group-hover/task:-translate-y-0.5",
-            isDone && "opacity-60 grayscale-[0.5]",
+                  ? "group-hover/task:-translate-y-[1px]"
+                  : "group-hover/task:-translate-y-1",
+            isDone && "opacity-60 grayscale-[0.3]",
             (isQuickEditing || isTitleEditing) && "ring-2 ring-primary border-primary"
           )}
         >
@@ -452,10 +453,10 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
               )}
             </div>
           ) : (
-          <div className="px-2.5 py-1.5 flex flex-col gap-1.5 relative">
+          <div className="p-2 flex flex-col gap-1 relative">
             {projectName && !hideProjectBadge && (
               <div className="flex flex-wrap gap-1">
-                <Badge variant="outline" className="text-[9px] font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20 py-0 px-1.5 flex items-center gap-1 rounded-md h-5">
+                <Badge variant="outline" className="text-[10px] font-bold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20 py-0.5 px-2 flex items-center gap-1 rounded-md h-5 shadow-sm">
                   <Briefcase className="w-2.5 h-2.5" />
                   {projectName}
                 </Badge>
@@ -497,7 +498,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                     setTempTitle(task.title);
                     setIsTitleEditing(true);
                   }}
-                  className={`text-sm font-semibold leading-tight w-full cursor-text select-none ${isDone ? 'text-muted-foreground line-through' : 'text-foreground'}`}
+                  className={`text-[13px] font-semibold leading-snug w-full cursor-text select-none ${isDone ? 'text-muted-foreground line-through' : 'text-foreground'}`}
                   title="Double click để sửa tên"
                 >
                   {task.title}
@@ -505,10 +506,9 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
               )}
             </div>
 
-            {!isTitleEditing && !isQuickEditing && datePopover}
-            
-            <div className="flex justify-between items-center w-full pt-0.5">
-              <div className="flex items-center gap-1.5">
+            <div className="flex justify-between items-center w-full mt-0.5">
+              <div className="flex items-center flex-wrap gap-1">
+                {!isTitleEditing && !isQuickEditing && datePopover}
                 {isQuickEditing ? (
                   <div className="flex items-center gap-1">
                     <Input 
@@ -662,7 +662,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
         {/* Edit Button */}
         {!isQuickEditing && (
-          <div className={`absolute ${isCompact ? "top-0.5 right-0.5" : "top-1 right-1"} opacity-0 group-hover/task:opacity-100 transition-opacity z-20`}>
+          <div className={`absolute ${isCompact ? "top-0.5 right-0.5" : "top-1.5 right-1.5"} opacity-0 group-hover/task:opacity-100 transition-opacity z-20`}>
             <button 
               onClick={(e) => {
                 e.stopPropagation();
