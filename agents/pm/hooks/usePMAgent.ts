@@ -1,24 +1,23 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { useCallback } from "react";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { usePmSessions, usePmSessionById, usePmMessages, usePmMutations } from "../../../src/hooks/useDomain";
 import type { ChatMessage, WorkflowData, PMWorkflowStep, SalesInfo, PersonnelInfo, KickoffMeeting, SOWInfo } from "../lib/types";
 
-export function usePMAgent(sessionId?: Id<"pmAgentSessions">) {
+export function usePMAgent(sessionId?: string) {
   const { userId } = useAuth();
 
-  const sessions = useQuery(api.agents_pm.getSessions, userId ? { userId } : "skip");
-  const session = useQuery(api.agents_pm.getSession, sessionId ? { id: sessionId } : "skip");
-  const messages = useQuery(api.agents_pm.getMessages, sessionId ? { sessionId } : "skip");
+  const { data: sessions } = usePmSessions(userId);
+  const { data: session } = usePmSessionById(sessionId ?? null);
+  const { data: messages } = usePmMessages(sessionId ?? null);
 
-  const createSession = useMutation(api.agents_pm.createSession);
-  const updateSession = useMutation(api.agents_pm.updateSession);
-  const addMessage = useMutation(api.agents_pm.addMessage);
-  const advanceStep = useMutation(api.agents_pm.advanceStep);
-  const deleteSession = useMutation(api.agents_pm.deleteSession);
+  const pmx = usePmMutations();
+  const createSession = pmx.createSession;
+  const updateSession = pmx.updateSession;
+  const addMessage = pmx.addMessage;
+  const advanceStep = pmx.advanceStep;
+  const deleteSession = pmx.deleteSession;
 
   const getWorkflowData = useCallback((): WorkflowData | null => {
     if (!session?.workflowData) return null;
@@ -39,7 +38,7 @@ export function usePMAgent(sessionId?: Id<"pmAgentSessions">) {
         notes: "",
       };
       const merged = { ...current, ...data };
-      await updateSession({ id: sessionId, workflowData: JSON.stringify(merged) });
+      await updateSession(sessionId, { workflowData: JSON.stringify(merged) });
     },
     [sessionId, updateSession, getWorkflowData]
   );
@@ -76,7 +75,10 @@ export function usePMAgent(sessionId?: Id<"pmAgentSessions">) {
       return await createSession({ userId, ...args });
     },
 
-    updateSession,
+    updateSession: async (id: string, body: any) => {
+      if (!sessionId) return;
+      await updateSession(sessionId, body);
+    },
     addMessage: async (role: string, content: string, metadata?: string) => {
       if (!sessionId) return;
       await addMessage({ sessionId, role, content, metadata });
@@ -84,13 +86,13 @@ export function usePMAgent(sessionId?: Id<"pmAgentSessions">) {
 
     advanceStep: async (step: string) => {
       if (!sessionId) return;
-      await advanceStep({ id: sessionId, step });
+      await advanceStep(sessionId, step);
     },
 
     updateWorkflowData,
     deleteSession: async () => {
       if (!sessionId) return;
-      await deleteSession({ id: sessionId });
+      await deleteSession(sessionId);
     },
   };
 }

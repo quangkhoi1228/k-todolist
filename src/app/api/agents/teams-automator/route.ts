@@ -156,6 +156,7 @@ export async function POST(req: NextRequest) {
       TEAMS_DEEPLINK: deepLink || "",
       TEAMS_CHAT_NAME: chatName || "",
       TEAMS_KEYWORDS: keywords.join(","),
+      PLATFORM: "teams",
     };
 
     const opts: Record<string, unknown> = {

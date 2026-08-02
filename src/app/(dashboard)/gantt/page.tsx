@@ -1,15 +1,13 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
+import { useTasks, useProjects, useAllDependencies, useTaskMutations, useProjectMutations } from "@/hooks/useDomain";
 import { Gantt, Task as GanttTask, ViewMode } from "gantt-task-react";
 import "gantt-task-react/dist/index.css";
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { addDays, format } from "date-fns";
 import { NewTaskSheet, TaskData } from "@/components/board/NewTaskSheet";
-import type { Id } from "../../../../convex/_generated/dataModel";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Briefcase, Circle, Search, Clock, PauseCircle, CheckCircle2, SlidersHorizontal, Plus } from "lucide-react";
@@ -18,15 +16,15 @@ import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
 
 export default function GanttPage() {
   const { userId } = useAuth();
-  const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
-  const allDeps = useQuery(api.tasks.getAllDependencies, userId ? { userId } : "skip");
+  const { data: tasks } = useTasks(userId);
+  const { data: projects } = useProjects(userId, { includeArchived: true });
+  const { data: allDeps } = useAllDependencies(userId);
 
   // Automatically shift overdue processing tasks to today
   useAutoShiftTasks(tasks);
 
-  const updateTask = useMutation(api.tasks.updateTask);
-  const createProject = useMutation(api.projects.createProject);
+  const tm = useTaskMutations();
+  const pm = useProjectMutations();
 
   const [view, setView] = useState<ViewMode>(ViewMode.Day);
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -67,7 +65,7 @@ export default function GanttPage() {
     e.preventDefault();
     if (!newProjectName.trim() || !userId) return;
     try {
-      await createProject({
+      await pm.createProject({
         userId,
         name: newProjectName.trim(),
       });
@@ -222,8 +220,7 @@ export default function GanttPage() {
     // Skip project group rows (they are disabled)
     if (task.type === "project" || task.isDisabled) return;
     try {
-      await updateTask({
-        id: task.id as Id<"tasks">,
+      await tm.updateTask(task.id, {
         startDate: task.start.getTime(),
         endDate: task.end.getTime(),
       });

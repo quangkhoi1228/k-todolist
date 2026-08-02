@@ -1,17 +1,16 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
+import { useProjects, useTasks, useProjectMutations, useTaskMutations } from "@/hooks/useDomain";
 import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Briefcase, Plus, Archive, Copy, Trash2, Search, ChevronRight, Circle, GripVertical, RotateCcw, AlertTriangle, ExternalLink, Loader2 } from "lucide-react";
-import type { Id } from "../../../../convex/_generated/dataModel";
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, useSortable, rectSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import type { Id } from "@/lib/types";
 
 const STATUS_COLORS: Record<string, string> = {
   todo: "bg-neutral-500",
@@ -188,15 +187,13 @@ function SortableProjectCard({
 export default function ProjectsPage() {
   const { userId } = useAuth();
   const router = useRouter();
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true, includeTrashed: true } : "skip");
-  const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const createProject = useMutation(api.projects.createProject);
-  const setProjectArchived = useMutation(api.projects.setProjectArchived);
-  const softDeleteProject = useMutation(api.projects.softDeleteProject);
-  const restoreProject = useMutation(api.projects.restoreProject);
-  const deleteProject = useMutation(api.projects.deleteProject);
-  const cloneProject = useMutation(api.projects.cloneProject);
-  const updateProjectOrders = useMutation(api.projects.updateProjectOrders);
+  const { data: projects, mutate: mutateProjects } = useProjects(userId, {
+    includeArchived: true,
+    includeTrashed: true,
+  });
+  const { data: tasks } = useTasks(userId);
+  const pm = useProjectMutations();
+  const tm = useTaskMutations();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -248,7 +245,7 @@ export default function ProjectsPage() {
     e.preventDefault();
     if (!newProjectName.trim() || !userId) return;
     try {
-      await createProject({ userId, name: newProjectName.trim() });
+      await pm.createProject({ userId, name: newProjectName.trim() });
       setNewProjectName("");
       setIsCreating(false);
     } catch (err) {
@@ -260,11 +257,7 @@ export default function ProjectsPage() {
     e.preventDefault();
     if (!cloneTarget || !cloneName.trim() || !userId) return;
     try {
-      await cloneProject({
-        projectId: cloneTarget as Id<"projects">,
-        userId,
-        name: cloneName.trim(),
-      });
+      await pm.cloneProject(cloneTarget, userId, cloneName.trim());
       setCloneTarget(null);
       setCloneName("");
     } catch (err) {
@@ -276,7 +269,7 @@ export default function ProjectsPage() {
     const action = archived ? "khôi phục" : "lưu trữ";
     if (!confirm(`Bạn có muốn ${action} dự án này?`)) return;
     try {
-      await setProjectArchived({ id: id as Id<"projects">, archived });
+      await pm.setProjectArchived(id, archived);
     } catch (err) {
       console.error(err);
     }
@@ -285,7 +278,7 @@ export default function ProjectsPage() {
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Đưa dự án "${name}" vào thùng rác? Bạn có thể khôi phục sau.`)) return;
     try {
-      await softDeleteProject({ id: id as Id<"projects"> });
+      await pm.softDeleteProject(id);
       setShowTrash(true);
     } catch (err) {
       console.error(err);
@@ -294,7 +287,7 @@ export default function ProjectsPage() {
 
   const handleRestore = async (id: string) => {
     try {
-      await restoreProject({ id: id as Id<"projects"> });
+      await pm.restoreProject(id);
     } catch (err) {
       console.error(err);
     }
@@ -303,7 +296,7 @@ export default function ProjectsPage() {
   const handlePermanentDelete = async (id: string, name: string) => {
     if (!confirm(`Xóa vĩnh viễn dự án "${name}"? Tất cả công việc và ghi chú liên quan sẽ bị xóa. Hành động này KHÔNG THỂ hoàn tác.`)) return;
     try {
-      await deleteProject({ id: id as Id<"projects"> });
+      await pm.deleteProject(id);
     } catch (err) {
       console.error(err);
     }
@@ -313,7 +306,7 @@ export default function ProjectsPage() {
     if (!confirm(`Xóa vĩnh viễn TẤT CẢ dự án trong thùng rác? Hành động này KHÔNG THỂ hoàn tác.`)) return;
     try {
       for (const p of trashedProjects) {
-        await deleteProject({ id: p._id as Id<"projects"> });
+        await pm.deleteProject(p._id);
       }
     } catch (err) {
       console.error(err);
@@ -344,7 +337,7 @@ export default function ProjectsPage() {
       id: p._id as any,
       order: i * 1000,
     }));
-    updateProjectOrders({ updates });
+    pm.updateProjectOrders(updates);
   };
 
   const handleDragStart = (event: DragStartEvent) => {

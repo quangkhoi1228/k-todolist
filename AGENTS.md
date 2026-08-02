@@ -4,16 +4,13 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-<!-- convex-ai-start -->
+# Database
 
-This project uses [Convex](https://convex.dev) as its backend.
+This project uses **PostgreSQL** as its backend database (via Drizzle ORM), replacing the former Convex backend.
 
-When working on Convex code, **always read
-`convex/_generated/ai/guidelines.md` first** for important guidelines on
-how to correctly use Convex APIs and patterns. The file contains rules that
-override what you may have learned about Convex from training data.
+- Schema: `src/lib/db/schema.ts`
+- Repo layer (data access): `src/lib/repo/*.ts`
+- API routes (frontend + automator data access): `src/app/api/data/*`
+- Connection: `DATABASE_URL` in `.env.local`
+- Push schema changes: `npm run db:push`
 
-Convex agent skills for common tasks can be installed by running
-`npx convex ai-files install`.
-
-<!-- convex-ai-end -->

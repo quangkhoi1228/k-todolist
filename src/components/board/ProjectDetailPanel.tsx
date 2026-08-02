@@ -1,14 +1,30 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3 } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import { format } from "date-fns";
-import type { Doc } from "../../../convex/_generated/dataModel";
 import { WysiwygEditor } from "./WysiwygEditor";
+import type { Doc } from "@/lib/types";
+import {
+  useSuggestionsByProject,
+  useSuggestionMutations,
+  useChatMutations,
+  useGroupMutations,
+  useMembersByProject,
+  useMemberMutations,
+  useRoles,
+  useScrapedGroups,
+  useTasksByProject,
+  useNotesByProject,
+  useMessagesByProject,
+  useLogs,
+  useEmails,
+  useProjectMutations,
+  useNoteMutations,
+  useUploadFile,
+} from "@/hooks/useDomain";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { IsdFlowDiagram } from "./IsdFlowDiagram";
 
@@ -56,7 +72,7 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 /** Split message text into runs, turning URLs into clickable links */
-function LinkifyText({ text }: { text: string }) {
+function LinkifyText({ text, isMine }: { text: string, isMine?: boolean }) {
   const parts = text.split(/(https?:\/\/[^\s]+)/g);
   return (
     <>
@@ -69,7 +85,7 @@ function LinkifyText({ text }: { text: string }) {
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="underline underline-offset-2 text-primary hover:text-primary/80 font-medium break-all"
+              className={`underline underline-offset-2 font-medium break-all ${isMine ? "text-inherit opacity-90 hover:opacity-100" : "text-primary hover:text-primary/80"}`}
             >
               {part}
             </a>
@@ -125,18 +141,19 @@ function ChatImage({ src, alt, className, onClick }: { src: string; alt: string;
 
   // Skip rendering for truly invalid URLs
   const validSrc = src.startsWith('//') ? 'https:' + src : src;
-  // Accept http, https, data:, and Convex storage: URLs
+  // Accept http, https, data:, Convex storage:, and our own /api/data/files/ URLs
   const isDataUrl = validSrc.startsWith("data:");
   const isStorageUrl = validSrc.startsWith("storage:");
+  const isLocalFileUrl = validSrc.startsWith("/api/data/files/") || validSrc.startsWith("/api/files/");
   const isHttp = validSrc.startsWith("http://") || validSrc.startsWith("https://");
-  const isValidUrl = isHttp || isDataUrl || isStorageUrl;
+  const isValidUrl = isHttp || isDataUrl || isStorageUrl || isLocalFileUrl;
   if (!isValidUrl) {
     console.warn(`[ChatImage] Invalid URL skipped: "${src}"`);
     return null;
   }
 
-  // Data URLs and storage: URLs render directly (no proxy needed)
-  if (isDataUrl || isStorageUrl) {
+  // Data URLs, storage: URLs, and local file URLs render directly (no proxy needed)
+  if (isDataUrl || isStorageUrl || isLocalFileUrl) {
     return (
       <img
         src={validSrc}
@@ -462,7 +479,7 @@ function MemberCard({
 
   const initials = member.name
     .split(" ")
-    .map((w) => w[0])
+    .map((w: string) => w[0])
     .join("")
     .toUpperCase()
     .slice(0, 2);
@@ -599,7 +616,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const handleTabChange = propOnTabChange ?? setLocalTab;
 
 // ─── Chats State ───────────────────────────────────
-  const [activeTeamsGroups, setActiveTeamsGroups] = useState<{name: string, type: "internal" | "customer", platform?: string}[]>((project as any).teamsGroups || []);
+  const [activeTeamsGroups, setActiveTeamsGroups] = useState<{name: string, type: "internal" | "customer", platform?: string, url?: string}[]>((project as any).teamsGroups || []);
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupType, setNewGroupType] = useState<"internal" | "customer">("customer");
@@ -615,7 +632,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
 
   // ─── Sync chat groups & selection when project changes ─────
   useEffect(() => {
-    const groups = ((project as any).teamsGroups || []) as {name: string; type: "internal" | "customer"; platform?: string}[];
+    const groups = ((project as any).teamsGroups || []) as {name: string; type: "internal" | "customer"; platform?: string; url?: string}[];
     // Deduplicate by name to prevent duplicates
     const seen = new Set<string>();
     const deduped = groups.filter(g => {
@@ -630,28 +647,15 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   }, [project._id]);
 
   // ─── Suggestions State ────────────────────────
-  const projectSuggestions = useQuery(
-    api.projectSuggestions.getSuggestionsByProject,
-    project._id ? { projectId: project._id as any } : "skip"
-  );
-  const markSuggestionAsRead = useMutation(api.projectSuggestions.markSuggestionAsRead);
-  const markSuggestionAsResolved = useMutation(api.projectSuggestions.markSuggestionAsResolved);
-  const addSuggestionsBatch = useMutation(api.projectSuggestions.addSuggestionsBatch);
-  const clearProjectMessages = useMutation(api.projectChats.clearProjectMessages);
-  const syncGroups = useMutation(api.groups.syncGroups);
+  const { data: projectSuggestions } = useSuggestionsByProject(project._id ?? null);
+  const smx = useSuggestionMutations();
+  const cmx = useChatMutations();
+  const gmx = useGroupMutations();
 
   // ─── Members State ────────────────────────
-  const projectMembers = useQuery(
-    api.projectMembers.getMembersByProject,
-    project._id ? { projectId: project._id as any } : "skip"
-  );
-  const projectRolesList = useQuery(
-    api.projectRoles.getRoles,
-    userId ? { userId } : "skip"
-  );
-  const addMember = useMutation(api.projectMembers.addMember);
-  const updateMember = useMutation(api.projectMembers.updateMember);
-  const removeMember = useMutation(api.projectMembers.removeMember);
+  const { data: projectMembers } = useMembersByProject(project._id ?? null);
+  const { data: projectRolesList } = useRoles(userId);
+  const mmx = useMemberMutations();
 
   // ─── Members UI State ─────────────────────
   const [showAddMember, setShowAddMember] = useState(false);
@@ -659,15 +663,11 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const [newMemberEmail, setNewMemberEmail] = useState("");
   const [newMemberRoleId, setNewMemberRoleId] = useState<string | null>(null);
 
-  // Load saved chat groups from Convex
-  const savedTeamsChats = useQuery(
-    api.groups.getScrapedGroups,
-    userId ? { userId, platform: "teams" } : "skip"
-  ) ?? [];
-  const savedZaloChats = useQuery(
-    api.groups.getScrapedGroups,
-    userId ? { userId, platform: "zalo" } : "skip"
-  ) ?? [];
+  // Load saved chat groups
+  const { data: savedTeamsChatsData } = useScrapedGroups(userId, "teams");
+  const { data: savedZaloChatsData } = useScrapedGroups(userId, "zalo");
+  const savedTeamsChats = savedTeamsChatsData ?? [];
+  const savedZaloChats = savedZaloChatsData ?? [];
   const [analysingSuggestions, setAnalysingSuggestions] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
   const projectChatsRef = useRef<any[]>([]);
@@ -691,8 +691,8 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
       if (!res.ok) throw new Error("Failed to analyse suggestions");
       const data = await res.json();
       if (data.ok && data.suggestions && data.suggestions.length > 0) {
-        await addSuggestionsBatch({
-          projectId: project._id as any,
+        await smx.addSuggestionsBatch({
+          projectId: project._id,
           userId,
           suggestions: data.suggestions.map((s: any) => ({
             type: s.type || "info",
@@ -713,7 +713,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
     } finally {
       setAnalysingSuggestions(false);
     }
-  }, [project._id, project?.name, userId, addSuggestionsBatch]);
+  }, [project._id, project?.name, userId, smx]);
 
   // Auto-analyse when switching to suggestions tab
   useEffect(() => {
@@ -767,9 +767,8 @@ ${resourceTicketsLinks}
 
   const [copied, setCopied] = useState(false);
 
-  const updateProjectDetail = useMutation(api.projects.updateProjectDetail);
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const getImageUrl = useMutation(api.storage.getImageUrl);
+  const pm = useProjectMutations();
+  const uploadFile = useUploadFile();
 
   // Auto-save with debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -777,14 +776,11 @@ ${resourceTicketsLinks}
   const doSave = useCallback(async (content: string) => {
     if (!userId) return;
     try {
-      await updateProjectDetail({
-        id: project._id as any,
-        notes: content || undefined,
-      });
+      await pm.updateProjectDetail(project._id, content || undefined);
     } catch (err) {
       console.error(err);
     }
-  }, [userId, project._id, updateProjectDetail]);
+  }, [userId, project._id, pm]);
 
   // Debounced auto-save when editorContent changes
   useEffect(() => {
@@ -799,40 +795,34 @@ ${resourceTicketsLinks}
   }, [editorContent, doSave]);
 
   // Fetch tasks for history
-  const projectTasks =
-    useQuery(api.tasks.getTasksByProject, { projectId: project._id as any }) ?? [];
+  const { data: projectTasksData } = useTasksByProject(project._id ?? null);
+  const projectTasks = projectTasksData ?? [];
 
   // Fetch notes for this project
-  const projectNotes =
-    useQuery(api.notes.getNotesByProject, { projectId: project._id as any }) ?? [];
+  const { data: projectNotesData } = useNotesByProject(project._id ?? null);
+  const projectNotes = projectNotesData ?? [];
 
   // Fetch chats for this project — get up to 200 newest per chat group
   const chatGroupNames = useMemo(
     () => activeTeamsGroups.map((g) => g.name),
     [activeTeamsGroups]
   );
-  const projectChats =
-    useQuery((api as any).projectChats.getMessagesByProject, {
-      projectId: project._id as any,
-      chatNames: chatGroupNames.length > 0 ? chatGroupNames : undefined,
-    }) ?? [];
+  const { data: projectChatsData } = useMessagesByProject(project._id ?? null, chatGroupNames);
+  const projectChats = projectChatsData ?? [];
 
   // Fetch sync logs for this project
-  const syncLogs =
-    useQuery((api as any).syncLogs.getLogs, { projectId: project._id as any, limit: 50 }) ?? [];
+  const { data: syncLogs } = useLogs(project._id ?? null, 50);
   const [showSyncLogs, setShowSyncLogs] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
 
   // Fetch emails for this project
-  const projectEmails =
-    useQuery(api.emails.getByProject, { projectId: project._id as any }) ?? [];
+  const { data: projectEmailsData } = useEmails(userId, { projectId: project._id });
+  const projectEmails = projectEmailsData ?? [];
 
   // Keep ref in sync for suggestions analysis
   useEffect(() => {
     projectChatsRef.current = projectChats || [];
   }, [projectChats]);
-
-  const updateProject = useMutation(api.projects.updateProject);
 
   const fetchChats = async () => {
     if (!userId) return;
@@ -854,8 +844,8 @@ ${resourceTicketsLinks}
         const data = await teamsRes.json();
         const chatNames: string[] = data.chats || [];
         setAvailableTeamsChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
-        // Save teams groups to Convex
-        await syncGroups({
+        // Save teams groups
+        await gmx.syncGroups({
           userId,
           platform: "teams",
           groups: chatNames.map((n: string) => ({ name: n })),
@@ -866,8 +856,8 @@ ${resourceTicketsLinks}
         const data = await zaloRes.json();
         const chatNames: string[] = data.chats || [];
         setAvailableZaloChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
-        // Save zalo groups to Convex
-        await syncGroups({
+        // Save zalo groups
+        await gmx.syncGroups({
           userId,
           platform: "zalo",
           groups: chatNames.map((n: string) => ({ name: n })),
@@ -927,8 +917,8 @@ ${resourceTicketsLinks}
     setIsDropdownOpen(false);
     setIsGroupManagerOpen(false); // Close modal on success
     
-    await updateProject({
-      id: project._id as any,
+    await pm.updateProject({
+      id: project._id,
       teamsGroups: newGroups,
     });
 
@@ -949,6 +939,8 @@ ${resourceTicketsLinks}
 
   const handleRemoveGroup = async (idx: number) => {
     const removedName = activeTeamsGroups[idx]?.name;
+    if (!window.confirm(`Bạn có chắc muốn xóa nhóm "${removedName}"?`)) return;
+
     const newGroups = [...activeTeamsGroups];
     newGroups.splice(idx, 1);
     setActiveTeamsGroups(newGroups);
@@ -958,16 +950,14 @@ ${resourceTicketsLinks}
       setSelectedChatGroup(newGroups.length > 0 ? newGroups[0].name : "");
     }
     
-    await updateProject({
-      id: project._id as any,
+    await pm.updateProject({
+      id: project._id,
       teamsGroups: newGroups,
     });
   };
 
 
-  const createNote = useMutation(api.notes.createNote);
-  const updateNote = useMutation(api.notes.updateNote);
-  const deleteNote = useMutation(api.notes.deleteNote);
+  const nmx = useNoteMutations();
 
   // Notes tab state
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -1007,10 +997,10 @@ ${resourceTicketsLinks}
   const handleCreateNote = async () => {
     if (!newNoteTitle.trim() || !userId) return;
     try {
-      await createNote({
+      await nmx.createNote({
         userId,
         title: newNoteTitle.trim(),
-        projectId: project._id as any,
+        projectId: project._id,
       });
       setNewNoteTitle("");
       setCreatingNote(false);
@@ -1034,15 +1024,14 @@ ${resourceTicketsLinks}
   const saveNote = useCallback(async () => {
     if (!editingNoteId) return;
     try {
-      await updateNote({
-        id: editingNoteId as any,
+      await nmx.updateNote(editingNoteId, {
         title: editingNoteTitle,
         content: editingNoteContent || undefined,
       });
     } catch (err) {
       console.error(err);
     }
-  }, [editingNoteId, editingNoteTitle, editingNoteContent, updateNote]);
+  }, [editingNoteId, editingNoteTitle, editingNoteContent, nmx]);
 
   // Auto-save note content with debounce
   useEffect(() => {
@@ -1058,7 +1047,7 @@ ${resourceTicketsLinks}
 
   const handleDeleteNote = async (noteId: string) => {
     try {
-      await deleteNote({ id: noteId as any });
+      await nmx.deleteNote(noteId);
       if (editingNoteId === noteId) cancelEditNote();
     } catch (err) {
       console.error(err);
@@ -1171,21 +1160,38 @@ ${resourceTicketsLinks}
   }, [summaryEntries, nextActions, stats]);
 
   const handleImageUpload = useCallback(async (file: File): Promise<string> => {
-    const uploadUrl = await generateUploadUrl();
-    const result = await fetch(uploadUrl, {
-      method: "POST",
-      body: file,
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const dataUrl = reader.result as string;
+          const name = file.name;
+          const res = await fetch("/api/data/files", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userId,
+              dataUrl,
+              name,
+              mimeType: file.type || undefined,
+            }),
+          });
+          if (!res.ok) {
+            const errText = await res.text();
+            console.error("Upload failed:", res.status, errText);
+            throw new Error("Upload failed");
+          }
+          const data = await res.json();
+          if (!data.url) throw new Error("Failed to get image URL");
+          resolve(data.url);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
     });
-    if (!result.ok) {
-      const errorText = await result.text();
-      console.error("Upload failed:", result.status, errorText);
-      throw new Error("Upload failed");
-    }
-    const { storageId } = await result.json();
-    const url = await getImageUrl({ storageId });
-    if (!url) throw new Error("Failed to get image URL");
-    return url;
-  }, [generateUploadUrl, getImageUrl]);
+  }, [userId]);
 
   const handleCopySummary = useCallback(async () => {
     try {
@@ -1319,7 +1325,7 @@ ${resourceTicketsLinks}
                 onBlur={async (e) => {
                   const val = e.target.value.trim() || undefined;
                   if (val !== ((project as any).ticketId || undefined)) {
-                    await updateProject({ id: project._id as any, ticketId: val as any });
+                    await pm.updateProject({ id: project._id, ticketId: val });
                   }
                 }}
                 onKeyDown={async (e) => {
@@ -1759,6 +1765,18 @@ ${resourceTicketsLinks}
                         {group.type === "customer" ? "KH" : "NB"}
                       </span>
                     </button>
+                    {group.url && (
+                      <a
+                        href={group.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="p-1 text-muted-foreground/30 hover:text-primary opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                        title={`Mở "${group.name}" trong browser`}
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
                     <button
                       type="button"
                       onClick={async () => {
@@ -1766,7 +1784,7 @@ ${resourceTicketsLinks}
                         setIsSyncing(true);
                         try {
                           // Clear old messages for this group only
-                          await clearProjectMessages({ projectId: project._id as any, chatName: group.name });
+                          await cmx.clearProjectMessages(project._id, group.name);
                           // Start sync for this specific group
                           await fetch("/api/agents/sync-single-chat", {
                             method: "POST",
@@ -1902,6 +1920,24 @@ ${resourceTicketsLinks}
                   } tin nhắn
                 </span>
                 <div className="ml-auto flex items-center gap-1">
+                  {selectedChatGroup && (() => {
+                    const group = activeTeamsGroups.find(g => g.name === selectedChatGroup);
+                    const isZalo = group?.platform === "zalo";
+                    // Use the captured deep link when available; fall back to the platform homepage
+                    const appUrl = group?.url || (isZalo ? "https://chat.zalo.me/" : "https://teams.microsoft.com/");
+                    const platformName = isZalo ? "Zalo" : "Teams";
+                    return (
+                      <a
+                        href={appUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={group?.url ? `Mở "${selectedChatGroup}" trên ${platformName}` : `Mở trang ${platformName}`}
+                        className="p-1.5 mr-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors flex items-center justify-center"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    );
+                  })()}
                   <button
                     type="button"
                     onClick={async () => {
@@ -1909,7 +1945,7 @@ ${resourceTicketsLinks}
                       if (!window.confirm(`Xóa dữ liệu chat của nhóm "${selectedChatGroup}" và đồng bộ lại?`)) return;
                       setIsClearing(true);
                       try {
-                        await clearProjectMessages({ projectId: project._id as any, chatName: selectedChatGroup });
+                        await cmx.clearProjectMessages(project._id, selectedChatGroup);
                         // Trigger a re-sync for this specific group
                         fetch("/api/agents/sync-single-chat", {
                           method: "POST",
@@ -1938,7 +1974,7 @@ ${resourceTicketsLinks}
               </div>
               
               {/* Messages Area */}
-              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col pb-4 space-y-1 pr-2">
+              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col pb-4 pr-2">
               {projectChats?.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
                   <span className="text-[12px]">Chưa có tin nhắn nào.</span>
@@ -1948,6 +1984,11 @@ ${resourceTicketsLinks}
                   const chatMessages = projectChats.filter((m: any) => m.chatName === selectedChatGroup);
                   return chatMessages.map((msg: any, idx: number) => {
                     const prev = idx > 0 ? chatMessages[idx - 1] : undefined;
+                    const next = idx < chatMessages.length - 1 ? chatMessages[idx + 1] : undefined;
+                    
+                    const isFirstInGroup = !prev || prev.sender !== msg.sender;
+                    const isLastInGroup = !next || next.sender !== msg.sender;
+                    
                     const isAgent = msg.sender.includes("Antigravity") || msg.sender.includes("Bot") || msg.sender.toLowerCase().includes("trợ lý");
                     // Own messages (extracted from Teams/Zalo): "Me"/"Tôi" sender or isMine flag
                     const isMine = !!msg.isMine || msg.sender === "Me" || msg.sender === "Tôi" || msg.sender === "Tui" || msg.sender === "Bạn";
@@ -1969,7 +2010,8 @@ ${resourceTicketsLinks}
                     }
 
                     // Format quotes in content
-                    let quoteHeader = null;
+                    let quoteSender = null;
+                    let quoteContent = null;
                     let mainText = msg.content;
 
                     // New Zalo format: content starts with "> Sender: quoted text\n..."
@@ -1980,15 +2022,12 @@ ${resourceTicketsLinks}
                         // Parse "Sender: quoted content"
                         const colonIdx = quoteLine.indexOf(':');
                         if (colonIdx > 0) {
-                          const qSender = quoteLine.substring(0, colonIdx).trim();
-                          const qContent = quoteLine.substring(colonIdx + 1).trim();
-                          quoteHeader = `${qSender}`;
-                          // Store quotedContent in mainText via a marker for the bubble rendering
+                          quoteSender = quoteLine.substring(0, colonIdx).trim();
+                          quoteContent = quoteLine.substring(colonIdx + 1).trim();
                           mainText = msg.content.substring(newlineIdx + 1).trim();
-                          // Keep quoteHeader + quoted content text for display
-                          quoteHeader = `${qSender}: ${qContent}`;
                         } else {
-                          quoteHeader = quoteLine;
+                          quoteSender = "Trích dẫn";
+                          quoteContent = quoteLine;
                           mainText = msg.content.substring(newlineIdx + 1).trim();
                         }
                       }
@@ -1996,13 +2035,26 @@ ${resourceTicketsLinks}
                       // Old format (Teams-style): parse "Sender (date): msg" or "\n> " prefix
                       const quoteMatch = msg.content.match(/^([a-zA-Z0-9\.\s_-]+?)\s?(\d{1,2}\/\d{1,2}\/\d{4}\s\d{1,2}:\d{2}\s[AP]M):?\s*([\s\S]*)$/i);
                       if (quoteMatch) {
-                        quoteHeader = `${quoteMatch[1].trim()} (${quoteMatch[2]})`;
-                        mainText = quoteMatch[3].trim();
+                        quoteSender = quoteMatch[1].trim();
+                        // Legacy squished format (old extractor): header + quoted
+                        // text + reply text run together with no separators. Show
+                        // the whole remainder as the quoted content — after a
+                        // re-sync the new extractor splits them correctly.
+                        quoteContent = quoteMatch[3].trim();
+                        mainText = "";
                       } else if (msg.content.includes('\n> ')) {
                         const parts = msg.content.split('\n> ');
                         if (parts.length > 1) {
-                           quoteHeader = parts[1].replace(':', '').trim();
-                           mainText = parts.slice(2).join('\n> ').trim();
+                          const quotePart = parts[1].replace(':', '').trim();
+                          const colonIdx = quotePart.indexOf(':');
+                          if (colonIdx > 0) {
+                            quoteSender = quotePart.substring(0, colonIdx).trim();
+                            quoteContent = quotePart.substring(colonIdx + 1).trim();
+                          } else {
+                            quoteSender = "Trích dẫn";
+                            quoteContent = quotePart;
+                          }
+                          mainText = parts.slice(2).join('\n> ').trim() || parts[0].trim();
                         }
                       }
                     }
@@ -2010,78 +2062,89 @@ ${resourceTicketsLinks}
                     // Remove trailing Zalo/Teams reaction icons (emoji + optional number)
                     mainText = mainText.replace(/(?:(?:👍|❤️|😆|😲|😢|😡|🙏|👏)\s*\d*\s*)+$/u, '').trim();
                     
+                    // Remove trailing Teams text-based reactions (e.g., "Khoi Tran Quang1 Heart reaction." or "1 Like reaction.")
+                    mainText = mainText.replace(/(?:\s*[a-zA-ZÀ-ỹ\s]{0,50}\d+\s+(?:Heart|Like|Laugh|Sad|Surprised|Angry)\s+reactions?\.?)+$/i, '').trim();
+                    
+                    const paddingClass = isFirstInGroup ? (isLastInGroup ? "py-1.5" : "pt-2 pb-0.5") : (isLastInGroup ? "pt-0.5 pb-2" : "py-0.5");
+                    
+                    const bubbleRadius = isMine
+                      ? `rounded-2xl ${!isFirstInGroup ? 'rounded-tr-[4px]' : ''} ${!isLastInGroup ? 'rounded-br-[4px]' : ''}`
+                      : `rounded-2xl ${!isFirstInGroup ? 'rounded-tl-[4px]' : ''} ${!isLastInGroup ? 'rounded-bl-[4px]' : ''}`;
+
                     return (
-                      <div key={msg._id} className={`flex gap-2.5 group py-1.5 ${isMine ? "flex-row-reverse" : ""}`}>
-                        {/* Avatar — use real platform avatar if available, else initials */}
-                        <img 
-                          src={msg.senderAvatar 
-                            ? (msg.senderAvatar.startsWith("http") ? proxyImageUrl(msg.senderAvatar) : msg.senderAvatar) 
-                            : `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(msg.sender)}&radius=50`
-                          } 
-                          className="w-8 h-8 rounded-full shrink-0 mt-1 shadow-sm border border-border/20 bg-muted object-cover" 
-                          alt={msg.sender}
-                          onError={(e) => {
-                            // If avatar load fails, fallback to DiceBear initials
-                            const target = e.currentTarget;
-                            if (!target.dataset.fallback) {
-                              target.dataset.fallback = "true";
-                              target.src = `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(msg.sender)}&radius=50`;
-                            }
-                          }}
-                        />
+                      <div key={msg._id} className={`flex gap-2.5 group ${paddingClass} ${isMine ? "flex-row-reverse" : ""}`}>
+                        {/* Avatar */}
+                        {isFirstInGroup ? (
+                          <img 
+                            src={msg.senderAvatar 
+                              ? (msg.senderAvatar.startsWith("http") ? proxyImageUrl(msg.senderAvatar) : msg.senderAvatar) 
+                              : `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(msg.sender)}&radius=50`
+                            } 
+                            className="w-8 h-8 rounded-full shrink-0 mt-1 shadow-sm border border-border/20 bg-muted object-cover" 
+                            alt={msg.sender}
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              if (!target.dataset.fallback) {
+                                target.dataset.fallback = "true";
+                                target.src = `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(msg.sender)}&radius=50`;
+                              }
+                            }}
+                          />
+                        ) : (
+                          <div className="w-8 shrink-0" />
+                        )}
                         
                         {/* Message Content */}
                         <div className={`flex flex-col w-full max-w-[85%] ${isMine ? "items-end" : ""}`}>
-                          {/* Name & Time — hide for consecutive messages from the same sender */}
-                          {(!prev || prev.sender !== msg.sender) && (
-                          <div className={`flex items-baseline gap-2 mb-1 pl-1 flex-wrap ${isMine ? "flex-row-reverse pl-0 pr-1" : ""}`}>
-                            <span className="text-[12px] font-semibold text-foreground/80">{msg.sender}</span>
-                            <span className="text-[10px] text-muted-foreground/70 font-medium">{timeStr}</span>
+                          {/* Name & Time — only show for the first message in a group */}
+                          {isFirstInGroup && (
+                            <div className={`flex items-baseline gap-2 mb-1 pl-1 flex-wrap ${isMine ? "flex-row-reverse pl-0 pr-1" : ""}`}>
+                              <span className="text-[12px] font-semibold text-foreground/80">{msg.sender}</span>
+                              <span className="text-[10px] text-muted-foreground/70 font-medium">{timeStr}</span>
                               {msg.platform && msg.platform !== "teams" && (
-                                  <span className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 ${
-                                    msg.platform === "zalo"
-                                      ? "bg-blue-600/10 text-blue-700 dark:text-blue-300"
-                                      : "bg-violet-500/10 text-violet-600 dark:text-violet-400"
-                                  }`}>
-                                    {msg.platform === "zalo" ? "Zalo" : "Teams"}
-                                  </span>
-                                )}
-                                <span className="text-[9px] text-muted-foreground/70 bg-muted/60 px-1.5 py-0.5 rounded-sm truncate max-w-[150px]" title={msg.chatName}>
-                                  {msg.chatName}
+                                <span className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 ${
+                                  msg.platform === "zalo"
+                                    ? "bg-blue-600/10 text-blue-700 dark:text-blue-300"
+                                    : "bg-violet-500/10 text-violet-600 dark:text-violet-400"
+                                }`}>
+                                  {msg.platform === "zalo" ? "Zalo" : "Teams"}
                                 </span>
-                          </div>
+                              )}
+                              <span className="text-[9px] text-muted-foreground/70 bg-muted/60 px-1.5 py-0.5 rounded-sm truncate max-w-[150px]" title={msg.chatName}>
+                                {msg.chatName}
+                              </span>
+                            </div>
                           )}
                           
-                          {/* Chat Bubble */}
-                          <div className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words px-3.5 py-2.5 rounded-2xl shadow-sm w-fit ${
+                          <div className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words px-3.5 py-2.5 shadow-sm w-fit ${bubbleRadius} ${
                             isAgent 
-                              ? "bg-primary text-primary-foreground rounded-tl-sm border border-primary/20" 
+                              ? "bg-primary text-primary-foreground border border-primary/20" 
                               : isMine
-                                ? "bg-primary text-primary-foreground rounded-tr-sm border border-primary/20"
-                                : "bg-card text-card-foreground rounded-tl-sm border border-border/50"
-                          } ${prev && prev.isMine ? "mt-0.5" : "mt-1"}`}>
-                            {quoteHeader ? (
-                              <div className="flex flex-col">
-                                <div className="mb-1.5 pl-2.5 py-1 border-l-[3px] border-primary/40 bg-foreground/5 rounded-r-md text-[11.5px] opacity-90">
-                                  <span className="font-bold flex items-center gap-1.5 mb-0.5"><Quote className="w-3 h-3 opacity-50"/> {quoteHeader}</span>
+                                ? "bg-blue-600 text-white border border-blue-500/20"
+                                : "bg-card text-card-foreground border border-border/50"
+                          } ${!isFirstInGroup ? "mt-0.5" : "mt-1"}`}>
+                            {quoteSender ? (
+                              <div className="flex flex-col mb-1.5">
+                                <div className={`px-2.5 py-1.5 border-l-[3px] rounded-r-md text-[11.5px] flex flex-col gap-0.5 ${isMine ? "bg-white/20 border-white/40" : "bg-foreground/5 border-primary/40"}`}>
+                                  <span className="font-bold flex items-center gap-1.5 opacity-90"><Quote className="w-3 h-3 opacity-50"/> {quoteSender}</span>
+                                  {quoteContent && <span className="opacity-80 line-clamp-3 leading-relaxed mt-0.5"><LinkifyText text={quoteContent} isMine={isMine} /></span>}
                                 </div>
-                                <LinkifyText text={mainText} />
+                                <div className="mt-1.5">
+                                  <LinkifyText text={mainText} isMine={isMine} />
+                                </div>
                               </div>
                             ) : (
-                              <LinkifyText text={mainText} />
+                              <LinkifyText text={mainText} isMine={isMine} />
                             )}
                             {/* Images */}
                             {(msg.images ? (() => {
                               try {
                                 const parsed = typeof msg.images === 'string' ? JSON.parse(msg.images) : msg.images;
                                 if (!Array.isArray(parsed)) return [];
-                                // Accept http, https, data, and storage URLs.
-                                // Skip objects/null/empty strings (corrupt entries from
-                                // failed blob→base64 conversions).
                                 return parsed.filter((s: unknown): s is string =>
                                   typeof s === 'string' &&
                                   s.length > 0 &&
-                                  (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:') || s.startsWith('storage:'))
+                                  (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:') || s.startsWith('storage:') || s.startsWith('/api/data/files/') || s.startsWith('/api/files/'))
                                 );
                               } catch { return []; }
                             })() : []).map((imgSrc: string, imgIdx: number) => (
@@ -2210,7 +2273,7 @@ ${resourceTicketsLinks}
                           {!s.isRead && (
                             <button
                               type="button"
-                              onClick={() => markSuggestionAsRead({ id: s._id as any })}
+                              onClick={() => smx.markSuggestionAsRead(s._id)}
                               className="text-[9px] px-2 py-1 rounded-md bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
                             >
                               Đã đọc
@@ -2219,7 +2282,7 @@ ${resourceTicketsLinks}
                           {!s.isResolved && (
                             <button
                               type="button"
-                              onClick={() => markSuggestionAsResolved({ id: s._id as any })}
+                              onClick={() => smx.markSuggestionAsResolved(s._id)}
                               className="text-[9px] px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-500/20 transition-colors cursor-pointer"
                             >
                               Đã xử lý
@@ -2434,12 +2497,12 @@ ${resourceTicketsLinks}
                         const selectedRole = newMemberRoleId
                           ? projectRolesList.find((r) => r._id === newMemberRoleId)
                           : null;
-                        await addMember({
-                          projectId: project._id as any,
+                        await mmx.addMember({
+                          projectId: project._id,
                           userId: userId!,
                           name: newMemberName.trim(),
                           email: newMemberEmail.trim() || undefined,
-                          roleId: (newMemberRoleId as any) || undefined,
+                          roleId: newMemberRoleId || undefined,
                           roleName: selectedRole?.name || "Chưa phân công",
                           source: "manual",
                         });
@@ -2485,10 +2548,10 @@ ${resourceTicketsLinks}
                       roles={projectRolesList || []}
                       roleColor={memberRoleColor}
                       onUpdate={async (id, data) => {
-                        await updateMember({ id: id as any, ...(data as any) });
+                        await mmx.updateMember(id, data);
                       }}
                       onRemove={async (id) => {
-                        await removeMember({ id: id as any });
+                        await mmx.removeMember(id);
                       }}
                     />
                   );

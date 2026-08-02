@@ -24,8 +24,7 @@ import { getDays, formatDateStr } from "@/lib/date-utils";
 import { startOfDay, addDays, format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal, Copy, Archive, Eye, EyeOff, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useTaskMutations, useProjectMutations, usePreferenceMutations, useUserPreferences, useAllDependencies } from "@/hooks/useDomain";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { NewTaskSheet } from "./NewTaskSheet";
@@ -190,7 +189,7 @@ function SwimlaneCell({ id, project, status, tasks, selectedTaskIds, onTaskClick
   });
 
   const { userId } = useAuth();
-  const createTask = useMutation(api.tasks.createTask);
+  const tm = useTaskMutations();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [endDate, setEndDate] = useState<number>(() => {
@@ -209,7 +208,7 @@ function SwimlaneCell({ id, project, status, tasks, selectedTaskIds, onTaskClick
     try {
       const startVal = startOfDay(new Date()).getTime();
       const isDueTodayColumn = status === "dueToday";
-      await createTask({
+      await tm.createTask({
         userId,
         title,
         estimatedTime: 1, // default 1 hour
@@ -217,7 +216,7 @@ function SwimlaneCell({ id, project, status, tasks, selectedTaskIds, onTaskClick
         endDate: isDueTodayColumn
           ? dueTodayEndTimestamp()
           : endDate,
-        project: project === "none" ? undefined : (project as any),
+        project: project === "none" ? undefined : project,
         status: isDueTodayColumn ? "todo" : status,
         priority,
       });
@@ -352,9 +351,7 @@ function SwimlaneCell({ id, project, status, tasks, selectedTaskIds, onTaskClick
 
 function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }: { project: any; totalTasks: number; expanded?: boolean; onToggleDetail?: () => void }) {
   const { userId } = useAuth();
-  const createProject = useMutation(api.projects.createProject);
-  const cloneProject = useMutation(api.projects.cloneProject);
-  const setProjectArchived = useMutation(api.projects.setProjectArchived);
+  const pm = useProjectMutations();
   const [newProjectName, setNewProjectName] = useState("");
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [cloneProjectName, setCloneProjectName] = useState("");
@@ -386,7 +383,7 @@ function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }:
     e.preventDefault();
     if (!newProjectName.trim() || !userId) return;
     try {
-      await createProject({
+      await pm.createProject({
         userId,
         name: newProjectName.trim(),
       });
@@ -408,11 +405,7 @@ function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }:
     e.preventDefault();
     if (!cloneProjectName.trim() || !userId) return;
     try {
-      await cloneProject({
-        projectId: project._id,
-        userId,
-        name: cloneProjectName.trim(),
-      });
+      await pm.cloneProject(project._id, userId, cloneProjectName.trim());
       setIsClonePopoverOpen(false);
     } catch (err) {
       console.error(err);
@@ -426,7 +419,7 @@ function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }:
       return;
     }
     try {
-      await setProjectArchived({ id: project._id as any, archived: true });
+      await pm.setProjectArchived(project._id, true);
     } catch (err) {
       console.error(err);
     }
@@ -582,12 +575,11 @@ export function KanbanBoard({
   showFilters = false
 }: KanbanBoardProps) {
   const { userId } = useAuth();
-  const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
-  const updateProjectOrders = useMutation(api.projects.updateProjectOrders);
-  const createProject = useMutation(api.projects.createProject);
-  const updatePreferences = useMutation(api.userPreferences.updateUserPreferences);
-  const userPreferences = useQuery(api.userPreferences.getUserPreferences, userId ? { userId } : "skip");
-  const allDependencies = useQuery(api.tasks.getAllDependencies, userId ? { userId } : "skip");
+  const tm = useTaskMutations();
+  const pm = useProjectMutations();
+  const prefx = usePreferenceMutations();
+  const { data: userPreferences } = useUserPreferences(userId);
+  const { data: allDependencies } = useAllDependencies(userId);
 
   // Build a set of blocked task IDs from dependencies
   const blockedTaskIds = useMemo(() => {
@@ -725,7 +717,7 @@ export function KanbanBoard({
   const handleHideDoneTasksChange = (value: boolean) => {
     setHideDoneTasks(value);
     if (userId) {
-      void updatePreferences({ userId, hideDoneTasks: value });
+      void prefx.updateUserPreferences({ userId, hideDoneTasks: value });
     }
   };
 
@@ -733,7 +725,7 @@ export function KanbanBoard({
     e.preventDefault();
     if (!newProjectName.trim() || !userId) return;
     try {
-      await createProject({
+      await pm.createProject({
         userId,
         name: newProjectName.trim(),
       });
@@ -924,7 +916,7 @@ export function KanbanBoard({
             id: p._id as any,
             order: index * 1000,
           }));
-          updateProjectOrders({ updates });
+          pm.updateProjectOrders(updates);
         }
       }
       setSelectedTaskIds(new Set());
@@ -995,7 +987,7 @@ export function KanbanBoard({
         }
       }
 
-      void updateTaskOrders({ updates });
+          tm.updateTaskOrders(updates);
       setSelectedTaskIds(new Set());
       return;
     }
@@ -1057,12 +1049,12 @@ export function KanbanBoard({
           const moving = cellList.filter((t) => movingIds.has(t._id));
           const reordered = [...nonMoving];
           reordered.splice(overIdx, 0, ...moving);
-          void updateTaskOrders({
-            updates: reordered.map((t, index) => ({
+          tm.updateTaskOrders(
+            reordered.map((t, index) => ({
               id: t._id as any,
               order: index * 1000,
-            })),
-          });
+            }))
+          );
         } else {
           // Move all selected tasks to target cell
           const moveFields = buildBoardMoveFields(sourceColumn, targetColumn, activeTaskData);
@@ -1103,7 +1095,7 @@ export function KanbanBoard({
             }
           }
 
-          void updateTaskOrders({ updates });
+          tm.updateTaskOrders(updates);
         }
         setSelectedTaskIds(new Set());
         return;
@@ -1133,7 +1125,7 @@ export function KanbanBoard({
           order: index * 1000,
           startDate: newStartDate,
         }));
-        void updateTaskOrders({ updates });
+        tm.updateTaskOrders(updates);
       } else {
         // Move to new date column
         const nonMoving = targetList.filter((t) => !movingIds.has(t._id));
@@ -1146,7 +1138,7 @@ export function KanbanBoard({
           order: index * 1000,
           startDate: newStartDate,
         }));
-        void updateTaskOrders({ updates });
+        tm.updateTaskOrders(updates);
       }
       setSelectedTaskIds(new Set());
     }

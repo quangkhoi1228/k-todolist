@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
+import { useRoles, useRoleUsageCounts, useRoleMutations } from "@/hooks/useDomain";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,7 +21,6 @@ import {
   Users,
   Palette,
 } from "lucide-react";
-import type { Doc } from "../../../../../convex/_generated/dataModel";
 
 const ROLE_COLORS = [
   { name: "Xanh lá", value: "#10b981" },
@@ -38,17 +36,11 @@ const ROLE_COLORS = [
 
 export default function RolesSettingsPage() {
   const { userId } = useAuth();
-  const roles = useQuery(api.projectRoles.getRoles, userId ? { userId } : "skip");
-  const usageCounts = useQuery(
-    api.projectRoles.getRoleUsageCounts,
-    userId ? { userId } : "skip"
-  );
-  const seedDefaultRoles = useMutation(api.projectRoles.seedDefaultRoles);
-  const createRole = useMutation(api.projectRoles.createRole);
-  const updateRole = useMutation(api.projectRoles.updateRole);
-  const deleteRole = useMutation(api.projectRoles.deleteRole);
+  const { data: roles } = useRoles(userId);
+  const { data: usageCounts } = useRoleUsageCounts(userId);
+  const rm = useRoleMutations();
 
-  const [editingRole, setEditingRole] = useState<Doc<"projectRoles"> | null>(null);
+  const [editingRole, setEditingRole] = useState<any | null>(null);
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("#10b981");
   const [editOrder, setEditOrder] = useState(0);
@@ -62,11 +54,11 @@ export default function RolesSettingsPage() {
   // Seed roles on first load if empty
   useEffect(() => {
     if (roles !== undefined && roles.length === 0 && userId) {
-      seedDefaultRoles({ userId });
+      rm.seedDefaultRoles(userId);
     }
-  }, [roles, userId, seedDefaultRoles]);
+  }, [roles, userId, rm]);
 
-  const openEdit = useCallback((role: Doc<"projectRoles">) => {
+  const openEdit = useCallback((role: any) => {
     setEditingRole(role);
     setEditName(role.name);
     setEditColor(role.color || "#10b981");
@@ -75,18 +67,17 @@ export default function RolesSettingsPage() {
 
   const handleSaveEdit = useCallback(async () => {
     if (!editingRole || !editName.trim()) return;
-    await updateRole({
-      id: editingRole._id,
+    await rm.updateRole(editingRole._id, {
       name: editName.trim(),
       color: editColor,
       order: editOrder,
     });
     setEditingRole(null);
-  }, [editingRole, editName, editColor, editOrder, updateRole]);
+  }, [editingRole, editName, editColor, editOrder, rm]);
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim() || !userId) return;
-    await createRole({
+    await rm.createRole({
       userId,
       name: newName.trim(),
       color: newColor,
@@ -95,18 +86,18 @@ export default function RolesSettingsPage() {
     setNewName("");
     setNewColor("#10b981");
     setIsCreateOpen(false);
-  }, [newName, newColor, userId, createRole, roles]);
+  }, [newName, newColor, userId, rm, roles]);
 
   const handleDelete = useCallback(
     async (roleId: string) => {
       try {
-        await deleteRole({ id: roleId as any });
+        await rm.deleteRole(roleId);
         setDeleteConfirm(null);
       } catch (err: any) {
         alert(err.message || "Không thể xoá role");
       }
     },
-    [deleteRole]
+    [rm]
   );
 
   const isDefaultRole = (name: string) =>

@@ -11,9 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import TextareaAutosize from "react-textarea-autosize";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../../convex/_generated/api";
-import type { Id } from "../../../../../convex/_generated/dataModel";
+import { usePmMessages, usePmSessionById, usePmMutations, useProjects, useSuggestionMutations } from "@/hooks/useDomain";
 import { analyzeWithLLM } from "../../../../../agents/pm/lib/llm-client";
 import type { LLMAction } from "../../../../../agents/pm/lib/llm-client";
 
@@ -78,9 +76,9 @@ export default function PMAgentChatPage() {
   const searchParams = useSearchParams();
   const { userId } = useAuth();
 
-  const existingSessionId = searchParams.get("session") as Id<"pmAgentSessions"> | null;
+  const existingSessionId = searchParams.get("session");
 
-  const [sessionId, setSessionId] = useState<Id<"pmAgentSessions"> | null>(existingSessionId);
+  const [sessionId, setSessionId] = useState<string | null>(existingSessionId);
   const [input, setInput] = useState("");
   const [processing, setProcessing] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
@@ -89,23 +87,14 @@ export default function PMAgentChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const messages = useQuery(
-    api.agents_pm.getMessages,
-    sessionId ? { sessionId } : "skip"
-  ) as ChatMessage[] | undefined;
-
-  const session = useQuery(
-    api.agents_pm.getSession,
-    sessionId ? { id: sessionId } : "skip"
-  );
-
-  const addMessage = useMutation(api.agents_pm.addMessage);
-  const createProjectFromTicket = useMutation(api.agents_pm.createProjectFromTicket);
-  const addSuggestionsBatch = useMutation(api.projectSuggestions.addSuggestionsBatch);
+  const { data: messages } = usePmMessages(sessionId ?? undefined);
+  const { data: session } = usePmSessionById(sessionId ?? undefined);
+  const pmx = usePmMutations();
+  const smx = useSuggestionMutations();
 
   // ─── Auto-detect current project context from URL ─────
   const pathname = usePathname();
-  const allProjects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true, includeTrashed: false } : "skip");
+  const { data: allProjects } = useProjects(userId, { includeArchived: true, includeTrashed: false });
   const contextProjectId = pathname?.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
   const contextProject = contextProjectId && allProjects
     ? allProjects.find((p) => p._id === contextProjectId)
@@ -165,11 +154,11 @@ export default function PMAgentChatPage() {
     if (!sessionId) {
       setShowTemporaryMessage(reply || `Toi tim thay ticket **${ticketId}**. Ban muon tao du an moi khong?`);
     } else {
-      await addMessage({ sessionId, role: "user", content: text });
-      await addMessage({ sessionId, role: "agent", content: reply || `Toi da nhan: "${text}". Ban muon lam gi tiep?` });
+      await pmx.addMessage({ sessionId, role: "user", content: text });
+      await pmx.addMessage({ sessionId, role: "agent", content: reply || `Toi da nhan: "${text}". Ban muon lam gi tiep?` });
     }
     return null;
-  }, [sessionId, chatHistory, addMessage, contextProject]);
+  }, [sessionId, chatHistory, pmx, contextProject]);
 
   // ─── Execute confirmed action ──────────────────────────
 
@@ -190,7 +179,7 @@ export default function PMAgentChatPage() {
       let isdData: any;
       try {
         isdData = await fetchISDData(ticketId);
-        result = await createProjectFromTicket({
+        result = await pmx.createProjectFromTicket({
           userId: userId!,
           ticketId,
           isdData: JSON.stringify(isdData),
@@ -199,8 +188,8 @@ export default function PMAgentChatPage() {
         return { message: `Loi khi tao du an tu ticket **#${ticketId}**: ${err instanceof Error ? err.message : "Loi khong xac dinh"}. Vui long thu lai.` };
       }
       if (result.duplicate) {
-        setSessionId(result.sessionId as Id<"pmAgentSessions">);
-        return { redirect: true, sessionId: result.sessionId as Id<"pmAgentSessions">, message: `Ticket **#${ticketId}** da duoc tao tu truoc. Dang mo lai phien cu...` };
+        setSessionId(result.sessionId);
+        return { redirect: true, sessionId: result.sessionId, message: `Ticket **#${ticketId}** da duoc tao tu truoc. Dang mo lai phien cu...` };
       }
       // Fire-and-forget: generate suggestions
       if (result.projectId && isdData) {
@@ -212,8 +201,8 @@ export default function PMAgentChatPage() {
           .then((r) => r.json())
           .then((suggestionResult) => {
             if (suggestionResult.ok && Array.isArray(suggestionResult.suggestions) && suggestionResult.suggestions.length > 0) {
-              addSuggestionsBatch({
-                projectId: result.projectId as any,
+              smx.addSuggestionsBatch({
+                projectId: result.projectId,
                 userId: userId!,
                 suggestions: suggestionResult.suggestions,
               });
@@ -221,7 +210,7 @@ export default function PMAgentChatPage() {
           })
           .catch((err) => console.warn("[executeAction] generateSuggestions error:", err));
       }
-      return { redirect: true, sessionId: result.sessionId as Id<"pmAgentSessions"> };
+      return { redirect: true, sessionId: result.sessionId };
     }
 
     if (!sessionId) {
@@ -231,12 +220,12 @@ export default function PMAgentChatPage() {
       return { message: `Toi tim thay ticket **${ticketId}**. Ban muon tao du an moi khong?` };
     }
 
-    await addMessage({ sessionId, role: "user", content: text });
+    await pmx.addMessage({ sessionId, role: "user", content: text });
 
     if (action === "lookup_ticket") {
       const ticketToLookup = ticketId || session?.ticketId;
       if (!ticketToLookup) {
-        await addMessage({ sessionId, role: "agent", content: "Khong co ticket nao de tra cuu." });
+        await pmx.addMessage({ sessionId, role: "agent", content: "Khong co ticket nao de tra cuu." });
         return {};
       }
       try {
@@ -246,15 +235,15 @@ export default function PMAgentChatPage() {
         if (res.ok) {
           const data = await res.json();
           const f = data.fields || {};
-          await addMessage({
+          await pmx.addMessage({
             sessionId, role: "agent",
             content: `Thong tin ticket **#${data.key}**:\n\nTieu de: ${f.summary || "N/A"}\nTrang thai: ${f.status?.name || "N/A"}\nPriority: ${f.priority?.name || "N/A"}\nAssignee: ${f.assignee?.displayName || "Chua co"}\nReporter: ${f.reporter?.displayName || "N/A"}`,
           });
         } else {
-          await addMessage({ sessionId, role: "agent", content: `Khong the lay thong tin ticket **#${ticketToLookup}** tu ISD.` });
+          await pmx.addMessage({ sessionId, role: "agent", content: `Khong the lay thong tin ticket **#${ticketToLookup}** tu ISD.` });
         }
       } catch {
-        await addMessage({ sessionId, role: "agent", content: "Loi ket noi den ISD." });
+        await pmx.addMessage({ sessionId, role: "agent", content: "Loi ket noi den ISD." });
       }
       return {};
     }
@@ -264,17 +253,17 @@ export default function PMAgentChatPage() {
         const wf = JSON.parse(session?.workflowData || "{}");
         if (wf.linkedProjectId) { router.push(`/projects/${wf.linkedProjectId}`); return {}; }
       } catch {}
-      await addMessage({ sessionId, role: "agent", content: `Du an **${session?.projectName}** (Ticket #${session?.ticketId}) dang duoc quan ly.` });
+      await pmx.addMessage({ sessionId, role: "agent", content: `Du an **${session?.projectName}** (Ticket #${session?.ticketId}) dang duoc quan ly.` });
       return {};
     }
 
     // For other actions (add_personnel, create_meeting, update_sow) — respond with instructions
-    await addMessage({
+    await pmx.addMessage({
       sessionId, role: "agent",
       content: pa.reply || `Toi da nhan: "${text}". Toi co the giup ban tiep voi du an **${session?.projectName}**. Ban muon lam gi?`,
     });
     return {};
-  }, [sessionId, userId, session, addMessage, createProjectFromTicket, router, contextProject]);
+  }, [sessionId, userId, session, pmx, smx, router, contextProject]);
 
   const cancelAction = useCallback(() => {
     setPendingAction(null);
@@ -294,14 +283,14 @@ export default function PMAgentChatPage() {
     } catch (err) {
       console.error("Error:", err);
       if (sessionId) {
-        await addMessage({ sessionId, role: "agent", content: `Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}.` });
+        await pmx.addMessage({ sessionId, role: "agent", content: `Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}.` });
       } else {
         setShowTemporaryMessage(`Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}`);
       }
     } finally {
       setProcessing(false);
     }
-  }, [sessionId, addMessage, executeAction, router]);
+  }, [sessionId, pmx, executeAction, router]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -322,13 +311,13 @@ export default function PMAgentChatPage() {
     } catch (err) {
       console.error("Error:", err);
       if (sessionId) {
-        await addMessage({ sessionId, role: "agent", content: `Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}.` });
+        await pmx.addMessage({ sessionId, role: "agent", content: `Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}.` });
       } else {
         setShowTemporaryMessage(`Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}`);
       }
       setProcessing(false);
     }
-  }, [input, processing, userId, sessionId, addMessage, detectAction]);
+  }, [input, processing, userId, sessionId, pmx, detectAction]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {

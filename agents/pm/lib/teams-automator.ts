@@ -69,6 +69,7 @@ export const DEFAULT_CONFIG: AutomatorConfig = {
 export interface TeamsExtractResult {
   channelName: string;
   teamName: string;
+  chatUrl?: string;
   totalMessages: number;
   messages: ExtractedMessage[];
   extractedAt: string;
@@ -551,6 +552,21 @@ async function getChatContainer(page: Page) {
 }
 
 /**
+ * Capture the current chat URL from the Teams v2 SPA (hash-based deep link),
+ * e.g. https://teams.microsoft.com/v2/#/conversations/19:xxx@thread.v2
+ * Falls back to the raw page URL if no hash routing is present.
+ */
+export async function getChatUrl(page: Page): Promise<string | undefined> {
+  try {
+    const raw = page.url();
+    if (!raw || raw.includes("login") || raw.includes("launcher")) return undefined;
+    return raw;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Scroll to top of the chat to load older messages.
  * Returns when the scroll has settled.
  */
@@ -779,12 +795,12 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
       let avatarImg: HTMLImageElement | null = null;
 
       const avatarSelectors = [
+        'img.fui-Avatar__image',
         'img[class*="avatar"]',
         'img[data-tid*="avatar"]',
         'img[class*="Avatar"]',
         '[class*="fui-Avatar"] img',
         '[class*="avatar"] img',
-        'img[data-tid*="avatar"]',
         'img[class*="Persona"]',
         'img[class*="persona"]',
         'img[class*="profile"]',
@@ -841,12 +857,36 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
         ? new Date(timeEl.getAttribute("datetime")!).getTime()
         : Date.now();
 
+      // === Extract quoted/reply message (Skype Reply schema blockquote) ===
+      // Teams renders inline replies as:
+      //   <blockquote itemtype="http://schema.skype.com/Reply" itemid="...">
+      //     <strong itemprop="mri">Sender Name</strong>
+      //     <p itemprop="preview">quoted text</p>
+      //   </blockquote>
+      // The <strong> (sender) and <p> (content) must be pulled out BEFORE
+      // computing the raw body text — otherwise they get squished together
+      // with the reply text ("SenderTimestampquotedReply") with no separators.
+      let quoteSender = "";
+      let quoteContent = "";
+      const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
+      if (quoteBq) {
+        const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
+        const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
+          quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
+        quoteSender = qNameEl?.textContent?.trim() || "";
+        quoteContent = qCopyEl?.textContent?.trim() || "";
+      }
+
       let content = "";
       const bodyEl = el.querySelector<HTMLElement>(
         '[data-tid="message-body-content"], [data-tid="chat-pane-message"], .fui-ChatMessage__body'
       );
       if (bodyEl) {
-        content = bodyEl.textContent?.trim() || "";
+        const bodyClone = bodyEl.cloneNode(true) as HTMLElement;
+        // Remove the quote blockquote from the body so it isn't duplicated
+        // into the main text (it is rendered separately below).
+        bodyClone.querySelectorAll('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]').forEach(e => e.remove());
+        content = bodyClone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
       }
 
       const images: string[] = [];
@@ -1047,6 +1087,20 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
         content = clone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
       }
 
+      // Compose final content: prefix the quoted message (if any) in the
+      // same "> Sender: quoted" format used by Zalo, so the UI can render
+      // the quote block and keep the reply text separate.
+      if (quoteSender && quoteContent) {
+        // The fallback clone path above may have already embedded the
+        // blockquote as a "> ..." line — strip it (first occurrence) to
+        // avoid duplication.
+        const quotedPrefix = `> ${quoteSender}: ${quoteContent}`;
+        let stripped = content.replace(quotedPrefix, "");
+        stripped = stripped.replace(/^\s*>.*$/m, () => ""); // first > line only
+        stripped = stripped.replace(/\s{2,}/g, " ").trim();
+        content = `> ${quoteSender}: ${quoteContent}\n${stripped}`;
+      }
+
       if ((!content && images.length === 0) || !sender) continue;
 
       const key = `${sender}|${content.slice(0, 80)}|${images.join(',')}`;
@@ -1211,12 +1265,30 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
         ? new Date(timeEl.getAttribute("datetime")!).getTime()
         : Date.now();
 
+      // === Extract quoted/reply message (same logic as extractMessages) ===
+      let quoteSender = "";
+      let quoteContent = "";
+      const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
+      if (quoteBq) {
+        const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
+        const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
+          quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
+        quoteSender = qNameEl?.textContent?.trim() || "";
+        quoteContent = qCopyEl?.textContent?.trim() || "";
+      }
+
       let content = "";
       const bodyEl = el.querySelector<HTMLElement>(
         '[data-tid="message-body-content"], [data-tid="chat-pane-message"], .fui-ChatMessage__body'
       );
       if (bodyEl) {
-        content = bodyEl.textContent?.trim() || "";
+        const bodyClone = bodyEl.cloneNode(true) as HTMLElement;
+        bodyClone.querySelectorAll('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]').forEach(e => e.remove());
+        content = bodyClone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
+      }
+
+      if (quoteSender && quoteContent) {
+        content = `> ${quoteSender}: ${quoteContent}\n${content}`;
       }
 
       if (!content || !sender) continue;
@@ -1302,10 +1374,14 @@ export async function incrementalScrollAndExtract(
       if (!existing) {
         allMessages.set(key, cleaned as any);
       } else if (cleaned.images?.length && !existing.images?.length) {
-        allMessages.set(key, cleaned as any);
+        allMessages.set(key, { ...existing, ...cleaned, images: cleaned.images });
       } else if (cleaned.images?.length && existing.images?.length) {
         const merged = [...new Set([...(existing.images || []), ...(cleaned.images || [])])];
         allMessages.set(key, { ...existing, images: merged });
+      } else if (cleaned.senderAvatar && !existing.senderAvatar) {
+        // Text-only pass (hasImages=false) drops the avatar — keep the one
+        // captured by an earlier image pass.
+        allMessages.set(key, { ...existing, senderAvatar: cleaned.senderAvatar });
       }
     }
   };
@@ -1402,6 +1478,52 @@ export async function incrementalScrollAndExtract(
     .filter((m: any) => m.content || m.images?.length)
     .sort((a: any, b: any) => a.timestampMs - b.timestampMs);
 
+  // ── Hydrate sender avatars ──
+  // Teams avatar URLs (profilepicturev2) require the live browser session
+  // (auth cookies + tokens) — server-side fetch without them returns 401.
+  // Fetching in-page (same origin as the loaded Teams session) succeeds, so
+  // we convert avatars to base64 data URLs which render anywhere.
+  const avatarUrls = [...new Set(finalMessages.map((m) => (m as any).senderAvatar).filter((u): u is string => typeof u === 'string' && u.length > 0))];
+  if (avatarUrls.length > 0) {
+    log(`Hydrating ${avatarUrls.length} unique Teams avatars in-page...`);
+    const avatarCache = new Map<string, string>();
+    for (const url of avatarUrls) {
+      try {
+        const dataUrl = await page.evaluate(async (u: string) => {
+          try {
+            const r = await fetch(u, { credentials: "include", signal: AbortSignal.timeout(15000) });
+            if (!r.ok) return null;
+            const blob = await r.blob();
+            return await new Promise<string | null>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = () => resolve(null);
+              reader.readAsDataURL(blob);
+            });
+          } catch {
+            return null;
+          }
+        }, url);
+        if (dataUrl && dataUrl.startsWith('data:')) {
+          avatarCache.set(url, dataUrl);
+        } else {
+          log(`  avatar fetch failed: ${url.slice(0, 80)}`);
+        }
+      } catch (e) {
+        log(`  avatar fetch error: ${String(e).slice(0, 80)}`);
+      }
+    }
+    let hydrated = 0;
+    for (const m of finalMessages) {
+      const av = (m as any).senderAvatar;
+      if (av && avatarCache.has(av)) {
+        (m as any).senderAvatar = avatarCache.get(av);
+        hydrated++;
+      }
+    }
+    log(`Hydrated ${hydrated} Teams avatars (${avatarCache.size} unique).`);
+  }
+
   const pageInfo = await page.evaluate(() => {
     const channelEl =
       document.querySelector<HTMLElement>('[data-tid="chat-title"]') ||
@@ -1410,9 +1532,12 @@ export async function incrementalScrollAndExtract(
     return { channelName: channelEl?.textContent?.trim() || "Unknown Channel", teamName: "" };
   });
 
+  const chatUrl = await getChatUrl(page);
+
   const result: TeamsExtractResult = {
     channelName: pageInfo.channelName,
     teamName: pageInfo.teamName,
+    chatUrl,
     totalMessages: finalMessages.length,
     messages: finalMessages as ExtractedMessage[],
     extractedAt: new Date().toISOString(),

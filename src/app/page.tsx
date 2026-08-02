@@ -13,6 +13,7 @@ import {
   Sparkles,
   KanbanSquare,
   GanttChart,
+  Users,
 } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
 
@@ -53,6 +54,15 @@ export default async function Home() {
               className="hover:text-foreground transition-colors"
             >
               Hiệu suất
+            </a>
+            <a
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-foreground transition-colors flex items-center gap-1.5 text-[oklch(0.6_0.2_320)] font-medium"
+            >
+              <Users className="w-4 h-4" />
+              Tham gia nhóm
             </a>
           </div>
 
@@ -118,6 +128,15 @@ export default async function Home() {
               className="px-8 py-3.5 rounded-xl border border-border text-foreground font-semibold text-base hover:bg-accent transition-all flex items-center gap-2"
             >
               Khám phá tính năng
+            </a>
+            <a
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-8 py-3.5 rounded-xl bg-[oklch(0.6_0.2_320)]/10 text-[oklch(0.6_0.2_320)] font-semibold text-base hover:bg-[oklch(0.6_0.2_320)]/20 transition-all flex items-center gap-2 border border-[oklch(0.6_0.2_320)]/20"
+            >
+              <Users className="w-5 h-5" />
+              Tham gia cộng đồng
             </a>
           </div>
 
@@ -296,7 +315,7 @@ export default async function Home() {
               {
                 icon: Shield,
                 title: "Bảo mật cao",
-                desc: "Xác thực qua Clerk, dữ liệu realtime trên Convex. An toàn tuyệt đối.",
+                desc: "Xác thực qua Clerk, dữ liệu realtime trên PostgreSQL. An toàn tuyệt đối.",
                 gradient: "from-primary/20 to-[oklch(0.5_0.2_260)]/20",
                 iconColor: "text-primary",
               },

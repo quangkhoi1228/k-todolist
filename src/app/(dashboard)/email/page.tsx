@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
+import { useProjects, useEmails, useEmailMutations } from "@/hooks/useDomain";
 import { EmailComposeInline } from "@/components/board/EmailComposeInline";
-import type { Doc } from "../../../../convex/_generated/dataModel";
 import {
   Mail,
   Plus,
@@ -44,16 +42,11 @@ const STATUS_CONFIG: Record<
 
 export default function EmailPage() {
   const { userId } = useAuth();
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
+  const { data: projects } = useProjects(userId);
 
   const [filterProjectId, setFilterProjectId] = useState<string | undefined>(undefined);
-  const emails = useQuery(
-    api.emails.getByUser,
-    userId
-      ? { userId, projectId: filterProjectId as any }
-      : "skip"
-  );
-  const deleteEmail = useMutation(api.emails.deleteEmail);
+  const { data: emails } = useEmails(userId, { projectId: filterProjectId });
+  const em = useEmailMutations();
 
   const [composing, setComposing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -89,7 +82,7 @@ export default function EmailPage() {
     const q = searchQuery.toLowerCase();
     return (
       email.subject.toLowerCase().includes(q) ||
-      email.to.some((t) => t.toLowerCase().includes(q))
+      email.to?.some((t: string) => t.toLowerCase().includes(q))
     );
   });
 
@@ -159,7 +152,7 @@ export default function EmailPage() {
     <EmailDetail
       email={selectedEmailData}
       onDelete={async () => {
-        await deleteEmail({ id: selectedEmailData._id });
+        await em.deleteEmail(selectedEmailData._id);
         setSelectedEmail(null);
       }}
     />
@@ -409,7 +402,7 @@ function EmailDetail({
   email,
   onDelete,
 }: {
-  email: Doc<"sentEmails">;
+  email: any;
   onDelete: () => Promise<void>;
 }) {
   return (

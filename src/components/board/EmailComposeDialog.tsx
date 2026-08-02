@@ -1,8 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useAuth } from "@clerk/nextjs";
 import {
   Dialog,
@@ -25,7 +23,7 @@ import {
   ArrowDownCircle,
   Minus,
 } from "lucide-react";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { useEmailMutations, useRecipients } from "@/hooks/useDomain";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -39,7 +37,7 @@ interface EmailComposeDialogProps {
   /** Pre-filled body (HTML) */
   defaultBody?: string;
   /** Associated project ID */
-  projectId?: Id<"projects">;
+  projectId?: string;
   /** Custom trigger element */
   trigger?: React.ReactNode;
   /** Callback when email is sent */
@@ -70,14 +68,18 @@ export function EmailTagInput({
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const knownRecipients = useQuery(
-    api.knownRecipients.search,
-    userId && inputValue.trim().length >= 1
-      ? { userId, query: inputValue, limit: 10 }
-      : "skip"
-  );
+  const { data: recipientsData } = useRecipients(userId);
+  const allRecipients = recipientsData ?? [];
 
-  const suggestions = knownRecipients ?? [];
+  const inputValueLower = inputValue.trim().toLowerCase();
+  const suggestions = useMemo(() => {
+    if (inputValueLower.length < 1) return [];
+    return allRecipients.filter((r) => {
+      const email = (r.email || "").toLowerCase();
+      const name = (r.name || "").toLowerCase();
+      return email.includes(inputValueLower) || name.includes(inputValueLower);
+    }).slice(0, 10);
+  }, [allRecipients, inputValueLower]);
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -279,9 +281,10 @@ export function EmailComposeDialog({
   onOpenChange: controlledOnOpenChange,
 }: EmailComposeDialogProps) {
   const { userId } = useAuth();
-  const createEmailLog = useMutation(api.emails.createEmailLog);
-  const updateEmailStatus = useMutation(api.emails.updateEmailStatus);
-  const saveRecipients = useMutation(api.knownRecipients.saveRecipients);
+  const emx = useEmailMutations();
+  const createEmailLog = emx.createEmailLog;
+  const updateEmailStatus = emx.updateEmailStatus;
+  const saveRecipients = emx.saveRecipients;
 
   // State
   const [internalOpen, setInternalOpen] = useState(false);
@@ -416,9 +419,9 @@ export function EmailComposeDialog({
       const result = await response.json();
 
       if (result.ok) {
-        await updateEmailStatus({ id: emailId, status: "sent" });
+        await updateEmailStatus(emailId, "sent");
         // Save all recipients to known list
-        await saveRecipients({ userId, emails: [...to, ...cc, ...bcc] });
+        await saveRecipients(userId, [...to, ...cc, ...bcc]);
         setSendResult({
           ok: true,
           message: "Email đã được gửi thành công!",
@@ -430,11 +433,7 @@ export function EmailComposeDialog({
           setOpen(false);
         }, 2000);
       } else {
-        await updateEmailStatus({
-          id: emailId,
-          status: "failed",
-          errorMessage: result.error,
-        });
+        await updateEmailStatus(emailId, "failed", result.error);
         setSendResult({
           ok: false,
           message: result.error || "Không thể gửi email.",

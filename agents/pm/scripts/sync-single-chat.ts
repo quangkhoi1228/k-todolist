@@ -1,16 +1,13 @@
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "../../../convex/_generated/api";
-import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl } from "../lib/teams-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, getGroupUrl, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import dotenv from "dotenv";
 import * as path from "path";
+import { getProject, updateProjectTeamsGroups } from "../../../src/lib/repo/projects";
+import { saveMessages, uploadChatImage } from "../../../src/lib/repo/projectChats";
+import { addSuggestionsBatch } from "../../../src/lib/repo/projectSuggestions";
+import { addLog } from "../../../src/lib/repo/syncLogs";
+import { syncGroups } from "../../../src/lib/repo/groups";
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
-
-const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-if (!convexUrl) {
-  console.error("Missing NEXT_PUBLIC_CONVEX_URL");
-  process.exit(1);
-}
 
 const userId = process.env.USER_ID;
 if (!userId) {
@@ -27,10 +24,8 @@ if (!projectId || !chatName) {
 
 const platform = (process.env.PLATFORM || "teams") as "teams" | "zalo";
 
-const client = new ConvexHttpClient(convexUrl);
-
 /**
- * Upload large data: URLs to Convex storage and return storage: references.
+ * Upload large data: URLs to Postgres files table and return /api/data/files/{id} URLs.
  * Small data URLs (< 100KB base64) are kept as-is to avoid unnecessary storage ops.
  */
 async function processDataUrls(messages: any[]): Promise<any[]> {
@@ -38,6 +33,20 @@ async function processDataUrls(messages: any[]): Promise<any[]> {
   let uploadedCount = 0;
 
   for (const msg of processed) {
+    // Large sender avatars are uploaded to the files table the same way as
+    // large message images (base64 avatars can be several hundred KB).
+    if (typeof msg.senderAvatar === 'string' && msg.senderAvatar.startsWith('data:') && msg.senderAvatar.length > 100_000) {
+      try {
+        const fileId = await uploadChatImage(msg.senderAvatar, userId!);
+        if (fileId) {
+          msg.senderAvatar = `/api/data/files/${fileId}`;
+          uploadedCount++;
+        }
+      } catch (e) {
+        console.warn(`[SyncOne] Failed to upload avatar data URL (${(msg.senderAvatar.length / 1024).toFixed(0)}KB):`, e);
+      }
+    }
+
     if (!msg.images?.length) continue;
 
     const processedImages: string[] = [];
@@ -46,9 +55,9 @@ async function processDataUrls(messages: any[]): Promise<any[]> {
       if (typeof img !== 'string' || !img.length) continue;
       if (img.startsWith('data:') && img.length > 100_000) {
         try {
-          const storageId = await client.action(api.projectChats.uploadChatImage, { dataUrl: img });
-          if (storageId) {
-            processedImages.push(`storage:${storageId}`);
+          const fileId = await uploadChatImage(img, userId!);
+          if (fileId) {
+            processedImages.push(`/api/data/files/${fileId}`);
             uploadedCount++;
             continue;
           }
@@ -62,7 +71,7 @@ async function processDataUrls(messages: any[]): Promise<any[]> {
   }
 
   if (uploadedCount > 0) {
-    console.log(`[SyncOne] Uploaded ${uploadedCount} large images to Convex storage.`);
+    console.log(`[SyncOne] Uploaded ${uploadedCount} large images/avatars to Postgres.`);
   }
 
   return processed;
@@ -188,8 +197,8 @@ Output là JSON array, không markdown, không code block:
     console.log(`[Monitor] Found ${actions.length} action(s) needing PM:`);
     actions.forEach((a: any) => console.log(`  - ${a.title}: ${a.actionLabel}`));
 
-    await client.mutation(api.projectSuggestions.addSuggestionsBatch, {
-      projectId: projectId as any,
+    await addSuggestionsBatch({
+      projectId: projectId,
       userId: userId!,
       suggestions: actions.map((a: any) => ({
         type: a.type || "action_item",
@@ -202,7 +211,7 @@ Output là JSON array, không markdown, không code block:
       })),
     });
 
-    console.log(`[Monitor] Saved ${actions.length} suggestion(s) to Convex.`);
+    console.log(`[Monitor] Saved ${actions.length} suggestion(s) to Postgres.`);
   } catch (err) {
     console.warn(`[Monitor] Error:`, err);
   }
@@ -210,8 +219,8 @@ Output là JSON array, không markdown, không code block:
 
 async function log(type: string, message: string, details?: string) {
   try {
-    await client.mutation(api.syncLogs.addLog, {
-      projectId: projectId as any,
+    await addLog({
+      projectId: projectId,
       chatName: chatName!,
       type,
       message,
@@ -219,6 +228,32 @@ async function log(type: string, message: string, details?: string) {
     });
   } catch (e) {
     console.error("[SyncLog] Failed to write log:", e);
+  }
+}
+
+/**
+ * Persist the chat/group deep link for a project's teamsGroups entry.
+ * Looks up the current project's teamsGroups, patches the url on the
+ * matching group, and saves the url to the scrapedGroups table too.
+ */
+async function saveGroupUrlToDb(platform: "teams" | "zalo", url: string | undefined) {
+  if (!url) return;
+  try {
+    const project = await getProject(projectId);
+    const groups = ((project as any)?.teamsGroups || []) as { name: string; type: string; platform?: string; url?: string }[];
+    const idx = groups.findIndex((g) => g.name === chatName);
+    if (idx >= 0) {
+      const newGroups = groups.map((g, i) => (i === idx ? { ...g, url } : g));
+      await updateProjectTeamsGroups(projectId, { teamsGroups: newGroups as any });
+    }
+    await syncGroups({
+      userId: userId!,
+      platform,
+      groups: [{ name: chatName!, url }],
+    }).catch(() => {});
+    console.log(`[SyncOne] Saved ${platform} group url for "${chatName}": ${url.slice(0, 100)}`);
+  } catch (e) {
+    console.warn("[SyncOne] Failed to save group url:", e);
   }
 }
 
@@ -301,18 +336,24 @@ async function syncTeams() {
     const result = await incrementalScrollAndExtract(page, { ...config, chatName: chatName! });
     console.log(`[SyncOne] Extracted ${result.totalMessages} messages total, ${result.messages.filter(m => m.images?.length).length} with images.`);
 
+    // Save the deep link to this chat group (Teams v2 hash URL)
+    const chatUrl = (result as any).chatUrl || await getChatUrl(page);
+    if (chatUrl) {
+      await saveGroupUrlToDb("teams", chatUrl);
+    }
+
     const finalMessages = result.messages.filter(m => m.content || m.images?.length);
     console.log(`[SyncOne] Final: ${finalMessages.length} msgs, ${finalMessages.filter(m => m.images?.length).length} with images.`);
 
     if (finalMessages.length > 0) {
       const cleanedMessages = await processDataUrls(finalMessages);
-      const saved = await client.mutation(api.projectChats.saveMessages, {
-        projectId: projectId as any,
+      const saved = await saveMessages({
+        projectId: projectId,
         chatName: chatName!,
         platform: "teams",
         messages: cleanedMessages,
       });
-      console.log(`[SyncOne] Saved ${saved.saved} new messages to Convex.`);
+      console.log(`[SyncOne] Saved ${saved.saved} new messages to Postgres.`);
       await log("sync_end", `Đã lưu ${saved.saved} tin nhắn mới từ "${chatName!}"`, JSON.stringify({ extracted: finalMessages.length, saved: saved.saved }));
 
       // Monitor new messages for PM actions
@@ -370,8 +411,14 @@ async function syncZalo() {
     console.log(`[SyncOne] Extracted ${result.totalMessages} messages from Zalo "${chatName!}".`);
     await log("sync_progress", `Trích xuất ${result.totalMessages} tin nhắn Zalo từ "${chatName!}"`);
 
+    // Save the deep link to this Zalo group (hash URL: #/g/{groupId})
+    const groupUrl = (result as any).groupUrl || await getGroupUrl(page);
+    if (groupUrl) {
+      await saveGroupUrlToDb("zalo", groupUrl);
+    }
+
     if (result.totalMessages > 0) {
-      // Upload large data: URLs to Convex storage before saving
+      // Upload large data: URLs to Postgres files table before saving
       const cleanedMessages = await processDataUrls(result.messages.map(m => ({
         sender: m.sender,
         senderAvatar: (m as any).senderAvatar || undefined,
@@ -381,13 +428,13 @@ async function syncZalo() {
         timestampMs: (m as any).timestampMs,
         isMine: (m as any).isMine,
       })));
-      const saved = await client.mutation(api.projectChats.saveMessages, {
-        projectId: projectId as any,
+      const saved = await saveMessages({
+        projectId: projectId,
         chatName: chatName!,
         platform: "zalo",
         messages: cleanedMessages,
       });
-      console.log(`[SyncOne] Saved ${saved.saved} new Zalo messages to Convex.`);
+      console.log(`[SyncOne] Saved ${saved.saved} new Zalo messages to Postgres.`);
       await log("sync_end", `Đã lưu ${saved.saved} tin nhắn Zalo mới từ "${chatName!}"`, JSON.stringify({ extracted: result.totalMessages, saved: saved.saved }));
 
       // Monitor new messages for PM actions

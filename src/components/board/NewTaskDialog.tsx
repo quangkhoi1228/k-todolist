@@ -1,18 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { startOfDay } from "date-fns";
+import { useTaskMutations } from "@/hooks/useDomain";
 
 export function NewTaskDialog({ children }: { children: React.ReactNode }) {
   const { userId } = useAuth();
-  const createTask = useMutation(api.tasks.createTask);
+  const tm = useTaskMutations();
   const [open, setOpen] = useState(false);
 
   const [title, setTitle] = useState("");
@@ -24,7 +23,7 @@ export function NewTaskDialog({ children }: { children: React.ReactNode }) {
     e.preventDefault();
     if (!userId) return;
 
-    await createTask({
+    await tm.createTask({
       userId,
       title,
       estimatedTime: parseFloat(estimatedTime),

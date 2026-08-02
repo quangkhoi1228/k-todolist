@@ -1,8 +1,7 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
+import { useTasks, useProjects, useTaskMutations, useProjectMutations } from "@/hooks/useDomain";
 import { useRouter, useParams } from "next/navigation";
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -50,7 +49,6 @@ import {
 import { arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { startOfDay, format } from "date-fns";
-import type { Id } from "../../../../../convex/_generated/dataModel";
 
 type BoardColumn = "todo" | "processing" | "dueToday" | "done";
 
@@ -97,7 +95,7 @@ function ColumnCell({ id, status, tasks, projectId }: { id: string; status: Boar
   });
 
   const { userId } = useAuth();
-  const createTask = useMutation(api.tasks.createTask);
+  const tm = useTaskMutations();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [endDate, setEndDate] = useState<number>(() => {
@@ -112,13 +110,13 @@ function ColumnCell({ id, status, tasks, projectId }: { id: string; status: Boar
     if (!title.trim() || !userId) return;
     try {
       const startVal = startOfDay(new Date()).getTime();
-      await createTask({
+      await tm.createTask({
         userId,
         title,
         estimatedTime: 1,
         startDate: startVal,
         endDate: status === "dueToday" ? new Date(startOfDay(new Date()).setHours(17, 30, 0, 0)).getTime() : endDate,
-        project: projectId as Id<"projects">,
+        project: projectId,
         status: status === "dueToday" ? "todo" : status,
         priority,
       });
@@ -229,13 +227,10 @@ export default function ProjectDetailPage() {
   const { userId } = useAuth();
   const router = useRouter();
 
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true, includeTrashed: true } : "skip");
-  const allTasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const updateTask = useMutation(api.tasks.updateTask);
-  const updateTaskOrders = useMutation(api.tasks.updateTaskOrders);
-  const softDeleteProject = useMutation(api.projects.softDeleteProject);
-  const restoreProject = useMutation(api.projects.restoreProject);
-  const hardDeleteProject = useMutation(api.projects.deleteProject);
+  const { data: projects } = useProjects(userId, { includeArchived: true, includeTrashed: true });
+  const { data: allTasks } = useTasks(userId);
+  const tm = useTaskMutations();
+  const pm = useProjectMutations();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
@@ -247,8 +242,6 @@ export default function ProjectDetailPage() {
   const [deleteProcessing, setDeleteProcessing] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editedName, setEditedName] = useState("");
-  const updateProject = useMutation(api.projects.updateProject);
-  const updateProjectIsdStatus = useMutation(api.projects.updateProjectIsdStatus);
 
   const project = useMemo(() => {
     return projects?.find((p) => p._id === id);
@@ -334,12 +327,12 @@ export default function ProjectDetailPage() {
       }
 
       const updates = targetList.map((t, index) => ({
-        id: t._id as Id<"tasks">,
+        id: t._id,
         order: index * 1000,
         ...(t._id === activeId ? moveFields : {}),
       }));
 
-      void updateTaskOrders({ updates });
+      void tm.updateTaskOrders(updates);
       return;
     }
 
@@ -361,9 +354,9 @@ export default function ProjectDetailPage() {
 
       if (sameCell) {
         const reordered = arrayMove(sourceList, activeIndex, overIndex);
-        void updateTaskOrders({
-          updates: reordered.map((t, index) => ({ id: t._id as Id<"tasks">, order: index * 1000 })),
-        });
+        void tm.updateTaskOrders(
+          reordered.map((t, index) => ({ id: t._id, order: index * 1000 }))
+        );
       } else {
         const moveFields: { status?: string; endDate?: number } = {};
         if (targetColumn === "done") {
@@ -379,17 +372,17 @@ export default function ProjectDetailPage() {
         nextTarget.splice(overIndex, 0, activeTaskData);
 
         const updates = nextTarget.map((t, index) => ({
-          id: t._id as Id<"tasks">,
+          id: t._id,
           order: index * 1000,
           ...(t._id === activeId ? moveFields : {}),
         }));
 
         const nextSource = sourceList.filter((t) => t._id !== activeId);
         for (const [index, srcTask] of nextSource.entries()) {
-          updates.push({ id: srcTask._id as Id<"tasks">, order: index * 1000 });
+          updates.push({ id: srcTask._id, order: index * 1000 });
         }
 
-        void updateTaskOrders({ updates });
+        void tm.updateTaskOrders(updates);
       }
     }
   }
@@ -398,7 +391,7 @@ export default function ProjectDetailPage() {
   const handleSoftDelete = useCallback(async () => {
     setDeleteProcessing(true);
     try {
-      await softDeleteProject({ id: id as Id<"projects"> });
+      await pm.softDeleteProject(id as string);
       router.push("/projects");
     } catch (err) {
       console.error(err);
@@ -406,23 +399,23 @@ export default function ProjectDetailPage() {
       setDeleteProcessing(false);
       setDeleteConfirmOpen(false);
     }
-  }, [id, softDeleteProject, router]);
+  }, [id, pm, router]);
 
   const handleRestore = useCallback(async () => {
     setDeleteProcessing(true);
     try {
-      await restoreProject({ id: id as Id<"projects"> });
+      await pm.restoreProject(id as string);
     } catch (err) {
       console.error(err);
     } finally {
       setDeleteProcessing(false);
     }
-  }, [id, restoreProject]);
+  }, [id, pm]);
 
   const handleHardDelete = useCallback(async () => {
     setDeleteProcessing(true);
     try {
-      await hardDeleteProject({ id: id as Id<"projects"> });
+      await pm.deleteProject(id as string);
       router.push("/projects");
     } catch (err) {
       console.error(err);
@@ -430,7 +423,7 @@ export default function ProjectDetailPage() {
       setDeleteProcessing(false);
       setDeleteConfirmOpen(false);
     }
-  }, [id, hardDeleteProject, router]);
+  }, [id, pm, router]);
 
   // ─── Rename handler ──────────────────────────────────
   const handleRename = useCallback(async () => {
@@ -440,12 +433,12 @@ export default function ProjectDetailPage() {
       return;
     }
     try {
-      await updateProject({ id: id as Id<"projects">, name });
+      await pm.updateProject({ id: id as string, name });
     } catch (err) {
       console.error(err);
     }
     setEditingName(false);
-  }, [editedName, id, project, updateProject]);
+  }, [editedName, id, project, pm]);
 
   // ─── Auto-fetch ISD status on mount + every 5 min ───
   const fetchIsdStatus = useCallback(async () => {
@@ -460,15 +453,15 @@ export default function ProjectDetailPage() {
       });
       const data = await res.json();
       if (data.ok && data.results?.[0]?.ok) {
-        await updateProjectIsdStatus({
-          id: project._id as Id<"projects">,
+        await pm.updateProjectIsdStatus({
+          id: project._id,
           isdStatus: data.results[0].status,
         });
       }
     } catch (err) {
       console.error("[ISD] Failed to fetch status:", err);
     }
-  }, [project, updateProjectIsdStatus]);
+  }, [project, pm]);
 
   const initialFetchDone = useRef(false);
 

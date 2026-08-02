@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
+import { useUserPreferences, usePreferenceMutations } from "@/hooks/useDomain";
 
 export function GlobalSyncManager() {
   const { userId } = useAuth();
-  const prefs = useQuery(api.userPreferences.getUserPreferences, userId ? { userId } : "skip");
-  const updatePrefs = useMutation(api.userPreferences.updateUserPreferences);
+  const { data: prefs } = useUserPreferences(userId);
+  const prefx = usePreferenceMutations();
   const isSyncingRef = useRef(false);
   const isHealthCheckingRef = useRef(false);
 
@@ -76,7 +75,7 @@ export function GlobalSyncManager() {
           
           const data = await res.json();
           if (res.ok && data.ok) {
-            await updatePrefs({
+            await prefx.updateUserPreferences({
               userId,
               lastSyncTime: Date.now()
             });
@@ -93,7 +92,7 @@ export function GlobalSyncManager() {
     checkAndSync();
     const intervalId = setInterval(checkAndSync, 10000);
     return () => clearInterval(intervalId);
-  }, [userId, prefs, updatePrefs]);
+  }, [userId, prefs, prefx]);
 
   return null; // Hidden component
 }

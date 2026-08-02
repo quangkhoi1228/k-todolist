@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { WysiwygEditor } from "@/components/board/WysiwygEditor";
 import {
@@ -17,7 +15,8 @@ import {
   X,
   ExternalLink,
 } from "lucide-react";
-import type { Doc } from "../../../convex/_generated/dataModel";
+import type { Doc } from "@/lib/types";
+import { useProjects, useNote, useNoteMutations } from "@/hooks/useDomain";
 
 interface NoteEditorProps {
   noteId: string;
@@ -27,18 +26,15 @@ type Note = Doc<"notes">;
 
 export function NoteEditor({ noteId }: NoteEditorProps) {
   const { userId } = useAuth();
-  const note = useQuery(api.notes.getNote, { id: noteId as any });
-  const projects = useQuery(api.notes.getNotes, userId ? { userId } : "skip");
+  const nmx = useNoteMutations();
+  const updateNote = nmx.updateNote;
+  const deleteNoteMut = nmx.deleteNote;
+  const moveNoteToProject = nmx.moveNoteToProject;
+  const generateShareSlug = nmx.generateShareSlug;
+  const removeShareSlug = nmx.removeShareSlug;
 
-  const allProjects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
-
-  const updateNote = useMutation(api.notes.updateNote);
-  const deleteNoteMut = useMutation(api.notes.deleteNote);
-  const moveNoteToProject = useMutation(api.notes.moveNoteToProject);
-  const generateShareSlug = useMutation(api.notes.generateShareSlug);
-  const removeShareSlug = useMutation(api.notes.removeShareSlug);
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const getImageUrl = useMutation(api.storage.getImageUrl);
+  const { data: note } = useNote(noteId);
+  const { data: allProjects } = useProjects(userId, { includeArchived: true });
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -94,8 +90,7 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
       if (!userId) return;
       setSaving(true);
       try {
-        await updateNote({
-          id: noteId as any,
+        await updateNote(noteId, {
           title: newTitle,
           content: newContent,
         });
@@ -126,45 +121,58 @@ export function NoteEditor({ noteId }: NoteEditorProps) {
 
   const handleDelete = useCallback(async () => {
     if (confirm("Xoá note này và tất cả note con?")) {
-      await deleteNoteMut({ id: noteId as any });
+      await deleteNoteMut(noteId);
     }
   }, [noteId, deleteNoteMut]);
 
   const handleMoveToProject = useCallback(
     async (projectId: string | null) => {
-      await moveNoteToProject({
-        noteId: noteId as any,
-        projectId: projectId as any,
-      });
+      await moveNoteToProject(noteId, projectId);
       setProjectMenuOpen(false);
     },
     [noteId, moveNoteToProject]
   );
 
   const handleImageUpload = useCallback(async (file: File): Promise<string> => {
-    const uploadUrl = await generateUploadUrl();
-    const result = await fetch(uploadUrl, {
-      method: "POST",
-      body: file,
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const dataUrl = reader.result as string;
+          const res = await fetch("/api/data/files", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userId,
+              dataUrl,
+              name: file.name,
+              mimeType: file.type || undefined,
+            }),
+          });
+          if (!res.ok) {
+            const errText = await res.text();
+            console.error("Upload failed:", res.status, errText);
+            throw new Error("Upload failed");
+          }
+          const data = await res.json();
+          if (!data.url) throw new Error("Failed to get image URL");
+          resolve(data.url);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
     });
-    if (!result.ok) {
-      const errorText = await result.text();
-      console.error("Upload failed:", result.status, errorText);
-      throw new Error("Upload failed");
-    }
-    const { storageId } = await result.json();
-    const url = await getImageUrl({ storageId });
-    if (!url) throw new Error("Failed to get image URL");
-    return url;
-  }, [generateUploadUrl, getImageUrl]);
+  }, [userId]);
 
   const handleGenerateShareSlug = useCallback(async () => {
-    const slug = await generateShareSlug({ noteId: noteId as any });
+    const slug = await generateShareSlug(noteId);
     return slug;
   }, [noteId, generateShareSlug]);
 
   const handleRemoveShareSlug = useCallback(async () => {
-    await removeShareSlug({ noteId: noteId as any });
+    await removeShareSlug(noteId);
   }, [noteId, removeShareSlug]);
 
   const handleCopyShareLink = useCallback(

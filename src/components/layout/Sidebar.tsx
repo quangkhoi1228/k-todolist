@@ -7,8 +7,7 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/ui/Logo";
 import { usePwaInstall } from "@/context/PwaContext";
-import { useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useUnresolvedCountByUser } from "@/hooks/useDomain";
 import { useAuth } from "@clerk/nextjs";
 
 export default function Sidebar() {
@@ -17,10 +16,7 @@ export default function Sidebar() {
   const [isHidden, setIsHidden] = useState(false);
 
   // Count unresolved suggestions for badge
-  const unresolvedCount = useQuery(
-    api.projectSuggestions.getUnresolvedCountByUser,
-    userId ? { userId } : "skip"
-  );
+  const { data: unresolvedCount } = useUnresolvedCountByUser(userId);
 
   const openPMAgent = () => {
     window.dispatchEvent(new CustomEvent("pm-agent:toggle", { detail: { open: true } }));

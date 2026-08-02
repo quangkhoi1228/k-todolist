@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { useQuery, useMutation, usePaginatedQuery } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
+import { useUserPreferences, usePreferenceMutations, usePaginatedLogs } from "@/hooks/useDomain";
 import { Layers, Loader2, LogIn, RefreshCcw, Settings, Clock, Activity, AlertCircle, CheckCircle2, Info, CheckCircle, XCircle, MessageSquare } from "lucide-react";
 import { format } from "date-fns";
 
@@ -11,13 +10,9 @@ export default function OmniPage() {
   const { userId } = useAuth();
   
   // Data hooks
-  const prefs = useQuery(api.userPreferences.getUserPreferences, userId ? { userId } : "skip");
-  const updatePrefs = useMutation(api.userPreferences.updateUserPreferences);
-  const { results: logs, status: logsStatus, loadMore: loadMoreLogs } = usePaginatedQuery(
-    api.syncLogs.getLogsPaginated,
-    {},
-    { initialNumItems: 20 }
-  );
+  const { data: prefs } = useUserPreferences(userId);
+  const pm2 = usePreferenceMutations();
+  const { results: logs, status: logsStatus, loadMore: loadMoreLogs } = usePaginatedLogs(20);
   
   // Local state — start with defaults, restore from localStorage on client
   const [teamsStatus, setTeamsStatus] = useState<{ running: boolean; pid?: number; health?: string }>({ running: false });
@@ -157,7 +152,7 @@ export default function OmniPage() {
       if (!data.ok) setError(data.error || "Không thể chạy đồng bộ.");
       else {
         if (userId) {
-          await updatePrefs({ userId, lastSyncTime: Date.now() });
+          await pm2.updateUserPreferences({ userId, lastSyncTime: Date.now() });
         }
         await checkProcessStatus();
       }
@@ -170,7 +165,7 @@ export default function OmniPage() {
 
   const handleIntervalChange = async (val: number) => {
     if (userId) {
-      await updatePrefs({ userId, autoSyncInterval: val });
+      await pm2.updateUserPreferences({ userId, autoSyncInterval: val });
     }
   };
 

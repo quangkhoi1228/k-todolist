@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
+import { useActiveProjectsWithTeamsGroups } from "../../../src/hooks/useDomain";
 import {
   Loader2, X, RefreshCw, MessageSquare,
   Users, ChevronDown, ChevronUp, AlertTriangle,
@@ -115,12 +114,9 @@ export function TeamsMonitorPanel({ isOpen, onClose, onSuggestionGenerated }: Te
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // ─── Active Projects with Teams Groups (Convex) ─────
+  // ─── Active Projects with Teams Groups ─────
   const { userId } = useAuth();
-  const activeProjects = useQuery(
-    api.projects.getActiveProjectsWithTeamsGroups,
-    userId ? { userId } : "skip"
-  );
+  const { data: activeProjects } = useActiveProjectsWithTeamsGroups(userId);
 
   // Derive monitored groups from active projects
   const projectGroups = useMemo(() => {

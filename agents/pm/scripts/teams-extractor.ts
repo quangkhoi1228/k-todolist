@@ -234,10 +234,24 @@ async function extractMessagesV2(page: Page) {
       // In v2, message body is inside divs after the author header
       let content = "";
 
+      // Quoted/reply message (Skype Reply schema blockquote)
+      let quoteSender = "";
+      let quoteContent = "";
+      const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
+      if (quoteBq) {
+        const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
+        const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
+          quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
+        quoteSender = qNameEl?.textContent?.trim() || "";
+        quoteContent = qCopyEl?.textContent?.trim() || "";
+      }
+
       // Strategy 1: find a dedicated body container
       const bodyEl = el.querySelector<HTMLElement>('[data-tid="message-body-content"]');
       if (bodyEl) {
-        content = bodyEl.textContent?.trim() || "";
+        const bodyClone = bodyEl.cloneNode(true) as HTMLElement;
+        bodyClone.querySelectorAll('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]').forEach(e => e.remove());
+        content = bodyClone.textContent?.trim() || "";
       }
 
       // Strategy 2: get all text minus author/time/action buttons
@@ -272,6 +286,15 @@ async function extractMessagesV2(page: Page) {
         });
 
         content = clone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
+      }
+
+      // Compose final content: prefix quoted message in "> Sender: quoted" format
+      if (quoteSender && quoteContent) {
+        const quotedPrefix = `> ${quoteSender}: ${quoteContent}`;
+        let stripped = content.replace(quotedPrefix, "");
+        stripped = stripped.replace(/^\s*>.*$/m, () => "");
+        stripped = stripped.replace(/\s{2,}/g, " ").trim();
+        content = `> ${quoteSender}: ${quoteContent}\n${stripped}`;
       }
 
       if (!content || !sender) return;

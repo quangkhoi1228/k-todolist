@@ -1,25 +1,24 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { KanbanBoard } from "@/components/board/KanbanBoard";
 import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
+import { useTasks, useProjects, useTaskMutations } from "@/hooks/useDomain";
 
 export default function BoardPage() {
   const { userId } = useAuth();
-  
-  const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const projects = useQuery(api.projects.getProjects, userId ? { userId } : "skip");
-  
+
+  const { data: tasks } = useTasks(userId);
+  const { data: projects } = useProjects(userId);
+
   // Automatically shift overdue processing tasks to today
   useAutoShiftTasks(tasks);
 
-  const updateTask = useMutation(api.tasks.updateTask);
+  const tm = useTaskMutations();
 
   const handleUpdateTask = (taskId: string, updates: { startDate?: number; endDate?: number; status?: string; project?: string }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    updateTask({ id: taskId as any, ...(updates as any) });
+    tm.updateTask(taskId, updates as any);
   };
 
   return (
@@ -28,9 +27,9 @@ export default function BoardPage() {
         {tasks === undefined ? (
           <div className="text-neutral-400">Loading tasks...</div>
         ) : (
-          <KanbanBoard 
-            tasks={tasks} 
-            onUpdateTask={handleUpdateTask} 
+          <KanbanBoard
+            tasks={tasks}
+            onUpdateTask={handleUpdateTask}
             projects={projects}
           />
         )}

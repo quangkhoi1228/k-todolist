@@ -1,9 +1,7 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
-import { Id } from "../../../../convex/_generated/dataModel";
 import { useAuth } from "@clerk/nextjs";
+import { useTasks, useProjects, useTaskMutations, useProjectMutations } from "@/hooks/useDomain";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
@@ -47,16 +45,15 @@ import { useAutoShiftTasks } from "@/hooks/useAutoShiftTasks";
 
 export default function ListPage() {
   const { userId } = useAuth();
-  
-  const tasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
+
+  const { data: tasks } = useTasks(userId);
+  const { data: projects } = useProjects(userId, { includeArchived: true });
 
   // Automatically shift overdue processing tasks to today
   useAutoShiftTasks(tasks);
 
-  const updateTask = useMutation(api.tasks.updateTask);
-  const deleteTask = useMutation(api.tasks.deleteTask);
-  const createProject = useMutation(api.projects.createProject);
+  const tm = useTaskMutations();
+  const pm = useProjectMutations();
 
   const [editOpen, setEditOpen] = useState<Record<string, boolean>>({});
   
@@ -88,7 +85,7 @@ export default function ListPage() {
     e.preventDefault();
     if (!newProjectName.trim() || !userId) return;
     try {
-      await createProject({
+      await pm.createProject({
         userId,
         name: newProjectName.trim(),
       });
@@ -104,50 +101,35 @@ export default function ListPage() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   const handleUpdateStatus = async (taskId: string, newStatus: string) => {
-    await updateTask({
-      id: taskId as Id<"tasks">,
-      status: newStatus,
-    });
+    await tm.updateTask(taskId, { status: newStatus });
   };
 
   const handleDelete = async (taskId: string) => {
     const confirmDelete = window.confirm("Bạn có chắc chắn muốn xóa công việc này?");
     if (!confirmDelete) return;
-    await deleteTask({ id: taskId as Id<"tasks"> });
+    await tm.deleteTask(taskId);
   };
 
   const handleSaveTitle = async (taskId: string) => {
     if (tempTitle.trim()) {
-      await updateTask({
-        id: taskId as Id<"tasks">,
-        title: tempTitle.trim(),
-      });
+      await tm.updateTask(taskId, { title: tempTitle.trim() });
     }
     setEditingTitleId(null);
   };
 
   const handleSaveTime = async (taskId: string) => {
     const parsed = parseTimeToHours(tempTime);
-    await updateTask({
-      id: taskId as Id<"tasks">,
-      estimatedTime: parsed || 0.25,
-    });
+    await tm.updateTask(taskId, { estimatedTime: parsed || 0.25 });
     setEditingTimeId(null);
   };
 
   const handleSaveDate = async (taskId: string) => {
-    await updateTask({
-      id: taskId as Id<"tasks">,
-      startDate: tempDate ? new Date(tempDate).getTime() : null,
-    });
+    await tm.updateTask(taskId, { startDate: tempDate ? new Date(tempDate).getTime() : null });
     setEditingDateId(null);
   };
 
   const handleSaveEndDate = async (taskId: string) => {
-    await updateTask({
-      id: taskId as Id<"tasks">,
-      endDate: tempEndDate ? new Date(tempEndDate).getTime() : null,
-    });
+    await tm.updateTask(taskId, { endDate: tempEndDate ? new Date(tempEndDate).getTime() : null });
     setEditingEndDateId(null);
   };
 

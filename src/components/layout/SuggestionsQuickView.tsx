@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
+import { useUnresolvedSuggestionsByUser, useSuggestionMutations } from "@/hooks/useDomain";
 import {
   Sparkles, X, CheckCircle2,
   MessageSquare, AlertTriangle, Clock, Users, ArrowUpRight
@@ -51,14 +50,11 @@ const TYPE_CONFIG: Record<string, { label: string; color: string; icon: React.Re
 export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewProps) {
   const { userId } = useAuth();
   const router = useRouter();
-  const markAsResolved = useMutation(api.projectSuggestions.markSuggestionAsResolved);
-  const markAsRead = useMutation(api.projectSuggestions.markSuggestionAsRead);
+  const smx = useSuggestionMutations();
   const [filter, setFilter] = useState<string>("all");
 
-  const unresolvedSuggestions = useQuery(
-    api.projectSuggestions.getUnresolvedSuggestionsByUser,
-    userId ? { userId } : "skip"
-  ) ?? [];
+  const { data: unresolvedSuggestionsData } = useUnresolvedSuggestionsByUser(userId);
+  const unresolvedSuggestions = unresolvedSuggestionsData ?? [];
 
   const filteredSuggestions = useMemo(() => {
     if (filter === "all") return unresolvedSuggestions;
@@ -146,7 +142,7 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                     : "bg-card/50 dark:bg-zinc-800/50 border-border/30 dark:border-zinc-700/50 hover:border-border/60"
                 }`}
                 onClick={() => {
-                  if (!s.isRead) markAsRead({ id: s._id as any });
+                  if (!s.isRead) smx.markSuggestionAsRead(s._id);
                   // Navigate to the project detail page
                   if ((s as any).projectId) {
                     router.push(`/projects/${(s as any).projectId}`);
@@ -211,7 +207,7 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            markAsResolved({ id: s._id as any });
+                            smx.markSuggestionAsResolved(s._id);
                           }}
                           className="text-[9px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-500/20 transition-colors cursor-pointer"
                         >

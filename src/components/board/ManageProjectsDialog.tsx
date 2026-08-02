@@ -1,16 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Trash2, FolderPlus, Folder, Pencil, Check, X, Archive, ArchiveRestore, RotateCcw, AlertTriangle } from "lucide-react";
+import { useProjects, useProjectMutations } from "@/hooks/useDomain";
 
 export function ManageProjectsDialog({ children }: { children: React.ReactNode }) {
   const { userId } = useAuth();
+  const pm = useProjectMutations();
   const [open, setOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [tab, setTab] = useState<"active" | "archived" | "trash">("active");
@@ -18,16 +18,7 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
 
-  const projects = useQuery(
-    api.projects.getProjects,
-    userId ? { userId, includeArchived: true, includeTrashed: true } : "skip"
-  );
-  const createProject = useMutation(api.projects.createProject);
-  const updateProject = useMutation(api.projects.updateProject);
-  const setProjectArchived = useMutation(api.projects.setProjectArchived);
-  const softDeleteProject = useMutation(api.projects.softDeleteProject);
-  const restoreProject = useMutation(api.projects.restoreProject);
-  const deleteProject = useMutation(api.projects.deleteProject);
+  const { data: projects } = useProjects(userId, { includeArchived: true, includeTrashed: true });
 
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archived && !p.deletedAt).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
@@ -47,7 +38,7 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
     e.preventDefault();
     if (!userId || !newProjectName.trim()) return;
     
-    await createProject({
+    await pm.createProject({
       userId,
       name: newProjectName.trim(),
     });
@@ -57,7 +48,7 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
 
   const handleSaveEdit = async (id: string) => {
     if (!editingName.trim()) return;
-    await updateProject({ id: id as any, name: editingName.trim() });
+    await pm.updateProject({ id, name: editingName.trim() });
     setEditingId(null);
     setEditingName("");
   };
@@ -68,33 +59,33 @@ export function ManageProjectsDialog({ children }: { children: React.ReactNode }
   };
 
   const handleArchive = async (id: string) => {
-    await setProjectArchived({ id: id as any, archived: true });
+    await pm.setProjectArchived(id, true);
   };
 
   const handleUnarchive = async (id: string) => {
-    await setProjectArchived({ id: id as any, archived: false });
+    await pm.setProjectArchived(id, false);
   };
 
   const handleSoftDelete = async (id: string) => {
     if (confirm("Đưa dự án vào thùng rác? Bạn có thể khôi phục sau.")) {
-      await softDeleteProject({ id: id as any });
+      await pm.softDeleteProject(id);
     }
   };
 
   const handleRestore = async (id: string) => {
-    await restoreProject({ id: id as any });
+    await pm.restoreProject(id);
   };
 
   const handlePermanentDelete = async (id: string) => {
     if (confirm("Xóa vĩnh viễn dự án này? Tất cả công việc và ghi chú liên quan sẽ bị xóa. Hành động này KHÔNG THỂ hoàn tác!")) {
-      await deleteProject({ id: id as any });
+      await pm.deleteProject(id);
     }
   };
 
   const handleEmptyTrash = async () => {
     if (confirm("Dọn sạch thùng rác? Tất cả dự án trong thùng rác sẽ bị xóa vĩnh viễn.")) {
       for (const p of trashedProjects) {
-        await deleteProject({ id: p._id as any });
+        await pm.deleteProject(p._id);
       }
     }
   };

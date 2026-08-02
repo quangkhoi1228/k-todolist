@@ -1,8 +1,7 @@
 "use client";
 
 import { use } from "react";
-import { useQuery } from "convex/react";
-import { api } from "../../../../../convex/_generated/api";
+import { useNoteByShareSlug } from "@/hooks/useDomain";
 import { FileText, ChevronRight, Folder } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -18,7 +17,7 @@ export default function SharedNotePage({
 }) {
   const { slug } = use(params);
 
-  const noteData = useQuery(api.notes.getNoteByShareSlug, { slug });
+  const { data: noteData } = useNoteByShareSlug(slug);
 
   if (noteData === undefined) {
     return (

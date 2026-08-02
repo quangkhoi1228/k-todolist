@@ -1,12 +1,13 @@
-import { useMutation } from "convex/react";
-import { api } from "../../convex/_generated/api";
+import { useTaskMutations } from "@/hooks/useDomain";
 import { useEffect, useRef } from "react";
 import { startOfDay } from "date-fns";
 
 export function useAutoShiftTasks(tasks: any[] | undefined) {
-  const updateTask = useMutation(api.tasks.updateTask);
+  const tm = useTaskMutations();
+  const updateTaskRef = useRef(tm.updateTask);
+  updateTaskRef.current = tm.updateTask;
+
   // Track tasks that we have already shifted in this session to prevent duplicate updates
-  // while waiting for Convex database state to sync back to the client.
   const shiftedIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -40,18 +41,19 @@ export function useAutoShiftTasks(tasks: any[] | undefined) {
         const newStartDate = todayStart;
 
         console.log(`[AutoShift] Shifting processing task "${task.title}" to today.`);
-        
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        updateTask({
-          id: task._id as any,
-          startDate: newStartDate,
-          endDate: newEndDate,
-        }).catch((err) => {
-          console.error(`Failed to auto-shift task "${task.title}":`, err);
-          // Remove from set to allow retrying if it failed
-          shiftedIds.current.delete(task._id);
-        });
+        updateTaskRef
+          .current(task._id, {
+            startDate: newStartDate,
+            endDate: newEndDate,
+          } as any)
+          .catch((err) => {
+            console.error(`Failed to auto-shift task "${task.title}":`, err);
+            // Remove from set to allow retrying if it failed
+            shiftedIds.current.delete(task._id);
+          });
       }
     });
-  }, [tasks, updateTask]);
+  }, [tasks]);
 }

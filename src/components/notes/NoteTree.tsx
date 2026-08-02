@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import {
   FileText,
@@ -18,7 +16,8 @@ import {
   FilePlus,
   Folder,
 } from "lucide-react";
-import type { Doc } from "../../../convex/_generated/dataModel";
+import type { Doc } from "@/lib/types";
+import { useNotes, useProjects, useNoteMutations } from "@/hooks/useDomain";
 
 interface NoteTreeProps {
   selectedNoteId: string | null;
@@ -225,12 +224,13 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
   const [editingTitle, setEditingTitle] = useState("");
   const [projectFilter, setProjectFilter] = useState<string | null>(null); // null = all, "unassigned" or projectId
 
-  const allNotes = useQuery(api.notes.getNotes, userId ? { userId } : "skip");
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
+  const { data: allNotes } = useNotes(userId);
+  const { data: projects } = useProjects(userId, { includeArchived: true });
 
-  const createNote = useMutation(api.notes.createNote);
-  const updateNote = useMutation(api.notes.updateNote);
-  const deleteNoteMut = useMutation(api.notes.deleteNote);
+  const nmx = useNoteMutations();
+  const createNote = nmx.createNote;
+  const updateNote = nmx.updateNote;
+  const deleteNoteMut = nmx.deleteNote;
 
   // Organize notes: root notes sorted by order
   const rootNotes = useMemo(
@@ -280,7 +280,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
         userId,
         title: "Note mới",
         content: "",
-        parentNoteId: parentId as any,
+        parentNoteId: parentId,
         projectId: parent?.projectId,
       });
       // Auto-expand parent
@@ -304,7 +304,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
         userId,
         title: "Note mới",
         content: "",
-        projectId: projectId as any,
+        projectId,
       });
       setEditingId(newId);
       setEditingTitle("Note mới");
@@ -323,7 +323,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
 
   const handleSaveTitle = useCallback(async () => {
     if (editingId && editingTitle.trim()) {
-      await updateNote({ id: editingId as any, title: editingTitle.trim() });
+      await updateNote(editingId, { title: editingTitle.trim() });
     }
     setEditingId(null);
     setEditingTitle("");
@@ -332,7 +332,7 @@ export function NoteTree({ selectedNoteId, onSelectNote }: NoteTreeProps) {
   const handleDelete = useCallback(
     async (id: string) => {
       if (confirm("Xoá note này và tất cả note con?")) {
-        await deleteNoteMut({ id: id as any });
+        await deleteNoteMut(id);
         if (selectedNoteId === id) {
           onSelectNote("");
         }

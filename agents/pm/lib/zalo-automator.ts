@@ -63,6 +63,7 @@ export const DEFAULT_ZALO_CONFIG: ZaloAutomatorConfig = {
 
 export interface ZaloExtractResult {
   groupName: string;
+  groupUrl?: string;
   totalMessages: number;
   messages: ZaloExtractedMessage[];
   extractedAt: string;
@@ -476,6 +477,22 @@ export async function navigateToZaloGroup(
   return false;
 }
 
+/**
+ * Capture the current Zalo group URL from the SPA.
+ * Zalo Web uses hash routing: https://chat.zalo.me/#/g/{groupId}
+ * (or #/z/{userId} for 1:1 chats). Returns the hash-based URL when
+ * a conversation is open, otherwise undefined.
+ */
+export async function getGroupUrl(page: Page): Promise<string | undefined> {
+  try {
+    const raw = page.url();
+    if (!raw || raw.includes("login") || raw.includes("account")) return undefined;
+    return raw;
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── Scrolling & Extraction ──────────────────────────────────
 
 /**
@@ -739,8 +756,18 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
       if (!sender && !lastSender) {
         sender = "Unknown";
       }
+      // Zalo renders sender avatars inside the *chat-item* parent of the
+      // message wrapper, NOT inside the wrapper itself:
+      //   <div class="chat-item ..."><div class="rel zavatar-container avatar--overlay absolute">
+      //     <div class="zavatar ..."><img class="a-child" src="https://s*-ava-talk.zadn.vn/..."></div>
+      //   </div><div class="chat-content ...">...message...</div></div>
+      // So we walk up to the nearest .chat-item and look for the avatar there.
       let senderAvatar = "";
-      let avatarImg = el.querySelector<HTMLImageElement>('.avatar img');
+      const chatItem = el.closest<HTMLElement>('.chat-item');
+      const avatarScope = chatItem || el;
+      const avatarImg = avatarScope.querySelector<HTMLImageElement>(
+        '.zavatar-container img, [class*="zavatar-container"] img, .avatar--overlay img, [class*="zavatar"] img'
+      );
       if (avatarImg) {
         senderAvatar = avatarImg.getAttribute('src') || avatarImg.getAttribute('data-src') || "";
       }
@@ -987,12 +1014,51 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
   console.log("FIRST MSG HTML:", extractedMessages.htmlDump.substring(0, 3000));
   const messagesArray = extractedMessages.messages;
 
+  // ── Hydrate sender avatars ──
+  // Zalo avatar URLs (s*-ava-talk.zadn.vn) require the session cookies and are
+  // blocked by CORS for in-page fetch, and return 403 for cookie-less server
+  // fetches. Downloading them via page.request (Node-side, shares the browser
+  // context cookies) succeeds, so we convert avatars to base64 data URLs which
+  // never expire and render directly in the app.
+  const avatarUrls = [...new Set(messagesArray.map((m) => (m as any).senderAvatar).filter((u): u is string => typeof u === 'string' && u.length > 0))];
+  if (avatarUrls.length > 0) {
+    log(`Hydrating ${avatarUrls.length} unique Zalo avatars via context cookies...`);
+    const avatarCache = new Map<string, string>();
+    for (const url of avatarUrls) {
+      try {
+        const resp = await page.request.get(url, { timeout: 15_000 });
+        if (!resp.ok()) {
+          log(`  avatar ${resp.status()}: ${url.slice(0, 80)}`);
+          continue;
+        }
+        const buf = await resp.body();
+        const mime = resp.headers()["content-type"]?.split(";")[0]?.trim() || "image/jpeg";
+        if (buf.length < 100) continue;
+        avatarCache.set(url, `data:${mime};base64,${buf.toString("base64")}`);
+      } catch (e) {
+        log(`  avatar fetch error: ${String(e).slice(0, 80)}`);
+      }
+    }
+    let hydrated = 0;
+    for (const m of messagesArray) {
+      const av = (m as any).senderAvatar;
+      if (av && avatarCache.has(av)) {
+        (m as any).senderAvatar = avatarCache.get(av);
+        hydrated++;
+      }
+    }
+    log(`Hydrated ${hydrated} Zalo avatars (${avatarCache.size} unique).`);
+  }
+
   log(`Trich xuat duoc ${messagesArray.length} tin nhan Zalo.`);
 
   messagesArray.sort((a, b) => a.timestampMs - b.timestampMs);
 
+  const groupUrl = await getGroupUrl(page);
+
   const result: ZaloExtractResult = {
     groupName: displayGroupName,
+    groupUrl,
     totalMessages: messagesArray.length,
     messages: messagesArray,
     extractedAt: new Date().toISOString(),

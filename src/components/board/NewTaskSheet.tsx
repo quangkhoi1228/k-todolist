@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -13,7 +11,7 @@ import { startOfDay, format, addDays } from "date-fns";
 import { Plus, Minus, X, Search, Link, Unlink, Circle, Clock, CheckCircle2, PauseCircle } from "lucide-react";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
 import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { useProjects, useTasks, useTaskDependencies, useTaskMutations, useProjectMutations } from "@/hooks/useDomain";
 
 export interface TaskData {
   _id: string;
@@ -41,11 +39,11 @@ interface NewTaskSheetProps {
 
 export function NewTaskSheet({ children, defaultDate, defaultProject, defaultStatus, open: controlledOpen, onOpenChange, editTask }: NewTaskSheetProps) {
   const { userId } = useAuth();
-  const createTask = useMutation(api.tasks.createTask);
-  const updateTask = useMutation(api.tasks.updateTask);
-  const deleteTask = useMutation(api.tasks.deleteTask);
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
-  const createProject = useMutation(api.projects.createProject);
+  const tm = useTaskMutations();
+  const pm = useProjectMutations();
+  const { data: projects } = useProjects(userId, { includeArchived: true });
+  const { data: taskDependencies } = useTaskDependencies(editTask?._id ?? null);
+  const { data: allTasks } = useTasks(userId);
   const [internalOpen, setInternalOpen] = useState(false);
 
   const isControlled = controlledOpen !== undefined;
@@ -85,13 +83,8 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
   const [dependencySearch, setDependencySearch] = useState("");
   const [isDependencyDropdownOpen, setIsDependencyDropdownOpen] = useState(false);
   const dependencyDropdownRef = useRef<HTMLDivElement>(null);
-  const taskDependencies = useQuery(
-    api.tasks.getTaskDependencies,
-    editTask ? { taskId: editTask._id as Id<"tasks"> } : "skip"
-  );
-  const createDependency = useMutation(api.tasks.createDependency);
-  const deleteDependency = useMutation(api.tasks.deleteDependency);
-  const allTasks = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
+  const createDependency = tm.createDependency;
+  const deleteDependency = tm.deleteDependency;
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -197,10 +190,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
     const confirmDelete = window.confirm("Bạn có chắc chắn muốn xóa công việc này?");
     if (!confirmDelete) return;
 
-    await deleteTask({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      id: editTask._id as any,
-    });
+    await tm.deleteTask(editTask._id);
     setOpen(false);
   };
 
@@ -213,29 +203,25 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
     const endTimestamp = endDate ? new Date(endDate).getTime() : null;
 
     if (editTask) {
-      await updateTask({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        id: editTask._id as any,
+      await tm.updateTask(editTask._id, {
         title,
         estimatedTime: parsedHours,
         startDate: startTimestamp,
         endDate: endTimestamp,
         pic: pic || undefined,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        project: project && project !== "none" ? (project as any) : undefined,
+        project: project && project !== "none" ? project : undefined,
         status: status,
         priority: priority,
       });
     } else {
-      await createTask({
+      await tm.createTask({
         userId,
         title,
         estimatedTime: parsedHours,
         startDate: startTimestamp,
         endDate: endTimestamp,
         pic: pic || undefined,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        project: project && project !== "none" ? (project as any) : undefined,
+        project: project && project !== "none" ? project : undefined,
         status: status,
         priority: priority,
         order: Date.now(), // default order is current timestamp to place at end
@@ -505,7 +491,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                       type="button"
                       onClick={async () => {
                         if (!userId) return;
-                        const newId = await createProject({
+                        const newId = await pm.createProject({
                           userId,
                           name: projectSearch.trim(),
                         });
@@ -572,7 +558,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                               (d) => d.dependsOnTaskId === predTask._id
                             );
                             if (dep) {
-                              await deleteDependency({ id: dep._id as Id<"taskDependencies"> });
+                              await tm.deleteDependency(dep._id as string);
                             }
                           }}
                           className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors shrink-0 cursor-pointer"
@@ -625,10 +611,10 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
                             onClick={async () => {
                               if (!userId) return;
                               try {
-                                await createDependency({
+                                await tm.createDependency({
                                   userId,
-                                  taskId: editTask!._id as Id<"tasks">,
-                                  dependsOnTaskId: t._id as Id<"tasks">,
+                                  taskId: editTask!._id,
+                                  dependsOnTaskId: t._id,
                                 });
                                 setIsDependencyDropdownOpen(false);
                                 setDependencySearch("");

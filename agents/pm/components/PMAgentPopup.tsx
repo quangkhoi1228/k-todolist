@@ -10,9 +10,7 @@ import {
   Users
 } from "lucide-react";
 import TextareaAutosize from "react-textarea-autosize";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { usePmSessions, useProjects, usePmSessionByProject, usePmGeneralSession, usePmMessages, usePmSessionById, usePmMutations, useSuggestionMutations } from "../../../src/hooks/useDomain";
 import { analyzeWithLLM } from "../lib/llm-client";
 import type { LLMAction } from "../lib/llm-client";
 import { NotificationBadge } from "./NotificationBadge";
@@ -164,8 +162,8 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
   const [createFlowStep, setCreateFlowStep] = useState<CreateFlowStep>("idle");
   const [createFlowProjectName, setCreateFlowProjectName] = useState("");
 
-  const sessions = useQuery(api.agents_pm.getSessions, userId ? { userId } : "skip");
-  const allProjects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true, includeTrashed: false } : "skip");
+  const { data: sessions } = usePmSessions(userId);
+  const { data: allProjects } = useProjects(userId, { includeArchived: true, includeTrashed: false });
 
   // ─── Auto-detect current project context from URL ─────
   const pathname = usePathname();
@@ -177,19 +175,14 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
   // ─── Context-aware session selection ──────────────────
   // When on a project page: find existing session for that project, or auto-create one
   // When on other pages: find existing general session, or auto-create one
-  const projectSession = useQuery(
-    api.agents_pm.getSessionByProject,
-    userId && contextProjectId ? { userId, projectId: contextProjectId as any } : "skip"
-  );
-  const generalSession = useQuery(
-    api.agents_pm.getGeneralSession,
-    userId ? { userId } : "skip"
-  );
+  const { data: projectSession } = usePmSessionByProject(contextProjectId ?? null, userId);
+  const { data: generalSession } = usePmGeneralSession(userId);
 
-  const createGeneralSessionMut = useMutation(api.agents_pm.createGeneralSession);
-  const createProjectSessionMut = useMutation(api.agents_pm.createProjectSession);
+  const pmx = usePmMutations();
+  const createGeneralSessionMut = pmx.createGeneralSession;
+  const createProjectSessionMut = pmx.createProjectSession;
 
-  const [sessionId, setSessionId] = useState<Id<"pmAgentSessions"> | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const isInitializingRef = useRef(false);
   // Tracks the URL context for which the current session was auto-chosen.
   // When context changes (navigating between projects, or project ↔ general),
@@ -218,18 +211,14 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     if (contextProjectId) {
       if (projectSession === undefined) return; // Still loading
       if (projectSession) {
-        setSessionId(projectSession._id as Id<"pmAgentSessions">);
+        setSessionId(projectSession._id);
         lastContextRef.current = contextKey;
       } else if (!isInitializingRef.current) {
         const project = contextProject;
         if (!project) return;
         isInitializingRef.current = true;
-        createProjectSessionMut({
-          userId,
-          projectId: project._id as any,
-          projectName: project.name,
-        }).then((sid) => {
-          setSessionId(sid as Id<"pmAgentSessions">);
+        createProjectSessionMut(userId, project._id, project.name).then((sid) => {
+          setSessionId(sid);
           lastContextRef.current = contextKey;
         }).catch(console.error).finally(() => {
           isInitializingRef.current = false;
@@ -239,12 +228,12 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       // ── General page ──
       if (generalSession === undefined) return; // Still loading
       if (generalSession) {
-        setSessionId(generalSession._id as Id<"pmAgentSessions">);
+        setSessionId(generalSession._id);
         lastContextRef.current = contextKey;
       } else if (!isInitializingRef.current) {
         isInitializingRef.current = true;
-        createGeneralSessionMut({ userId }).then((sid) => {
-          setSessionId(sid as Id<"pmAgentSessions">);
+        createGeneralSessionMut(userId).then((sid) => {
+          setSessionId(sid);
           lastContextRef.current = contextKey;
         }).catch(console.error).finally(() => {
           isInitializingRef.current = false;
@@ -253,13 +242,14 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     }
   }, [userId, contextKey, contextProjectId, projectSession, generalSession, contextProject, createProjectSessionMut, createGeneralSessionMut, sessionId]);
 
-  const messages = useQuery(api.agents_pm.getMessages, sessionId ? { sessionId } : "skip") as ChatMessage[] | undefined;
-  const session = useQuery(api.agents_pm.getSession, sessionId ? { id: sessionId } : "skip");
+  const { data: messages } = usePmMessages(sessionId ?? null);
+  const { data: session } = usePmSessionById(sessionId ?? null);
 
-  const addMessage = useMutation(api.agents_pm.addMessage);
-  const createProjectFromTicket = useMutation(api.agents_pm.createProjectFromTicket);
-  const createCustomProjectMutation = useMutation(api.agents_pm.createCustomProject);
-  const addSuggestionsBatch = useMutation(api.projectSuggestions.addSuggestionsBatch);
+  const addMessage = pmx.addMessage;
+  const createProjectFromTicket = pmx.createProjectFromTicket;
+  const createCustomProjectMutation = pmx.createCustomProject;
+  const smx = useSuggestionMutations();
+  const addSuggestionsBatch = smx.addSuggestionsBatch;
   const pendingRef = useRef<PendingMessage[]>([]);
 
   /** Keep pendingRef in sync with pendingMessages */
@@ -294,7 +284,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       if (!result.ok || !Array.isArray(result.suggestions) || result.suggestions.length === 0) return;
 
       await addSuggestionsBatch({
-        projectId: projectId as any,
+        projectId: projectId,
         userId: userId!,
         suggestions: result.suggestions.map((s: any) => ({
           type: s.type,
@@ -311,7 +301,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
   const createProjectFromISD = useCallback(async (ticketId: string) => {
     // Fetch ISD data via the API proxy (runs on Next.js server)
     const isdData = await fetchISDData(ticketId);
-    // Call the Convex mutation with pre-fetched data
+    // Call the mutation with pre-fetched data
     const result = await createProjectFromTicket({
       userId: userId!,
       ticketId,
@@ -468,13 +458,13 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
         try {
           const result = await createProjectFromISD(ticketId);
           if (result.duplicate) {
-            setSessionId(result.sessionId as Id<"pmAgentSessions">);
+            setSessionId(result.sessionId);
             if (result.projectId) {
               setTimeout(() => router.push(`/projects/${result.projectId}`), 500);
             }
             return { noRedirect: true, message: `Ticket **#${ticketId}** đã tồn tại (dự án **${result.projectName}**).\n\nĐang chuyển tới dự án...` };
           }
-          setSessionId(result.sessionId as Id<"pmAgentSessions">);
+          setSessionId(result.sessionId);
           if (result.projectId) {
             setTimeout(() => router.push(`/projects/${result.projectId}`), 500);
           }
@@ -646,7 +636,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
         }
         const result = await createProjectFromISD(ticketId);
         if (result.duplicate) {
-          setSessionId(result.sessionId as Id<"pmAgentSessions">);
+          setSessionId(result.sessionId);
           setPendingMessages((prev) => [...prev, {
             tempId: nextTempId(), role: "agent", content: `Ticket **#${ticketId}** đã tồn tại (dự án **${result.projectName}**).\n\nĐang chuyển tới dự án...`, status: "sent", createdAt: Date.now(),
           }]);
@@ -654,7 +644,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
             setTimeout(() => router.push(`/projects/${result.projectId}`), 800);
           }
         } else {
-          setSessionId(result.sessionId as Id<"pmAgentSessions">);
+          setSessionId(result.sessionId);
           setPendingMessages((prev) => [...prev, {
             tempId: nextTempId(), role: "agent", content: `Đã tạo dự án thành công từ **#${ticketId}**! 🎉`, status: "sent", createdAt: Date.now(),
           }]);
@@ -689,11 +679,8 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       setProcessing(true);
       setCreateFlowStep("idle");
       try {
-        const result = await createCustomProjectMutation({
-          userId: userId!,
-          projectName: text.trim(),
-        });
-        setSessionId(result.sessionId as Id<"pmAgentSessions">);
+        const result = await createCustomProjectMutation(userId!, text.trim());
+        setSessionId(result.sessionId);
         setPendingMessages((prev) => [...prev, {
           tempId: nextTempId(), role: "agent", content: `Đã tạo dự án **${text.trim()}** thành công! 🎉`, status: "sent", createdAt: Date.now(),
         }]);
@@ -734,7 +721,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
             try {
               const result = await createProjectFromISD(pa.ticketId);
               if (result.duplicate) {
-                setSessionId(result.sessionId as Id<"pmAgentSessions">);
+                setSessionId(result.sessionId);
                 setPendingMessages((prev) => [...prev, {
                   tempId: nextTempId(), role: "agent", content: `Ticket **#${pa.ticketId}** đã tồn tại (dự án **${result.projectName}**).\n\nĐang chuyển tới dự án...`, status: "sent", createdAt: Date.now(),
                 }]);
@@ -742,7 +729,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
                   setTimeout(() => router.push(`/projects/${result.projectId}`), 800);
                 }
               } else {
-                setSessionId(result.sessionId as Id<"pmAgentSessions">);
+                setSessionId(result.sessionId);
                 setPendingMessages((prev) => [...prev, {
                   tempId: nextTempId(), role: "agent", content: `Đã tạo dự án thành công từ **#${pa.ticketId}**! 🎉`, status: "sent", createdAt: Date.now(),
                 }]);

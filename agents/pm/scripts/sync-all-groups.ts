@@ -1,20 +1,12 @@
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "../../../convex/_generated/api";
 import { createStealthContext as createTeamsContext, waitForLogin as waitTeamsLogin, navigateToTeams, DEFAULT_CONFIG as DEFAULT_TEAMS_CONFIG } from "../lib/teams-automator";
 import { createZaloStealthContext, waitForZaloLogin, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import dotenv from "dotenv";
 import path from "path";
 import { Page } from "playwright";
+import { syncGroups } from "../../../src/lib/repo/groups";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
-const CONVEX_URL = process.env.NEXT_PUBLIC_CONVEX_URL;
-if (!CONVEX_URL) {
-  console.error("Missing NEXT_PUBLIC_CONVEX_URL");
-  process.exit(1);
-}
-
-const client = new ConvexHttpClient(CONVEX_URL);
 const USER_ID = process.env.USER_ID || "demo-user";
 
 async function scrapeTeamsGroups(page: Page): Promise<{ name: string; url?: string }[]> {
@@ -55,7 +47,11 @@ async function scrapeTeamsGroups(page: Page): Promise<{ name: string; url?: stri
       text = text.replace(/ \(\d+\)$/, ""); // e.g. "Chat (2)"
       
       const aTag = item.querySelector("a");
-      const url = aTag?.href;
+      let url: string | undefined = aTag?.href;
+      // Only keep real Teams deep links (hash-based conversation URLs)
+      if (url && !/^https:\/\/(teams\.microsoft\.com|teams\.live\.com)/i.test(url)) {
+        url = undefined;
+      }
       
       if (text) {
         if (!result.find(r => r.name === text)) {
@@ -156,6 +152,33 @@ async function scrapeZaloGroups(page: Page): Promise<{ name: string; url?: strin
     return resultArr;
   });
 
+  // Zalo conversation items don't expose per-chat hrefs in the sidebar,
+  // so click each group once and capture the hash URL from the SPA route.
+  // (Best-effort: skipped if the first click doesn't change the URL.)
+  const baseUrl = page.url();
+  for (const g of groups) {
+    try {
+      const clicked = await page.evaluate((name: string) => {
+        const items = document.querySelectorAll('[class*="conv-item"], [role="listitem"], [class*="conversation-item"]');
+        for (const item of items) {
+          const titleEl = item.querySelector('[class*="name"], [class*="title"], .truncate, strong');
+          const text = titleEl ? titleEl.textContent?.trim() || "" : item.textContent?.trim() || "";
+          if (text === name) {
+            (item as HTMLElement).click();
+            return true;
+          }
+        }
+        return false;
+      }, g.name);
+      if (!clicked) continue;
+      await page.waitForTimeout(1200);
+      const url = page.url();
+      if (url && url !== baseUrl && url.includes("#/")) {
+        g.url = url;
+      }
+    } catch { /* keep going */ }
+  }
+
   console.log(`Found ${groups.length} Zalo groups.`);
   return groups;
 }
@@ -176,12 +199,12 @@ async function run() {
     const teamsGroups = await scrapeTeamsGroups(tPage);
     
     if (teamsGroups.length > 0) {
-      await client.mutation(api.groups.syncGroups, {
+      await syncGroups({
         userId: USER_ID,
         platform: "teams",
         groups: teamsGroups,
       });
-      console.log(`Saved ${teamsGroups.length} Teams groups to Convex.`);
+      console.log(`Saved ${teamsGroups.length} Teams groups to Postgres.`);
     }
     
     await tBrowser.close();
@@ -200,12 +223,12 @@ async function run() {
     const zaloGroups = await scrapeZaloGroups(zPage);
     
     if (zaloGroups.length > 0) {
-      await client.mutation(api.groups.syncGroups, {
+      await syncGroups({
         userId: USER_ID,
         platform: "zalo",
         groups: zaloGroups,
       });
-      console.log(`Saved ${zaloGroups.length} Zalo groups to Convex.`);
+      console.log(`Saved ${zaloGroups.length} Zalo groups to Postgres.`);
     }
     
     await zBrowser.close();

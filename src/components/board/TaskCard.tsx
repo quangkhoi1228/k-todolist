@@ -9,20 +9,18 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Pencil, CheckCircle2, Circle, Clock, PauseCircle, Check, X, Briefcase, Calendar, Link, Ban } from "lucide-react";
 import { differenceInCalendarDays, format, startOfDay } from "date-fns";
-import {
-  DropdownMenu,
+import { DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useData, apiGet } from "@/hooks/useData";
 import { useAuth } from "@clerk/nextjs";
+import { useTasks, useProjects, useTaskMutations } from "@/hooks/useDomain";
 import { NewTaskSheet, TaskData } from "./NewTaskSheet";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
 import { cn } from "@/lib/utils";
 import { DatePickerPopover } from "@/components/ui/DatePickerPopover";
-import type { Id } from "../../../convex/_generated/dataModel";
 
 interface Task extends TaskData {
   isOverflowing?: boolean;
@@ -115,15 +113,19 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   const [tempTime, setTempTime] = useState(formatHours(task.estimatedTime));
   const [isTitleEditing, setIsTitleEditing] = useState(false);
   const [tempTitle, setTempTitle] = useState(task.title);
-  const updateTask = useMutation(api.tasks.updateTask);
-  const projects = useQuery(api.projects.getProjects, userId ? { userId, includeArchived: true } : "skip");
+  const tm = useTaskMutations();
+  const { data: projects } = useProjects(userId, { includeArchived: true });
 
   // Dependency queries
-  const isBlocked = useQuery(api.tasks.isTaskBlocked, { taskId: task._id as Id<"tasks"> });
-  const taskDependents = useQuery(api.tasks.getTaskDependents, { taskId: task._id as Id<"tasks"> });
+  const { data: isBlocked } = useData<boolean>("taskBlocked:" + task._id, () =>
+    apiGet("/tasks", { action: "isTaskBlocked", taskId: task._id })
+  );
+  const { data: taskDependents } = useData<any[]>("taskDeps:" + task._id, () =>
+    apiGet("/tasks", { action: "getTaskDependents", taskId: task._id })
+  );
 
   // Resolve dependent/successor task names from IDs
-  const allTasksQuery = useQuery(api.tasks.getTasks, userId ? { userId } : "skip");
+  const { data: allTasksQuery } = useTasks(userId);
 
   const {
     attributes,
@@ -141,16 +143,12 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   };
 
   const handleUpdateStatus = async (newStatus: string) => {
-    await updateTask({
-      id: task._id as any,
-      status: newStatus,
-    });
+    await tm.updateTask(task._id, { status: newStatus });
   };
 
 
   const handleSaveQuickEdit = async () => {
-    await updateTask({
-      id: task._id as any,
+    await tm.updateTask(task._id, {
       title: quickTitle,
       estimatedTime: parseTimeToHours(quickTime),
     });
@@ -165,9 +163,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
   const handleSaveTime = async () => {
     const parsed = parseTimeToHours(tempTime);
-    await updateTask({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      id: task._id as any,
+    await tm.updateTask(task._id, {
       estimatedTime: parsed || 0.25,
     });
     setIsTimeEditing(false);
@@ -175,9 +171,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
   const handleSaveTitle = async () => {
     if (tempTitle.trim() && tempTitle !== task.title) {
-      await updateTask({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        id: task._id as any,
+      await tm.updateTask(task._id, {
         title: tempTitle.trim(),
       });
     }
@@ -185,15 +179,13 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   };
 
   const handleUpdateDates = async (start: number | null) => {
-    await updateTask({
-      id: task._id as any,
+    await tm.updateTask(task._id, {
       startDate: start,
     });
   };
 
   const handleUpdateEndDate = async (end: number | null) => {
-    await updateTask({
-      id: task._id as any,
+    await tm.updateTask(task._id, {
       endDate: end,
     });
   };

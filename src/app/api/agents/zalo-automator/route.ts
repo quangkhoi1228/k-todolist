@@ -152,6 +152,7 @@ export async function POST(req: NextRequest) {
     const env: Record<string, string | undefined> = {
       ...process.env,
       ZALO_GROUP_NAME: groupName || "",
+      PLATFORM: "zalo",
     };
 
     const opts: Record<string, unknown> = {

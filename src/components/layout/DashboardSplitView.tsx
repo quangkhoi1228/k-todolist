@@ -7,8 +7,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import MobileSidebar from "@/components/layout/MobileSidebar";
 import { Bot, GripVertical } from "lucide-react";
 import { NotificationBadge } from "../../../agents/pm/components/NotificationBadge";
-import { useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { usePathname } from "next/navigation";
 
 const PMAgentPopup = dynamic(

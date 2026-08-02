@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import { useAuth } from "@clerk/nextjs";
 import { EmailTagInput } from "./EmailComposeDialog";
 import { WysiwygEditor } from "./WysiwygEditor";
@@ -19,7 +17,7 @@ import {
   ArrowDownCircle,
   Minus,
 } from "lucide-react";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { useEmailMutations } from "@/hooks/useDomain";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -33,7 +31,7 @@ interface EmailComposeInlineProps {
   /** Pre-filled body (HTML) */
   defaultBody?: string;
   /** Associated project ID */
-  projectId?: Id<"projects">;
+  projectId?: string;
   /** Callback when email is sent */
   onSent?: () => void;
   /** Called when the user closes/cancels compose */
@@ -52,9 +50,10 @@ export function EmailComposeInline({
   onClose,
 }: EmailComposeInlineProps) {
   const { userId } = useAuth();
-  const createEmailLog = useMutation(api.emails.createEmailLog);
-  const updateEmailStatus = useMutation(api.emails.updateEmailStatus);
-  const saveRecipients = useMutation(api.knownRecipients.saveRecipients);
+  const emx = useEmailMutations();
+  const createEmailLog = emx.createEmailLog;
+  const updateEmailStatus = emx.updateEmailStatus;
+  const saveRecipients = emx.saveRecipients;
 
   const [to, setTo] = useState<string[]>(defaultTo);
   const [cc, setCc] = useState<string[]>(defaultCc);
@@ -167,9 +166,9 @@ export function EmailComposeInline({
       const result = await response.json();
 
       if (result.ok) {
-        await updateEmailStatus({ id: emailId, status: "sent" });
+        await updateEmailStatus(emailId, "sent");
         // Save all recipients to known list for autocomplete
-        await saveRecipients({ userId, emails: [...to, ...cc, ...bcc] });
+        await saveRecipients(userId, [...to, ...cc, ...bcc]);
         setSendResult({
           ok: true,
           message: "Email đã được gửi thành công!",
@@ -180,11 +179,7 @@ export function EmailComposeInline({
           onClose?.();
         }, 2000);
       } else {
-        await updateEmailStatus({
-          id: emailId,
-          status: "failed",
-          errorMessage: result.error,
-        });
+        await updateEmailStatus(emailId, "failed", result.error);
         setSendResult({
           ok: false,
           message: result.error || "Không thể gửi email.",
