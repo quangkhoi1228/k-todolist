@@ -76,7 +76,9 @@ export interface ZaloExtractedMessage {
   images?: string[];
   senderAvatar?: string;
   timestamp: string;
-  timestampMs: number;
+  timestampMs?: number;
+  /** Stable per-message id from the Zalo DOM (bb_msg_id_<epochMs>) */
+  platformMsgId?: string;
   groupName: string;
   hasKeyword: boolean;
   matchedKeywords: string[];
@@ -298,7 +300,7 @@ export async function waitForZaloLogin(
   // Check if already logged in by looking for main app selectors
   if (url.includes("chat.zalo.me")) {
     const isLoggedIn = await page
-      .locator('#conversationListId, [data-id="conversations-list"], .conv-list, .chat-list')
+      .locator('#conversationListId, [data-id="conversations-list"], .conv-list, .chat-list, [class*="conversation-list"]')
       .first()
       .isVisible({ timeout: 8_000 })
       .catch(() => false);
@@ -315,7 +317,7 @@ export async function waitForZaloLogin(
     .isVisible({ timeout: 10_000 })
     .catch(() => false);
 
-  if (hasQR || url.includes("chat.zalo.me")) {
+  if (hasQR || url.includes("chat.zalo.me") || url.includes("id.zalo.me")) {
     log("Can dang nhap Zalo. Vui long scan QR code trong cua so browser...");
     console.log("\n  >>> SCAN QR CODE DANG NHAP ZALO TRONG CUA SO VUA MO <<<\n");
 
@@ -330,13 +332,28 @@ export async function waitForZaloLogin(
       await page.waitForTimeout(5_000);
       return true;
     } catch {
-      // Maybe the DOM selectors changed, check URL
-      const currentUrl = page.url();
-      if (currentUrl.includes("chat.zalo.me") && !currentUrl.includes("login")) {
-        log("Da vao duoc Zalo (URL: " + currentUrl.slice(0, 80) + "...)");
-        return true;
+      // Zalo login flow: id.zalo.me/account -> redirect to chat.zalo.me
+      // The OLD code accepted id.zalo.me/account as "logged in" but that page
+      // has NO chat UI — that's why the search box was never found.
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        const currentUrl = page.url();
+        if (currentUrl.includes("chat.zalo.me") && !currentUrl.includes("login")) {
+          const convVisible = await page
+            .locator('#conversationListId, [data-id="conversations-list"], .conv-list, .chat-list, [class*="conversation-list"]')
+            .first()
+            .isVisible({ timeout: 8_000 })
+            .catch(() => false);
+          if (convVisible) {
+            log("Dang nhap Zalo thanh cong (redirect + conv list)!");
+            await page.waitForTimeout(3_000);
+            return true;
+          }
+        }
+        await page.waitForTimeout(3_000);
       }
-      log("Timeout dang nhap Zalo!");
+      const currentUrl = page.url();
+      log("Timeout dang nhap Zalo! URL: " + currentUrl.slice(0, 80));
       await page.screenshot({ path: path.join(config.screenshotDir, `login-timeout-${Date.now()}.png`) });
       throw new Error("Zalo login timed out. Please try again.");
     }
@@ -738,7 +755,16 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
     
     for (const el of wrappers) {
       // Zalo sender: .message-sender-name-content > div.truncate
-      let sender = el.querySelector<HTMLElement>('.message-sender-name-content .truncate, .message-sender-name-content, .card-sender-name, .sender-name, .chat-message__sender, [data-translate-inner="STR_SENDER_NAME"], .message-sender-name-content, .message-sender-name-wrapper')?.innerText?.trim() || "";
+      // IMPORTANT: never fall back to .message-sender-name-wrapper — its
+      // innerText includes the hidden "a" letter Zalo injects in
+      // <div class="opacity-0">a</div>, producing senders like "a\nTrần Anh Giàu".
+      let sender =
+        el.querySelector<HTMLElement>('.message-sender-name-content .truncate')?.innerText?.trim() ||
+        el.querySelector<HTMLElement>('.message-sender-name-content')?.innerText?.trim() ||
+        el.querySelector<HTMLElement>('.card-sender-name')?.innerText?.trim() ||
+        el.querySelector<HTMLElement>('.sender-name')?.innerText?.trim() ||
+        el.querySelector<HTMLElement>('.chat-message__sender')?.innerText?.trim() ||
+        el.querySelector<HTMLElement>('[data-translate-inner="STR_SENDER_NAME"]')?.innerText?.trim() || "";
       const wrapperClass = el.className || "";
       // Zalo marks own messages with an independent "me" class token on the wrapper
       // (e.g. "chat-message chat-message-v2 wrap-message rotate-container me -send-time").
@@ -789,6 +815,19 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
       const timeEl = el.querySelector<HTMLElement>('.card-send-time, .msg-time, .card-send-time__sendTime, .card-send-time [class*="sendTime"], [class*="sendTime"]');
       const timestampText = timeEl?.textContent?.trim() || "";
 
+      // Zalo message id: every bubble carries a stable server id in its own
+      // id attribute ("bb_msg_id_<epochMs>"). This is the only reliable,
+      // per-message dedup key for Zalo — display timestamps repeat across
+      // messages and image-only messages have no text, so sender+time+text
+      // based messageIds collide and overwrite each other on re-sync.
+      const msgIdMatch = (el.id || "").match(/bb_msg_id_(\d+)/) ||
+        (el.getAttribute("data-id") || "").match(/(\d{13})/);
+      const platformMsgId = msgIdMatch ? msgIdMatch[1] : undefined;
+      // Use the real epoch ms from the bubble id as timestampMs. This is the
+      // actual message time — unlike the HH:MM label it is unique per message
+      // and stable across syncs, so messageId based dedup works correctly.
+      const tsMs = platformMsgId ? parseInt(platformMsgId, 10) : undefined;
+
       // === Extract quoted message (reply/quote) ===
       // Zalo structure: .message-quote-fragment__container
       // - .message-quote-fragment__title/.quote-name → quoted sender
@@ -816,14 +855,24 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
       // Strategy: clone, remove quote fragment, remove sender, remove timestamp/reaction, then get text
       const clone = el.cloneNode(true) as HTMLElement;
       
-      // Remove items we don't want in content
+      // Remove items we don't want in content.
+      // IMPORTANT: do NOT remove .img-msg-v2__cap — that element carries the
+      // caption TEXT of image messages ("Ảnh đính kèm + mô tả"). Removing it
+      // made image messages lose their text (stored as empty content).
+      // We only strip the sticker element (.img-msg-v2__st) and the image
+      // container (.photo-message-v2) — images are captured separately.
+      // .opacity-0 holds a hidden "a" letter Zalo injects for avatar layout —
+      // it must not leak into the message text.
+      // .card-send-time__sendTime may sit outside .card-send-time (as a
+      // sibling of the reaction container), so remove it explicitly to keep
+      // timestamps out of the content.
       clone.querySelectorAll(
         '.message-sender-name-wrapper, .message-sender-name-content, .card-send-time, ' +
-        '.message-reaction-container, .message-reaction-v2-space, ' +
-        '.message-quote-fragment__container, .card-send-time, .bubble-message-time, ' +
+        '.card-send-time__sendTime, .message-reaction-container, .message-reaction-v2-space, ' +
+        '.message-quote-fragment__container, .bubble-message-time, ' +
         '.card-sender-name, .msg-sender, .avatar, ' +
-        '.card-send-time, .message-reaction-container, .message-reaction-v2-space, ' +
-        '.img-msg-v2__st, .img-msg-v2__cap, .photo-message-v2'
+        '.message-reaction-container, .message-reaction-v2-space, ' +
+        '.img-msg-v2__st, .photo-message-v2, .opacity-0'
       ).forEach(e => e.remove());
 
       // Remove reaction button and icon images
@@ -970,16 +1019,17 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
 
       counter++;
       const msgObj: any = {
-        id: `zalo_${counter}_${Date.now()}`,
+        id: platformMsgId ? `zalo_${platformMsgId}` : `zalo_${counter}_${Date.now()}`,
         sender,
         content: finalContent,
         images: images.length > 0 ? images : undefined,
         senderAvatar: senderAvatar || undefined,
         timestamp: timestampText,
-        // Only attach a numeric timestamp when we actually read a time label; otherwise
-        // leave it undefined so sync scripts fall back to display-time dedup instead of
-        // generating a fresh Date.now() per message (which breaks dedup on re-sync).
-        timestampMs: timestampText ? Date.now() : undefined,
+        // Real epoch ms from the bubble id (bb_msg_id_<epochMs>), when
+        // available. Falls back to undefined — never Date.now(), which made
+        // messageId change on every sync and duplicated every row.
+        timestampMs: tsMs,
+        platformMsgId,
         groupName: args.groupName,
         hasKeyword: matchedKeywords.length > 0,
         matchedKeywords: matchedKeywords,
@@ -1052,7 +1102,7 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
 
   log(`Trich xuat duoc ${messagesArray.length} tin nhan Zalo.`);
 
-  messagesArray.sort((a, b) => a.timestampMs - b.timestampMs);
+  messagesArray.sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
 
   const groupUrl = await getGroupUrl(page);
 
@@ -1094,6 +1144,272 @@ function mergeZaloOutput(result: ZaloExtractResult, config: ZaloAutomatorConfig)
 
   fs.writeFileSync(config.outputFile, JSON.stringify(output, null, 2), "utf-8");
   log(`Da luu ${output.totalMessages} tin nhan Zalo vao ${config.outputFile} (them ${newMsgs.length} moi).`);
+}
+
+// ─── Send Message ────────────────────────────────────────────
+
+export interface ZaloSendResult {
+  ok: boolean;
+  error?: string;
+  /** Name of the chat the message was sent to (verified) */
+  targetChat?: string;
+  /** True if only composed without actually sending */
+  dryRun?: boolean;
+  /** Message count in the chat after send attempt */
+  msgCount?: number;
+  /** Screenshot path if taken */
+  screenshot?: string;
+  /** Current URL hash */
+  urlHash?: string;
+}
+
+export interface ZaloSendOptions {
+  /** Exact chat name to send to (e.g. "Thảo Nguyên BB") */
+  chatName: string;
+  /** Message text to send */
+  message: string;
+  /** If true, compose the message but do NOT press Enter */
+  dryRun?: boolean;
+  /** Take before/after screenshots */
+  screenshots?: boolean;
+  /** Milliseconds to wait after opening chat before verifying header */
+  openWaitMs?: number;
+}
+
+/**
+ * Verify the open chat matches the expected name.
+ * Safety-critical: verifies that the sidebar item with the EXACT target name
+ * is visually selected AND no other chat is selected.
+ * Returns { verified, headerName, msgCount, reason }.
+ */
+async function verifyOpenChat(page: Page, expectedName: string): Promise<{
+  verified: boolean;
+  headerName: string | null;
+  msgCount: number;
+  reason?: string;
+}> {
+  const msgCount = await page.evaluate(() => {
+    return document.querySelectorAll(
+      '#messageViewContainer [class*="message-wrapper"], ' +
+      '#messageViewContainer [class*="message-content-wrapper"]'
+    ).length;
+  });
+
+  // The open chat in the sidebar: find the item with the EXACT target name
+  // and check it has the "selected" class. This is the most reliable signal
+  // on Zalo Web — the chat header name is not always rendered in the DOM.
+  const selectedState = await page.evaluate((target: string) => {
+    const items = document.querySelectorAll('[class*="conv-item"], [role="listitem"]');
+    let targetSelected = false;
+    let otherSelected: string | null = null;
+    for (const item of items) {
+      const titleEl = item.querySelector('[class*="conv-item-title__name"], [class*="name"], .truncate');
+      const text = (titleEl?.textContent || item.textContent || '').trim().replace(/\u00a0/g, ' ');
+      const firstLine = text.split('\n')[0].trim();
+      const cls = (item.className || '').toString();
+      const isSelected = cls.includes('selected') || cls.includes('--active') || (item as HTMLElement).getAttribute('aria-selected') === 'true';
+      if (firstLine.toLowerCase() === target.toLowerCase()) {
+        if (isSelected) targetSelected = true;
+      } else if (isSelected) {
+        otherSelected = firstLine || null;
+      }
+    }
+    return { targetSelected, otherSelected };
+  }, expectedName);
+
+  if (selectedState.targetSelected && !selectedState.otherSelected) {
+    return { verified: true, headerName: null, msgCount, reason: 'sidebar-selected-exact' };
+  }
+  if (selectedState.otherSelected) {
+    return {
+      verified: false,
+      headerName: null,
+      msgCount,
+      reason: `WRONG CHAT SELECTED: "${selectedState.otherSelected}" — aborting send`,
+    };
+  }
+  return {
+    verified: false,
+    headerName: null,
+    msgCount,
+    reason: `target chat not selected in sidebar (msgCount=${msgCount})`,
+  };
+}
+
+/**
+ * Send a text message to a Zalo chat.
+ *
+ * SAFETY: this function NEVER sends without verifying the target chat.
+ * - Opens the chat by searching the sidebar for the EXACT name
+ * - Verifies the sidebar item with that EXACT name is the one selected
+ * - Types into #richInput and presses Enter (Zalo Web's send mechanism)
+ * - In dryRun mode, types the message then clears it WITHOUT pressing Enter
+ */
+export async function sendZaloMessage(
+  page: Page,
+  options: ZaloSendOptions
+): Promise<ZaloSendResult> {
+  const { chatName, message, dryRun, screenshots, openWaitMs = 3_500 } = options;
+
+  if (!chatName?.trim()) return { ok: false, error: "chatName is required" };
+  if (!message?.trim()) return { ok: false, error: "message is required" };
+  if (message.length > 2000) return { ok: false, error: "message too long (max 2000 chars)" };
+
+  const shotDir = path.join(process.cwd(), "zalo-screenshots");
+  if (screenshots) ensureDir(shotDir);
+  const stamp = Date.now();
+
+  // ── 1. Open the target chat via sidebar search ──────────────
+  log(`Mo chat "${chatName}" qua search...`);
+  // Zalo Web input can have various selectors; try the classic ones first
+  // then fall back to ANY visible input in the left panel (some Zalo UI
+  // versions only expose the search input after clicking the search icon).
+  const searchBox = page.locator(
+    '#contact-search-input, input[data-id="txt_Main_Search"], input[placeholder*="Tìm kiếm"], input[placeholder*="Tim kiem"], input[placeholder*="Tìm bạn bè, tin nhắn"], [data-testid="search-input"]'
+  ).first();
+  let searchVisible = await searchBox.isVisible({ timeout: 3_000 }).catch(() => false);
+
+  if (!searchVisible) {
+    // Look for the search icon/toolbar first and click it
+    const searchBtn = page.locator(
+      '[data-testid="search"], [aria-label*="Tìm kiếm"], [aria-label*="search" i], [class*="search-icon"], [class*="search-wrapper"] button'
+    ).first();
+    const btnVisible = await searchBtn.isVisible({ timeout: 3_000 }).catch(() => false);
+    if (btnVisible) {
+      await searchBtn.click().catch(() => {});
+      await page.waitForTimeout(1_500);
+      searchVisible = await searchBox.isVisible({ timeout: 3_000 }).catch(() => false);
+    }
+  }
+
+  if (searchVisible) {
+    await searchBox.click();
+    await page.waitForTimeout(400);
+    await searchBox.fill(chatName);
+    await page.waitForTimeout(2_500);
+
+    const clicked = await page.evaluate((target: string) => {
+      const items = document.querySelectorAll('[class*="conv-item"], [role="listitem"]');
+      for (const item of items) {
+        const titleEl = item.querySelector('[class*="conv-item-title__name"], [class*="name"], .truncate');
+        const text = (titleEl?.textContent || item.textContent || '').trim().replace(/\u00a0/g, ' ');
+        const firstLine = text.split('\n')[0].trim();
+        if (firstLine.toLowerCase() === target.toLowerCase()) {
+          (item as HTMLElement).click();
+          return firstLine;
+        }
+      }
+      return null;
+    }, chatName);
+
+    if (!clicked) {
+      // Clear the search box so we don't leave it dirty
+      await searchBox.fill("").catch(() => {});
+      return { ok: false, error: `Khong tim thay chat "${chatName}" trong danh sach. Khong gui gi ca.` };
+    }
+    log(`Da click vao chat: ${clicked}`);
+  } else {
+    return { ok: false, error: "Khong tim thay o tim kiem Zalo (search box). Khong gui gi ca." };
+  }
+
+  await page.waitForTimeout(openWaitMs);
+
+  // ── 2. VERIFY the open chat is the intended target ──────────
+  const verify = await verifyOpenChat(page, chatName);
+  if (!verify.verified) {
+    await page.screenshot({ path: path.join(shotDir, `send-verify-fail-${stamp}.png`) }).catch(() => {});
+    return {
+      ok: false,
+      error: `VERIFY FAILED: ${verify.reason}`,
+      targetChat: verify.headerName || undefined,
+      msgCount: verify.msgCount,
+    };
+  }
+  log(`Verify OK: chat="${verify.headerName || chatName}" (msgCount=${verify.msgCount})`);
+
+  // ── 3. Find the input and type the message ──────────────────
+  const input = page.locator('#richInput, [contenteditable="true"]').first();
+  const inputVisible = await input.isVisible({ timeout: 3_000 }).catch(() => false);
+  if (!inputVisible) {
+    return { ok: false, error: "Khong thay o nhap tin nhan (#richInput). Khong gui gi ca." };
+  }
+
+  await input.click();
+  await page.waitForTimeout(300);
+  await input.fill(message);
+  await page.waitForTimeout(600);
+
+  // Confirm the text actually landed in the input
+  const typedText = await page.evaluate(() => {
+    const el = document.querySelector('#richInput') as HTMLElement | null;
+    return el?.innerText || '';
+  });
+  if (!typedText.trim()) {
+    return { ok: false, error: "Khong the nhap tin nhan vao o input. Khong gui gi ca." };
+  }
+  log(`Da nhap ${typedText.length} ky tu vao o input.`);
+
+  if (screenshots) {
+    await page.screenshot({ path: path.join(shotDir, `send-composed-${stamp}.png`) }).catch(() => {});
+  }
+
+  // ── 4. DRY RUN: clear and abort ─────────────────────────────
+  if (dryRun) {
+    await input.fill("");
+    await page.waitForTimeout(400);
+    log("DRY RUN: da xoa tin nhan, KHONG gui.");
+    return { ok: true, dryRun: true, targetChat: chatName, msgCount: verify.msgCount };
+  }
+
+  // ── 5. Send via Enter ───────────────────────────────────────
+  log("Nhan Enter de gui tin nhan...");
+  await input.press("Enter");
+  await page.waitForTimeout(1_500);
+
+  // ── 6. Verify send succeeded ────────────────────────────────
+  const afterVerify = await verifyOpenChat(page, chatName);
+  const inputNow = await page.evaluate(() => {
+    const el = document.querySelector('#richInput') as HTMLElement | null;
+    return el?.innerText || '';
+  });
+  const inputCleared = inputNow.trim() === "";
+
+  let sent = false;
+  let sentTextVisible = false;
+  if (afterVerify.verified) {
+    sent = afterVerify.msgCount > verify.msgCount;
+    // Also check the last message in the chat contains our text
+    sentTextVisible = await page.evaluate((msg: string) => {
+      const wrappers = Array.from(document.querySelectorAll(
+        '#messageViewContainer [class*="message-content-wrapper"], ' +
+        '#messageViewContainer [class*="message-wrapper"]'
+      ));
+      const last = wrappers[wrappers.length - 1];
+      if (!last) return false;
+      return (last.textContent || '').includes(msg);
+    }, message.slice(0, 80));
+  }
+
+  if (screenshots) {
+    await page.screenshot({ path: path.join(shotDir, `send-result-${stamp}.png`) }).catch(() => {});
+  }
+
+  if (sent && inputCleared) {
+    log(`GUI THANH CONG: msgCount ${verify.msgCount} -> ${afterVerify.msgCount}`);
+    return {
+      ok: true,
+      targetChat: chatName,
+      msgCount: afterVerify.msgCount,
+      screenshot: path.join(shotDir, `send-result-${stamp}.png`),
+    };
+  }
+
+  return {
+    ok: false,
+    error: `Chua xac nhan tin nhan da gui (msgCount=${verify.msgCount}->${afterVerify.msgCount}, inputCleared=${inputCleared}, textVisible=${sentTextVisible}).`,
+    targetChat: chatName,
+    msgCount: afterVerify.msgCount,
+  };
 }
 
 // ─── Full Automation Flow ────────────────────────────────────

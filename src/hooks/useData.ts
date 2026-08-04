@@ -66,7 +66,7 @@ export function useData<T = any>(
   const { data, error, isLoading, isValidating, mutate } = useSWR<T>(
     key,
     fetcher ?? (async () => undefined as unknown as T),
-    { revalidateOnFocus: false, dedupingInterval: 500, ...config }
+    { revalidateOnFocus: false, dedupingInterval: 500, keepPreviousData: true, ...config }
   );
   return { data, error, isLoading, isValidating, mutate };
 }
@@ -110,14 +110,8 @@ export function useInvalidate() {
   return useCallback((patterns: string[]) => {
     const keys = patterns.filter(Boolean);
     if (keys.length === 0) return Promise.resolve();
-    return Promise.all(
-      keys.map(async (k) => {
-        await swrMutate(
-          (key: any) => typeof key === "string" && keys.some((p) => key.startsWith(p)),
-          undefined,
-          { revalidate: true }
-        );
-      })
+    return swrMutate(
+      (key: any) => typeof key === "string" && keys.some((p) => key.startsWith(p))
     );
   }, []);
 }

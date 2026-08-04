@@ -1,23 +1,37 @@
 "use client";
 
 import { useData, apiGet, apiPost, useInvalidate } from "./useData";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // ─── Projects ──────────────────────────────────────────────
 export function useProjects(userId?: string | null, opts?: { includeArchived?: boolean; includeTrashed?: boolean }) {
-  const key = userId ? `projects:${userId}:${opts?.includeArchived}:${opts?.includeTrashed}` : null;
-  return useData<any[]>(
+  const key = userId ? `projects:${userId}:all` : null;
+  const result = useData<any[]>(
     key,
     key
       ? () =>
           apiGet("/projects", {
             action: "getProjects",
             userId,
-            includeArchived: opts?.includeArchived ? "true" : undefined,
-            includeTrashed: opts?.includeTrashed ? "true" : undefined,
+            includeArchived: "true",
+            includeTrashed: "true",
           })
       : null
   );
+
+  const filteredData = useMemo(() => {
+    if (!result.data) return result.data;
+    return result.data.filter(p => {
+      if (!opts?.includeArchived && p.archived) return false;
+      if (!opts?.includeTrashed && p.deletedAt) return false;
+      return true;
+    });
+  }, [result.data, opts?.includeArchived, opts?.includeTrashed]);
+
+  return {
+    ...result,
+    data: filteredData,
+  };
 }
 
 export function useProject(id?: string | null) {
@@ -35,7 +49,7 @@ export function useActiveProjectsWithTeamsGroups(userId?: string | null) {
 
 export function useProjectMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     createProject: async (body: { userId: string; name: string; color?: string }) => {
       const res = await apiPost("/projects", { action: "createProject", ...body });
       await invalidate(["projects:"]);
@@ -91,7 +105,7 @@ export function useProjectMutations() {
       await invalidate(["projects:", "tasks"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Tasks ─────────────────────────────────────────────────
@@ -126,7 +140,7 @@ export function useAllDependencies(userId?: string | null) {
 
 export function useTaskMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     createTask: async (body: any) => {
       const res = await apiPost("/tasks", { action: "createTask", ...body });
       await invalidate(["tasks", "tasksByProject", "deps"]);
@@ -157,7 +171,7 @@ export function useTaskMutations() {
       await invalidate(["tasks", "deps"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Notes ─────────────────────────────────────────────────
@@ -197,7 +211,7 @@ export function useNoteByShareSlug(slug?: string | null) {
 
 export function useNoteMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     createNote: async (body: any) => {
       const res = await apiPost("/notes", { action: "createNote", ...body });
       await invalidate(["notes"]);
@@ -233,7 +247,7 @@ export function useNoteMutations() {
       await invalidate(["notes"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Suggestions ───────────────────────────────────────────
@@ -263,7 +277,7 @@ export function useUnresolvedCountByUser(userId?: string | null) {
 
 export function useSuggestionMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     addSuggestion: async (body: any) => {
       const res = await apiPost("/suggestions", { action: "addSuggestion", ...body });
       await invalidate(["suggestions"]);
@@ -294,7 +308,7 @@ export function useSuggestionMutations() {
       await invalidate(["suggestions"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Chats (projectChats) ──────────────────────────────────
@@ -315,7 +329,7 @@ export function useMessagesByProject(projectId?: string | null, chatNames?: stri
 
 export function useChatMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     saveMessages: async (body: any) => {
       const res = await apiPost("/chats", { action: "saveMessages", ...body });
       await invalidate(["chats:"]);
@@ -334,7 +348,7 @@ export function useChatMutations() {
     uploadChatImage: async (dataUrl: string, userId: string) => {
       return apiPost("/chats", { action: "uploadChatImage", dataUrl, userId });
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Groups / scrapedGroups ────────────────────────────────
@@ -348,7 +362,7 @@ export function useScrapedGroups(userId?: string | null, platform?: string) {
 
 export function useGroupMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     syncGroups: async (body: any) => {
       const res = await apiPost("/groups", { action: "syncGroups", ...body });
       await invalidate(["groups:"]);
@@ -359,16 +373,16 @@ export function useGroupMutations() {
       await invalidate(["groups:"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Sync logs ─────────────────────────────────────────────
-export function useLogs(projectId?: string | null, limit?: number) {
+export function useLogs(projectId?: string | null, limit?: number, opts?: { refreshInterval?: number }) {
   const key = `logs:${projectId ?? "all"}:${limit ?? ""}`;
   return useData<any[]>(
     key,
     () => apiGet("/logs", { action: "getLogs", projectId, limit }),
-    { refreshInterval: 5000 }
+    { refreshInterval: opts?.refreshInterval ?? 0 }
   );
 }
 
@@ -383,7 +397,7 @@ export function useRecentLogs(type?: string, limit?: number) {
 
 export function useLogMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     addLog: async (body: any) => {
       const res = await apiPost("/logs", { action: "addLog", ...body });
       await invalidate(["logs"]);
@@ -399,7 +413,7 @@ export function useLogMutations() {
       await invalidate(["logs"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Paginated logs (thay usePaginatedQuery) ───────────────
@@ -450,13 +464,13 @@ export function useUserPreferences(userId?: string | null) {
 
 export function usePreferenceMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     updateUserPreferences: async (body: any) => {
       const res = await apiPost("/preferences", { ...body });
       await invalidate(["prefs:"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Emails ────────────────────────────────────────────────
@@ -486,7 +500,7 @@ export function useRecipients(userId?: string | null) {
 
 export function useEmailMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     createEmailLog: async (body: any) => {
       const res = await apiPost("/emails", { action: "createEmailLog", ...body });
       await invalidate(["emails"]);
@@ -517,7 +531,7 @@ export function useEmailMutations() {
       await invalidate(["recipients"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Agents PM (sessions + messages) ───────────────────────
@@ -560,8 +574,8 @@ export function usePmSessionById(id?: string | null) {
 
 export function usePmMutations() {
   const invalidate = useInvalidate();
-  const inv = async () => invalidate(["pmsessions", "pmgeneral", "pmsession", "pmmessages", "projects:", "tasks", "notes"]);
-  return {
+  const inv = useCallback(async () => invalidate(["pmsessions", "pmgeneral", "pmsession", "pmmessages", "projects:", "tasks", "notes"]), [invalidate]);
+  return useMemo(() => ({
     createGeneralSession: async (userId: string) => {
       const res = await apiPost("/agents-pm", { action: "createGeneralSession", userId });
       await inv();
@@ -612,7 +626,7 @@ export function usePmMutations() {
       await inv();
       return res;
     },
-  };
+  }), [inv]);
 }
 
 // ─── Members & roles ───────────────────────────────────────
@@ -626,7 +640,7 @@ export function useMembersByProject(projectId?: string | null) {
 
 export function useMemberMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     addMember: async (body: any) => {
       const res = await apiPost("/members", { action: "addMember", ...body });
       await invalidate(["members:", "roles"]);
@@ -642,7 +656,7 @@ export function useMemberMutations() {
       await invalidate(["members:", "roles"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 export function useRoles(userId?: string | null) {
@@ -660,7 +674,7 @@ export function useRoleUsageCounts(userId?: string | null) {
 
 export function useRoleMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     seedDefaultRoles: async (userId: string) => {
       const res = await apiPost("/roles", { action: "seedDefaultRoles", userId });
       await invalidate(["roles"]);
@@ -681,7 +695,7 @@ export function useRoleMutations() {
       await invalidate(["roles"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── ISD data ──────────────────────────────────────────────
@@ -695,7 +709,7 @@ export function useIsdByProject(projectId?: string | null) {
 
 export function useIsdMutations() {
   const invalidate = useInvalidate();
-  return {
+  return useMemo(() => ({
     upsertIsdByProject: async (body: any) => {
       const res = await apiPost("/isd", { action: "upsertByProject", ...body });
       await invalidate(["isd:"]);
@@ -706,7 +720,7 @@ export function useIsdMutations() {
       await invalidate(["isd:"]);
       return res;
     },
-  };
+  }), [invalidate]);
 }
 
 // ─── Files / upload ────────────────────────────────────────

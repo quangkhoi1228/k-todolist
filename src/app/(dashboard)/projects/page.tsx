@@ -53,132 +53,144 @@ function SortableProjectCard({
     opacity: isDragging ? 0.5 : 1,
   };
 
+  const projectColor = project.color || "#8b5cf6";
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`group bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md rounded-[1.25rem] border border-border/40 shadow-sm p-4 hover:border-primary/30 hover:shadow-md transition-all duration-300 cursor-pointer flex flex-col gap-3 ${isDragging ? "z-50 shadow-xl border-primary/40" : ""}`}
+      className={`group bg-card/60 dark:bg-zinc-900/60 backdrop-blur-md rounded-xl border border-border/50 shadow-xs hover:border-primary/40 hover:bg-card/90 dark:hover:bg-zinc-900/90 hover:shadow-md transition-all duration-200 cursor-pointer flex items-center justify-between gap-4 px-4 py-3 relative overflow-hidden ${isDragging ? "z-50 shadow-2xl border-primary/60 scale-[1.005]" : ""}`}
     >
-      {/* Project Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0 flex-1" onClick={onClick}>
-          <div
-            className="w-3 h-3 rounded-full shrink-0"
-            style={{ backgroundColor: project.color || "#8b5cf6" }}
-          />
-          <h3 className="text-xs font-bold text-foreground truncate">{project.name}</h3>
-        </div>
-        <div className="flex items-center gap-0.5 shrink-0">
-          <ChevronRight
-            className="w-4 h-4 text-muted-foreground/40 group-hover:text-primary transition-colors cursor-pointer"
-            onClick={onClick}
-          />
-          <button
-            type="button"
-            className="p-0.5 rounded hover:bg-muted text-muted-foreground/40 hover:text-muted-foreground transition-colors cursor-grab active:cursor-grabbing touch-none"
-            {...attributes}
-            {...listeners}
-          >
-            <GripVertical className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
+      {/* Left Color Accent Bar */}
+      <div
+        className="absolute left-0 top-0 bottom-0 w-1 opacity-80 group-hover:opacity-100 transition-opacity"
+        style={{ backgroundColor: projectColor }}
+      />
 
-      {/* Progress Bar */}
-      {stats.total > 0 && (
-        <div className="space-y-1" onClick={onClick}>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-muted-foreground">Tiến độ</span>
-            <span className="text-[10px] font-bold text-foreground">{progress}%</span>
-          </div>
-          <div className="h-1.5 bg-muted/40 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{
-                width: `${progress}%`,
-                backgroundColor: project.color || "#8b5cf6",
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Stats */}
-      <div className="flex items-center gap-2 flex-wrap" onClick={onClick}>
-        <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded">
-          Tổng: <strong className="text-foreground">{stats.total}</strong>
+      {/* Left: Indicator + Project Name + Task Count */}
+      <div className="flex items-center gap-3 min-w-0 flex-1 pl-1" onClick={onClick}>
+        <div
+          className="w-3 h-3 rounded-full shrink-0 ring-2 ring-background shadow-xs"
+          style={{ backgroundColor: projectColor }}
+        />
+        <h3 className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors truncate">
+          {project.name}
+        </h3>
+        <span className="text-[11px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded-full font-medium shrink-0">
+          {stats.total} việc
         </span>
-        {stats.todo > 0 && (
-          <span className="text-[10px] text-neutral-500 bg-neutral-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-            <Circle className="w-1.5 h-1.5" />
-            {stats.todo}
-          </span>
-        )}
-        {stats.processing > 0 && (
-          <span className="text-[10px] text-blue-500 bg-blue-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-            <Circle className="w-1.5 h-1.5" />
-            {stats.processing}
-          </span>
-        )}
-        {stats.done > 0 && (
-          <span className="text-[10px] text-emerald-500 bg-emerald-500/5 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-            <Circle className="w-1.5 h-1.5" />
-            {stats.done}
-          </span>
-        )}
       </div>
 
-      {/* Actions (visible on hover) */}
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pt-1 border-t border-border/30">
-        {onRestore && (
+      {/* Middle: Progress Bar & Status Badges (Visible on medium+ screens) */}
+      <div className="hidden md:flex items-center gap-4 shrink-0" onClick={onClick}>
+        {/* Progress */}
+        {stats.total > 0 && (
+          <div className="flex items-center gap-2">
+            <div className="h-1.5 w-24 lg:w-32 bg-muted/60 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${progress}%`,
+                  backgroundColor: projectColor,
+                }}
+              />
+            </div>
+            <span className="text-xs font-semibold text-foreground/80 w-8 text-right">{progress}%</span>
+          </div>
+        )}
+
+        {/* Status tags */}
+        <div className="flex items-center gap-1.5">
+          {stats.todo > 0 && (
+            <span className="text-[11px] text-neutral-600 dark:text-neutral-400 bg-neutral-500/10 px-2 py-0.5 rounded-md flex items-center gap-1 font-medium">
+              <Circle className="w-1.5 h-1.5 fill-neutral-500 text-neutral-500" />
+              {stats.todo} chưa làm
+            </span>
+          )}
+          {stats.processing > 0 && (
+            <span className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md flex items-center gap-1 font-medium">
+              <Circle className="w-1.5 h-1.5 fill-blue-500 text-blue-500" />
+              {stats.processing} đang làm
+            </span>
+          )}
+          {stats.done > 0 && (
+            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md flex items-center gap-1 font-medium">
+              <Circle className="w-1.5 h-1.5 fill-emerald-500 text-emerald-500" />
+              {stats.done} xong
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Right: Action Buttons, Chevron, Grip */}
+      <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          {onRestore && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs rounded-lg px-2 cursor-pointer text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRestore(project._id);
+              }}
+            >
+              <RotateCcw className="w-3.5 h-3.5 mr-1" />
+              Khôi phục
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 text-[9px] rounded-md px-1.5 cursor-pointer text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
+            className="h-7 text-xs rounded-lg px-2 cursor-pointer hover:bg-muted"
             onClick={(e) => {
               e.stopPropagation();
-              onRestore(project._id);
+              onClone(project._id, `${project.name} (Copy)`);
             }}
           >
-            <RotateCcw className="w-2.5 h-2.5 mr-0.5" />
-            Khôi phục
+            <Copy className="w-3.5 h-3.5 mr-1" />
+            Nhân bản
           </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 text-[9px] rounded-md px-1.5 cursor-pointer"
-          onClick={(e) => {
-            e.stopPropagation();
-            onClone(project._id, `${project.name} (Copy)`);
-          }}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs rounded-lg px-2 cursor-pointer hover:bg-muted"
+            onClick={(e) => {
+              e.stopPropagation();
+              onArchive(project._id, !project.archived);
+            }}
+          >
+            <Archive className="w-3.5 h-3.5 mr-1" />
+            {project.archived ? "Khôi phục" : "Lưu trữ"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs rounded-lg px-2 text-red-500 hover:text-red-600 hover:bg-red-500/10 cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(project._id, project.name);
+            }}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
+        </div>
+
+        <div
+          className="p-1 rounded-lg text-muted-foreground/40 group-hover:text-primary transition-colors cursor-pointer"
+          onClick={onClick}
         >
-          <Copy className="w-2.5 h-2.5 mr-0.5" />
-          Nhân bản
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 text-[9px] rounded-md px-1.5 cursor-pointer"
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive(project._id, !project.archived);
-          }}
+          <ChevronRight className="w-4 h-4" />
+        </div>
+
+        <button
+          type="button"
+          className="p-1 rounded-lg hover:bg-muted text-muted-foreground/40 hover:text-muted-foreground transition-colors cursor-grab active:cursor-grabbing touch-none"
+          {...attributes}
+          {...listeners}
         >
-          <Archive className="w-2.5 h-2.5 mr-0.5" />
-          {project.archived ? "Khôi phục" : "Lưu trữ"}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 text-[9px] rounded-md px-1.5 text-red-500 hover:text-red-600 hover:bg-red-500/10 cursor-pointer"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(project._id, project.name);
-          }}
-        >
-          <Trash2 className="w-2.5 h-2.5" />
-        </Button>
+          <GripVertical className="w-4 h-4" />
+        </button>
       </div>
     </div>
   );
@@ -399,39 +411,41 @@ export default function ProjectsPage() {
                 return (
                   <div
                     key={project._id}
-                    className="group bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md rounded-[1.25rem] border border-border/40 shadow-sm p-4 hover:border-red-300 dark:hover:border-red-500/30 hover:shadow-md transition-all duration-300 flex items-center gap-4"
+                    className="group bg-card/60 dark:bg-zinc-900/60 backdrop-blur-md rounded-xl border border-border/50 shadow-xs px-4 py-3 hover:border-red-300 dark:hover:border-red-500/30 hover:shadow-md transition-all duration-200 flex items-center justify-between gap-3"
                   >
-                    <div className="w-8 h-8 rounded-full bg-red-100 dark:bg-red-500/10 flex items-center justify-center shrink-0">
-                      <AlertTriangle className="w-4 h-4 text-red-400" />
-                    </div>
-                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => router.push(`/projects/${project._id}`)}>
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-xs font-bold text-foreground truncate">{project.name}</h3>
-                        {progress > 0 && (
-                          <span className="text-[10px] text-muted-foreground">({progress}%)</span>
-                        )}
+                    <div className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" onClick={() => router.push(`/projects/${project._id}`)}>
+                      <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-500/10 flex items-center justify-center shrink-0">
+                        <AlertTriangle className="w-4 h-4 text-red-500" />
                       </div>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Đã xóa {project.deletedAt ? new Date(project.deletedAt).toLocaleDateString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : ""}
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-semibold text-foreground truncate">{project.name}</h3>
+                          {progress > 0 && (
+                            <span className="text-xs font-semibold text-muted-foreground">({progress}%)</span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">
+                          Đã xóa {project.deletedAt ? new Date(project.deletedAt).toLocaleDateString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : ""}
+                        </p>
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 text-[10px] rounded-lg px-2 cursor-pointer text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
+                        className="h-7 text-xs rounded-lg px-2.5 cursor-pointer text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
                         onClick={() => handleRestore(project._id)}
                       >
-                        <RotateCcw className="w-3 h-3 mr-1" />
+                        <RotateCcw className="w-3.5 h-3.5 mr-1" />
                         Khôi phục
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 text-[10px] rounded-lg px-2 cursor-pointer text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                        className="h-7 text-xs rounded-lg px-2 text-red-500 hover:text-red-600 hover:bg-red-500/10 cursor-pointer"
                         onClick={() => handlePermanentDelete(project._id, project.name)}
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </Button>
                     </div>
                   </div>
@@ -477,14 +491,14 @@ export default function ProjectsPage() {
 
             {trashedProjects.length > 0 && (
               <Button
-                variant="outline"
+                variant={showTrash ? "destructive" : "ghost"}
                 size="sm"
-                className="h-7 text-[10px] rounded-lg cursor-pointer text-red-400 hover:text-red-500 border-red-200 dark:border-red-500/30 hover:border-red-300 dark:hover:border-red-500/50"
-                onClick={() => setShowTrash(true)}
+                className="h-7 text-[10px] rounded-lg cursor-pointer relative"
+                onClick={() => setShowTrash(!showTrash)}
               >
                 <Trash2 className="w-3 h-3 mr-1" />
                 Thùng rác
-                <span className="ml-1 w-4 h-4 rounded-full bg-red-100 dark:bg-red-500/20 text-red-500 text-[8px] font-bold flex items-center justify-center">
+                <span className="ml-1 px-1.5 py-0.2 bg-red-500/20 text-red-500 rounded-full text-[9px] font-bold">
                   {trashedProjects.length > 9 ? "9+" : trashedProjects.length}
                 </span>
               </Button>
@@ -519,7 +533,7 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      {/* Project Grid */}
+      {/* Project List (1 project per row) */}
       <div className="flex-1 min-h-0 overflow-auto">
         {projects === undefined ? (
           <div className="text-neutral-400 text-center py-12 text-xs">Đang tải...</div>
@@ -547,7 +561,7 @@ export default function ProjectsPage() {
             onDragEnd={handleDragEnd}
           >
             <SortableContext items={filteredProjects.map((p) => p._id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="flex flex-col gap-2">
                 {filteredProjects.map((project) => {
                   const stats = getProjectStats(project._id);
                   const progress = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
@@ -577,14 +591,29 @@ export default function ProjectsPage() {
                   if (!project) return null;
                   const stats = getProjectStats(project._id);
                   const progress = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
+                  const projectColor = project.color || "#8b5cf6";
                   return (
-                    <div className="bg-card/80 dark:bg-zinc-900/80 backdrop-blur-md rounded-[1.25rem] border border-primary/40 p-4 shadow-2xl flex flex-col gap-3 rotate-2 scale-105 opacity-90">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color || "#8b5cf6" }} />
-                        <span className="text-xs font-bold">{project.name}</span>
+                    <div className="bg-card/95 dark:bg-zinc-900/95 backdrop-blur-md rounded-xl border border-primary/50 px-4 py-3 shadow-2xl flex items-center justify-between gap-4 rotate-[0.5deg] scale-[1.01] opacity-95">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: projectColor }} />
+                        <span className="text-sm font-semibold text-foreground truncate">{project.name}</span>
+                        <span className="text-[11px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded-full font-medium">
+                          {stats.total} việc
+                        </span>
                       </div>
                       {stats.total > 0 && (
-                        <div className="text-[10px] text-muted-foreground">{stats.done}/{stats.total} hoàn thành</div>
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 w-24 bg-muted/60 rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full"
+                              style={{
+                                width: `${progress}%`,
+                                backgroundColor: projectColor,
+                              }}
+                            />
+                          </div>
+                          <span className="text-xs font-semibold text-foreground/80">{progress}%</span>
+                        </div>
                       )}
                     </div>
                   );

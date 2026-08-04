@@ -9,49 +9,6 @@ export function GlobalSyncManager() {
   const { data: prefs } = useUserPreferences(userId);
   const prefx = usePreferenceMutations();
   const isSyncingRef = useRef(false);
-  const isHealthCheckingRef = useRef(false);
-
-  // Auto Healthcheck (Every 1 hour)
-  useEffect(() => {
-    if (!userId) return;
-
-    const performHealthCheck = async () => {
-      if (isHealthCheckingRef.current) return;
-      
-      const lastCheck = parseInt(localStorage.getItem("lastHealthCheckTime") || "0", 10);
-      const now = Date.now();
-      const ONE_HOUR = 60 * 60 * 1000;
-
-      if (now - lastCheck >= ONE_HOUR) {
-        isHealthCheckingRef.current = true;
-        try {
-          console.log("[GlobalSyncManager] Running hourly healthcheck...");
-          const [teamsRes, zaloRes] = await Promise.all([
-            fetch("/api/agents/teams-automator", { method: "POST", body: JSON.stringify({ action: "healthcheck" }) }),
-            fetch("/api/agents/zalo-automator", { method: "POST", body: JSON.stringify({ action: "healthcheck" }) })
-          ]);
-          // Persist health status so OmniPage can pick it up
-          try {
-            const teamsData = await teamsRes.json();
-            localStorage.setItem("healthStatus_teams", teamsData.status || "error");
-          } catch { /* ignore parse errors */ }
-          try {
-            const zaloData = await zaloRes.json();
-            localStorage.setItem("healthStatus_zalo", zaloData.status || "error");
-          } catch { /* ignore parse errors */ }
-          localStorage.setItem("lastHealthCheckTime", Date.now().toString());
-        } catch (err) {
-          console.error("[GlobalSyncManager] Hourly healthcheck failed:", err);
-        } finally {
-          isHealthCheckingRef.current = false;
-        }
-      }
-    };
-
-    performHealthCheck();
-    const intervalId = setInterval(performHealthCheck, 60000); // Check every minute if 1 hour has passed
-    return () => clearInterval(intervalId);
-  }, [userId]);
 
   useEffect(() => {
     if (!userId || !prefs || !prefs.autoSyncInterval || prefs.autoSyncInterval <= 0) return;

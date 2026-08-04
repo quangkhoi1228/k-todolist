@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { files, projectChats } from "../db";
 
@@ -45,10 +45,18 @@ export async function getMessagesByProject(projectId: number | string, chatNames
     allMessages.push(...groupMessages);
   }
 
+  // Sort chronologically by the real epoch timestamp (timestampMs). The
+  // display `timestamp` column is a localized text label ("13:13" or
+  // "Friday, July 24, 2026 4:28 PM.") that Number() cannot parse — sorting
+  // on it produced NaN comparisons and a scrambled order (old messages
+  // appearing below new ones). timestampMs is stable and unique per
+  // message (Zalo: bubble epoch; Teams: <time datetime>).
   allMessages.sort((a, b) => {
-    const aTime = Number(a.timestamp) || 0;
-    const bTime = Number(b.timestamp) || 0;
-    return aTime - bTime;
+    const aTime = a.timestampMs !== undefined && a.timestampMs !== null ? Number(a.timestampMs) : Infinity;
+    const bTime = b.timestampMs !== undefined && b.timestampMs !== null ? Number(b.timestampMs) : Infinity;
+    if (aTime !== bTime) return aTime - bTime;
+    // Fallback: compare by row id (insertion order) when timestamps tie
+    return Number(a.id) - Number(b.id);
   });
 
   return allMessages.map(mapMessage);
@@ -66,6 +74,7 @@ export async function saveMessages(args: {
     images?: string[];
     timestamp: string;
     timestampMs?: number;
+    platformMsgId?: string;
     isMine?: boolean;
   }>;
 }) {
@@ -84,45 +93,104 @@ export async function saveMessages(args: {
 
   for (const msg of args.messages) {
     const contentPrefix = msg.content.substring(0, 30).replace(/\s+/g, "") || "no-text";
-    const timeKey = msg.timestampMs !== undefined ? String(msg.timestampMs) : msg.timestamp;
-    const messageId = `${pid}_${platform}_${timeKey}_${msg.sender}_${contentPrefix}`;
+    // Zalo now provides a stable per-message id (bb_msg_id epoch ms); use it
+    // as the dedup key so image-only messages and caption-only messages
+    // (which have no reliable text/timestamp) never collide.
+    const messageId = msg.platformMsgId
+      ? `${pid}_${platform}_${msg.platformMsgId}_${msg.sender}_${contentPrefix}`
+      : `${pid}_${platform}_${msg.timestampMs !== undefined ? String(msg.timestampMs) : msg.timestamp}_${msg.sender}_${contentPrefix}`;
+    const clean = cleanImages(msg.images);
 
-    const existing = await db.query.projectChats.findFirst({
-      where: eq(projectChats.messageId, messageId),
-    });
-
-    if (existing) {
-      const patchData: any = {
-        content: msg.content,
-        senderAvatar: msg.senderAvatar ?? null,
-        scrapedAt,
-      };
-      const clean = cleanImages(msg.images);
-      if (clean && clean.length > 0) {
-        patchData.images = JSON.stringify(clean);
+    // Self-heal legacy rows: a message previously stored with empty content
+    // ("no-text" id suffix) may now carry real text (e.g. Zalo image captions
+    // that used to be stripped by the extractor). Its messageId changes once
+    // content appears, so instead of inserting a duplicate we update the
+    // empty-content row that matches on sender + timestamp.
+    //
+    // The new messageId may already be taken by an earlier row (e.g. the first
+    // run inserted the full-content row at a different timestamp — float4
+    // `timestampMs` loses millisecond precision, so the same logical message
+    // can end up on two rows). In that case just delete the stale empty row
+    // instead of updating it, or the unique index
+    // "chats_by_project_messageId" (projectId, messageId) rejects the update.
+    if (msg.content && (msg.timestampMs !== undefined || msg.timestamp)) {
+      const legacy = await db
+        .select({ id: projectChats.id })
+        .from(projectChats)
+        .where(
+          and(
+            eq(projectChats.projectId, pid),
+            eq(projectChats.chatName, args.chatName),
+            eq(projectChats.sender, msg.sender),
+            msg.timestampMs !== undefined
+              ? eq(projectChats.timestampMs, msg.timestampMs)
+              : eq(projectChats.timestamp, msg.timestamp),
+            eq(projectChats.content, "")
+          )
+        )
+        .limit(1);
+      if (legacy.length > 0) {
+        // The new messageId may already be taken by another row (e.g. the
+        // first run inserted the full-content row with a slightly different
+        // timestamp — float4 `timestampMs` loses millisecond precision, so
+        // the same logical message can live on two rows). Updating this row
+        // to the same messageId would violate the unique index
+        // "chats_by_project_messageId" (projectId, messageId), so delete the
+        // stale empty row and let the upsert below refresh the real one.
+        const duplicate =
+          (
+            await db
+              .select({ id: projectChats.id })
+              .from(projectChats)
+              .where(and(eq(projectChats.projectId, pid), eq(projectChats.messageId, messageId)))
+              .limit(1)
+          )[0]?.id ?? null;
+        if (duplicate !== null && duplicate !== legacy[0].id) {
+          await db.delete(projectChats).where(eq(projectChats.id, legacy[0].id));
+          updated++;
+        } else {
+          await db
+            .update(projectChats)
+            .set({
+              content: msg.content,
+              messageId,
+              senderAvatar: msg.senderAvatar ?? undefined,
+              images: clean && clean.length > 0 ? JSON.stringify(clean) : undefined,
+              isMine: msg.isMine ?? undefined,
+              scrapedAt,
+            })
+            .where(eq(projectChats.id, legacy[0].id));
+          updated++;
+        }
+        continue;
       }
-      if (msg.timestampMs !== undefined) patchData.timestampMs = msg.timestampMs;
-      if (msg.isMine !== undefined) patchData.isMine = msg.isMine;
-      await db.update(projectChats).set(patchData).where(eq(projectChats.id, existing.id));
-      updated++;
-    } else {
-      const clean = cleanImages(msg.images);
-      await db.insert(projectChats).values({
-        projectId: pid,
-        chatName: args.chatName,
-        messageId,
-        sender: msg.sender,
-        senderAvatar: msg.senderAvatar ?? null,
-        content: msg.content,
-        images: clean && clean.length > 0 ? JSON.stringify(clean) : null,
-        timestamp: msg.timestamp,
-        timestampMs: msg.timestampMs ?? null,
-        scrapedAt,
-        platform,
-        isMine: msg.isMine ?? null,
-      });
-      saved++;
     }
+
+    // Single upsert statement per message (no SELECT-then-UPSERT N+1).
+    // `xmax = 0` distinguishes a real insert from a conflict-update in
+    // PostgreSQL RETURNING, so saved/updated counts stay accurate.
+    const rows = await db.execute(sql`
+      INSERT INTO "projectChats" (
+        "projectId", "chatName", "messageId", "sender", "senderAvatar",
+        "content", "images", "timestamp", "timestampMs", "scrapedAt",
+        "platform", "isMine"
+      ) VALUES (
+        ${pid}, ${args.chatName}, ${messageId}, ${msg.sender}, ${msg.senderAvatar ?? null},
+        ${msg.content}, ${clean && clean.length > 0 ? JSON.stringify(clean) : null}, ${msg.timestamp},
+        ${msg.timestampMs ?? null}, ${scrapedAt}, ${platform}, ${msg.isMine ?? null}
+      )
+      ON CONFLICT ("projectId", "messageId") DO UPDATE SET
+        "content" = EXCLUDED."content",
+        "senderAvatar" = EXCLUDED."senderAvatar",
+        "images" = EXCLUDED."images",
+        "timestampMs" = EXCLUDED."timestampMs",
+        "isMine" = EXCLUDED."isMine",
+        "scrapedAt" = EXCLUDED."scrapedAt"
+      RETURNING (xmax = 0) AS "inserted"
+    `);
+
+    if (rows.rows[0]?.inserted) saved++;
+    else updated++;
   }
 
   return { saved, updated };

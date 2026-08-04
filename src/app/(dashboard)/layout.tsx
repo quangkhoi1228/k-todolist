@@ -11,7 +11,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  await auth.protect({ unauthenticatedUrl: "/" });
+  await auth.protect({ unauthenticatedUrl: "/sign-in" });
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-background via-background to-primary/5 dark:to-primary/10 text-foreground overflow-hidden">

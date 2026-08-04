@@ -82,7 +82,7 @@ export interface ExtractedMessage {
   images?: string[];
   senderAvatar?: string;
   timestamp: string;
-  timestampMs: number;
+  timestampMs?: number;
   groupName: string;
   hasKeyword: boolean;
   matchedKeywords: string[];
@@ -461,6 +461,140 @@ export async function navigateToChatInSidebar(
       }
       return null;
     }, name);
+  }
+
+  // Helper: use the Teams v2 search box to find a person/chat by name or email
+  async function trySearchChat(name: string): Promise<boolean> {
+    log(`Thu tim qua o search Teams: "${name}"...`);
+    try {
+      // Teams v2 search: click the search entry, type query, wait for results
+      const searchTrigger = page.locator(
+        '[data-tid="search-entry"], input[placeholder*="Search"], input[placeholder*="Tìm kiếm"], ' +
+        '[data-tid="app-bar-item-search"], button[aria-label*="Search"], button[aria-label*="Tìm kiếm"]'
+      ).first();
+      const searchVisible = await searchTrigger.isVisible({ timeout: 3_000 }).catch(() => false);
+
+      if (!searchVisible) {
+        log("Khong thay o search Teams.");
+        return false;
+      }
+
+      await searchTrigger.click();
+      await page.waitForTimeout(1_500);
+
+      const searchInput = page.locator(
+        '[data-tid="AUTOSUGGEST_INPUT"], input[placeholder*="Search"], input[placeholder*="Tìm kiếm"], ' +
+        'input[role="searchbox"]'
+      ).first();
+      const inputVisible = await searchInput.isVisible({ timeout: 3_000 }).catch(() => false);
+
+      if (!inputVisible) {
+        log("Khong thay input search.");
+        return false;
+      }
+
+      await searchInput.click();
+      await searchInput.fill(name);
+      await page.waitForTimeout(3_000);
+
+      // Results usually appear as list items with the person's name.
+      // Teams v2 shows people as `AUTOSUGGEST_SUGGESTION_TOPHITS<orgid>` options
+      // with aria-label "Person <name> (<alias>) <org>", and group chats as
+      // `AUTOSUGGEST_SUGGESTION_TOPHITS<threadId>@thread.v2` with aria-label
+      // "Group chat <name>, <members...>".
+      const clicked = await page.evaluate((target: string) => {
+        const items = Array.from(document.querySelectorAll('[data-tid^="AUTOSUGGEST_SUGGESTION_TOPHITS"], [data-tid^="AUTOSUGGEST_SUGGESTION_PEOPLE"], [role="option"]'));
+        const targetLower = target.toLowerCase().trim();
+        const targetFirstWord = targetLower.split(/[\s,]+/)[0] || "";
+        const startsWithBracket = targetLower.startsWith("[");
+
+        // Priority 1: Group chat (aria starts with "Group chat" or tid has @thread.v2)
+        const groupItem = items.find((el) => {
+          const tid = el.getAttribute("data-tid") || "";
+          const aria = (el as HTMLElement).getAttribute?.("aria-label") || "";
+          const text = (el.textContent || "").trim();
+          const norm = text.toLowerCase();
+          if (!aria.toLowerCase().startsWith("group chat") && !tid.includes("@thread.v2")) return false;
+          if (startsWithBracket) {
+            return text.toLowerCase().startsWith(targetLower.slice(0, 12)) ||
+              norm.includes(targetLower) ||
+              norm.startsWith(targetLower.slice(0, 12));
+          }
+          return norm.includes(targetLower) ||
+            targetLower.includes(norm.split(" ")[0] || "") ||
+            norm.includes(targetFirstWord) ||
+            targetFirstWord.includes(norm.split(" ")[0] || "");
+        });
+        if (groupItem) {
+          (groupItem as HTMLElement).click();
+          return `Group: ${(groupItem.textContent || "").trim().slice(0, 100)}`;
+        }
+
+        // Priority 2: an explicit Person suggestion (has "Person" in aria-label or orgid tid)
+        const personItem = items.find((el) => {
+          const aria = (el as HTMLElement).getAttribute?.("aria-label") || "";
+          if (!aria.toLowerCase().includes("person")) return false;
+          const text = (el.textContent || "").trim();
+          const norm = text.toLowerCase();
+          if (startsWithBracket) {
+            return text.toLowerCase().startsWith(targetLower.slice(0, 12)) ||
+              norm.includes(targetLower) ||
+              norm.startsWith(targetLower.slice(0, 12));
+          }
+          return norm.includes(targetLower) ||
+            targetLower.includes(norm.split(" ")[0] || "") ||
+            norm.includes(targetFirstWord) ||
+            targetFirstWord.includes(norm.split(" ")[0] || "");
+        });
+        if (personItem) {
+          (personItem as HTMLElement).click();
+          return `Person: ${(personItem.textContent || "").trim().slice(0, 100)}`;
+        }
+
+        // Priority 3: any result row whose text STARTS WITH the target
+        // (strict — avoids clicking empty rows or unrelated "See more" items)
+        const rowItem = items.find((el) => {
+          const text = (el.textContent || "").trim();
+          if (!text) return false;
+          const norm = text.toLowerCase();
+          if (/see more messages|send email|call |open profile|open chat|more messages|in all results|from:|messages|files|channels/i.test(text)) return false;
+          if (text.length > 250) return false;
+          // Strict: first line of the row must start with the target's first word
+          const firstLine = norm.split("\n")[0].trim();
+          return firstLine.startsWith(targetLower.slice(0, 12)) ||
+            firstLine.includes(targetFirstWord) ||
+            norm.includes(targetLower);
+        });
+        if (rowItem) {
+          (rowItem as HTMLElement).click();
+          return `Row: ${(rowItem.textContent || "").trim().slice(0, 100)}`;
+        }
+
+        return null;
+      }, name);
+
+      if (clicked) {
+        log(`Search: da click vao ket qua "${clicked}"`);
+        await page.waitForTimeout(4_000);
+        return true;
+      }
+
+      // Escape to close search results if nothing found
+      await page.keyboard.press("Escape").catch(() => {});
+      log("Search: khong tim thay ket qua nao.");
+      return false;
+    } catch (e) {
+      log("Search loi: " + String(e));
+      return false;
+    }
+  }
+
+  // Attempt 0: Use Teams search box first (finds people/chats not in recent list)
+  const searchOpened = await trySearchChat(chatName);
+  if (searchOpened) {
+    log(`Da mo chat qua search: "${chatName}"`);
+    await page.waitForTimeout(5_000);
+    return true;
   }
 
   // Attempt 1: Direct search
@@ -853,9 +987,13 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
       const timestampText = timeEl?.getAttribute("aria-label")
         || timeEl?.textContent?.trim()
         || "";
-      const timestampMs = timeEl?.getAttribute("datetime")
-        ? new Date(timeEl.getAttribute("datetime")!).getTime()
-        : Date.now();
+      // Only use the real datetime from the <time> element. Falling back to
+      // Date.now() made timestampMs change on every sync for messages without
+      // a time element, which corrupted the messageId-based dedup and caused
+      // duplicate rows on each re-sync.
+      const rawDatetime = timeEl?.getAttribute("datetime");
+      const parsedDatetime = rawDatetime ? new Date(rawDatetime).getTime() : NaN;
+      const timestampMs = isNaN(parsedDatetime) ? undefined : parsedDatetime;
 
       // === Extract quoted/reply message (Skype Reply schema blockquote) ===
       // Teams renders inline replies as:
@@ -1119,7 +1257,7 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
         images: images.length > 0 ? images : undefined,
         senderAvatar: senderAvatar || undefined,
         timestamp: timestampText,
-        timestampMs: isNaN(timestampMs) ? Date.now() : timestampMs,
+        timestampMs,
         groupName: args.groupName,
         hasKeyword: matchedKeywords.length > 0,
         matchedKeywords,
@@ -1194,7 +1332,7 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
 
   log(`Trich xuat duoc ${extractedMessages.length} tin nhan.`);
 
-  extractedMessages.sort((a, b) => a.timestampMs - b.timestampMs);
+  extractedMessages.sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
 
   const result: TeamsExtractResult = {
     channelName: pageInfo.channelName,
@@ -1261,9 +1399,10 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
 
       const timeEl = el.querySelector<HTMLTimeElement>("time");
       const timestampText = timeEl?.getAttribute("aria-label") || timeEl?.textContent?.trim() || "";
-      const timestampMs = timeEl?.getAttribute("datetime")
-        ? new Date(timeEl.getAttribute("datetime")!).getTime()
-        : Date.now();
+      // Same rule as extractMessages: never fabricate Date.now() timestamps.
+      const rawDatetime = timeEl?.getAttribute("datetime");
+      const parsedDatetime = rawDatetime ? new Date(rawDatetime).getTime() : NaN;
+      const timestampMs = isNaN(parsedDatetime) ? undefined : parsedDatetime;
 
       // === Extract quoted/reply message (same logic as extractMessages) ===
       let quoteSender = "";
@@ -1304,7 +1443,7 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
         content,
         images: undefined,
         timestamp: timestampText,
-        timestampMs: isNaN(timestampMs) ? Date.now() : timestampMs,
+        timestampMs,
         groupName: args.groupName,
         hasKeyword: false,
         matchedKeywords: [],
@@ -1316,7 +1455,7 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
   }, { groupName: pageInfo.channelName });
 
   log(`Trich xuat text: ${extractedMessages.length} messages`);
-  extractedMessages.sort((a, b) => a.timestampMs - b.timestampMs);
+  extractedMessages.sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
 
   return {
     channelName: pageInfo.channelName,
@@ -1367,7 +1506,7 @@ export async function incrementalScrollAndExtract(
           ? nonEmoji((m as any).images)
           : undefined,
         timestamp: m.timestamp as any,
-        timestampMs: (m as any).timestampMs || Date.now(),
+        timestampMs: (m as any).timestampMs,
       };
       const key = `${cleaned.sender}|${cleaned.timestampMs}|${(cleaned.content || '').slice(0, 30)}`;
       const existing = allMessages.get(key);
@@ -1628,6 +1767,202 @@ async function dismissTeamsOverlay(page: Page, context: any): Promise<Page> {
   }
 
   return currentPage;
+}
+
+/**
+ * Verify the currently open chat is the intended target (Teams v2).
+ * Reads the header title and checks it contains the target name.
+ * Handles name order variants ("Mai Thuận An" vs "An Mai Thuan") and email/alias.
+ */
+export async function verifyOpenChatTeams(
+  page: Page,
+  targetName: string
+): Promise<{ verified: boolean; headerName?: string; reason?: string }> {
+  const headerRaw = await page.evaluate(() => {
+    const el =
+      document.querySelector('[data-tid="chat-title"]') ||
+      document.querySelector('[data-tid="chat-header-title"]') ||
+      document.querySelector('[data-testid="header-chat-title"]') ||
+      document.querySelector('[data-tid="chat-topic-menu"]') ||
+      document.querySelector('[aria-label*="chat"], [data-tid="header"] h1, [data-tid="header"] h2, [data-tid="header"] div[class*="title"]');
+    return el?.textContent?.trim() || "";
+  });
+
+  if (!headerRaw) {
+    return { verified: false, reason: "Khong tim thay header chat (khong the verify)." };
+  }
+
+  // Extract only the participant names — strip app chrome text like
+  // "Send feedback", timestamps, and last message previews.
+  const headerName = headerRaw
+    .split("Send feedback")[0]
+    .split("You, ")[1] || headerRaw.split("Send feedback")[0];
+
+  const targetLower = targetName.toLowerCase().trim();
+  // Normalize: strip diacritics for fuzzy compare
+  const strip = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const headerNorm = strip(headerName);
+  const targetNorm = strip(targetLower);
+
+  // Token-level match: every significant token of the target should appear in header.
+  // Also handle reversed name order ("An Mai Thuan" vs "Mai Thuận An").
+  const targetTokens = targetNorm.split(/[\s,]+/).filter((t) => t.length > 1);
+  const headerTokens = headerNorm.split(/[\s,]+/).filter((t) => t.length > 1);
+
+  const allTokensFound = targetTokens.length > 0 && targetTokens.every((t) =>
+    headerTokens.some((h) => h.includes(t) || t.includes(h))
+  );
+
+  // Email/alias match: target email (anmt3@...) vs header "An Mai Thuan (ANMT3)"
+  const emailMatch = targetNorm.includes("@") &&
+    (headerNorm.includes(targetNorm.split("@")[0]) ||
+     headerNorm.includes("anmt3"));
+
+  const verified = allTokensFound || emailMatch;
+
+  if (!verified) {
+    return {
+      verified: false,
+      headerName,
+      reason: `Header chat "${headerName}" khong khop voi target "${targetName}".`,
+    };
+  }
+  return { verified: true, headerName };
+}
+
+export interface TeamsSendOptions {
+  chatName: string;
+  message: string;
+  dryRun?: boolean;
+  screenshots?: boolean;
+  openWaitMs?: number;
+}
+
+export interface TeamsSendResult {
+  ok: boolean;
+  error?: string;
+  dryRun?: boolean;
+  targetChat?: string;
+  screenshot?: string;
+}
+
+/**
+ * Gửi tin nhắn tới một chat Teams (nhóm hoặc 1:1) với cơ chế verify an toàn:
+ * - Mở chat qua sidebar (tìm theo tên hoặc viewId/email)
+ * - CHỈ gửi khi xác minh được chat đang mở đúng tên mục tiêu
+ * - Dry run: nhập tin rồi xoá, KHÔNG gửi
+ */
+export async function sendTeamsMessage(
+  page: Page,
+  options: TeamsSendOptions
+): Promise<TeamsSendResult> {
+  const { chatName, message, dryRun, screenshots, openWaitMs = 5_000 } = options;
+
+  if (!chatName?.trim()) return { ok: false, error: "chatName is required" };
+  if (!message?.trim()) return { ok: false, error: "message is required" };
+  if (message.length > 2000) return { ok: false, error: "message too long (max 2000 chars)" };
+
+  const shotDir = path.join(process.cwd(), "teams-screenshots");
+  if (screenshots) ensureDir(shotDir);
+  const stamp = Date.now();
+
+  // ── 1. Open the target chat via sidebar ─────────────────────
+  log(`Mo chat "${chatName}" trong sidebar...`);
+  const opened = await navigateToChatInSidebar(page, chatName);
+  if (!opened) {
+    return { ok: false, error: `Khong tim thay chat "${chatName}" trong sidebar. Khong gui gi ca.` };
+  }
+
+  await page.waitForTimeout(openWaitMs);
+
+  // ── 2. VERIFY the open chat is the intended target ──────────
+  const verify = await verifyOpenChatTeams(page, chatName);
+  if (!verify.verified) {
+    if (screenshots) {
+      await page.screenshot({ path: path.join(shotDir, `send-verify-fail-${stamp}.png`) }).catch(() => {});
+    }
+    return {
+      ok: false,
+      error: `VERIFY FAILED: ${verify.reason}`,
+      targetChat: verify.headerName || undefined,
+    };
+  }
+  log(`Verify OK: chat="${verify.headerName || chatName}"`);
+
+  // ── 3. Find the compose input and type the message ──────────
+  const input = page.locator(
+    '[data-tid="compose-content"] [contenteditable="true"], ' +
+    '[aria-label*="message"] [contenteditable="true"], ' +
+    'div[contenteditable="true"][data-tid*="compose"], ' +
+    '[contenteditable="true"]'
+  ).first();
+
+  const inputVisible = await input.isVisible({ timeout: 5_000 }).catch(() => false);
+  if (!inputVisible) {
+    return { ok: false, error: "Khong thay o nhap tin nhan Teams (compose box). Khong gui gi ca." };
+  }
+
+  await input.click();
+  await page.waitForTimeout(400);
+  await input.fill(message);
+  await page.waitForTimeout(800);
+
+  // Confirm the text actually landed in the input
+  const typedText = await page.evaluate(() => {
+    const el = document.querySelector('[data-tid="compose-content"] [contenteditable="true"], [contenteditable="true"]') as HTMLElement | null;
+    return el?.innerText || "";
+  });
+  if (!typedText.trim()) {
+    return { ok: false, error: "Khong the nhap tin nhan vao o input. Khong gui gi ca." };
+  }
+  log(`Da nhap ${typedText.length} ky tu vao o input.`);
+
+  if (screenshots) {
+    await page.screenshot({ path: path.join(shotDir, `send-composed-${stamp}.png`) }).catch(() => {});
+  }
+
+  // ── 4. DRY RUN: clear and abort ─────────────────────────────
+  if (dryRun) {
+    await input.fill("");
+    await page.waitForTimeout(400);
+    log("DRY RUN: da xoa tin nhan, KHONG gui.");
+    return { ok: true, dryRun: true, targetChat: chatName };
+  }
+
+  // ── 5. Send via Enter ───────────────────────────────────────
+  log("Nhan Enter de gui tin nhan...");
+  await input.press("Enter");
+  await page.waitForTimeout(2_000);
+
+  // ── 6. Verify send succeeded ────────────────────────────────
+  const inputNow = await page.evaluate(() => {
+    const el = document.querySelector('[data-tid="compose-content"] [contenteditable="true"], [contenteditable="true"]') as HTMLElement | null;
+    return el?.innerText || "";
+  });
+  const inputCleared = inputNow.trim() === "";
+
+  // Check last message in chat contains our text
+  const sentTextVisible = await page.evaluate((msg: string) => {
+    const wrappers = Array.from(document.querySelectorAll('[data-tid="message-list-item"], [data-tid="message-container"]'));
+    const last = wrappers[wrappers.length - 1];
+    if (!last) return false;
+    return (last.textContent || "").includes(msg.slice(0, 80));
+  }, message);
+
+  if (screenshots) {
+    await page.screenshot({ path: path.join(shotDir, `send-result-${stamp}.png`) }).catch(() => {});
+  }
+
+  if (inputCleared && sentTextVisible) {
+    log("GUI THANH CONG.");
+    return { ok: true, targetChat: chatName, screenshot: path.join(shotDir, `send-result-${stamp}.png`) };
+  }
+
+  return {
+    ok: false,
+    error: `Chua xac nhan tin nhan da gui (inputCleared=${inputCleared}, textVisible=${sentTextVisible}).`,
+    targetChat: chatName,
+  };
 }
 
 /**

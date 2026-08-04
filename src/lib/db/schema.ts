@@ -229,7 +229,7 @@ export const projectChats = pgTable(
     index("chats_by_project").on(t.projectId),
     index("chats_by_project_chat").on(t.projectId, t.chatName),
     index("chats_by_project_time").on(t.projectId, t.timestamp),
-    uniqueIndex("chats_by_messageId").on(t.messageId),
+    uniqueIndex("chats_by_project_messageId").on(t.projectId, t.messageId),
   ]
 );
 

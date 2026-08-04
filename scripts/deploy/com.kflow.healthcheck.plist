@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kflow.healthcheck</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Volumes/home/Project/k-todolist &amp;&amp; HEADLESS=true npx tsx agents/pm/scripts/hourly-healthcheck.ts</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/kflow-healthcheck.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/kflow-healthcheck.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/khoitran/.nvm/versions/node/v20.19.0/bin</string>
+        <key>HOME</key>
+        <string>/Users/khoitran</string>
+    </dict>
+</dict>
+</plist>

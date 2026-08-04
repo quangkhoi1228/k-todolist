@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ne, or, lt } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { projectSuggestions } from "../db";
 
@@ -42,7 +42,7 @@ export async function getUnresolvedSuggestionsByUser(userId: string) {
 export async function getUnresolvedCountByUser(userId: string) {
   const db = getDb();
   const rows = await db
-    .select()
+    .select({ count: sql<number>`count(*)::int` })
     .from(projectSuggestions)
     .where(
       and(
@@ -50,7 +50,7 @@ export async function getUnresolvedCountByUser(userId: string) {
         eq(projectSuggestions.isResolved, false)
       )
     );
-  return rows.length;
+  return rows[0]?.count ?? 0;
 }
 
 // ─── Mutations ─────────────────────────────────────────────
@@ -146,15 +146,19 @@ export async function addSuggestionsBatch(args: {
     sourceTimestamp?: string;
     actionLabel?: string;
     actionUrl?: string;
+    suggestionData?: string;
   }>;
 }) {
   const db = getDb();
   const pid = Number(args.projectId);
 
+  // Only fetch the columns needed for dedupe, capped — loading every row
+  // of a project's suggestions just to build a key set is wasteful.
   const existing = await db
-    .select()
+    .select({ type: projectSuggestions.type, title: projectSuggestions.title, description: projectSuggestions.description })
     .from(projectSuggestions)
-    .where(eq(projectSuggestions.projectId, pid));
+    .where(eq(projectSuggestions.projectId, pid))
+    .limit(500);
   const existingKeys = new Set(
     existing.map((s) => `${s.type}|${s.title}|${s.description}`)
   );
@@ -176,7 +180,7 @@ export async function addSuggestionsBatch(args: {
       sourceTimestamp: s.sourceTimestamp ?? null,
       actionLabel: s.actionLabel ?? null,
       actionUrl: s.actionUrl ?? null,
-      suggestionData: null,
+      suggestionData: s.suggestionData ?? null,
       isRead: false,
       isResolved: false,
       createdAt: now,

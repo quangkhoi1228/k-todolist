@@ -45,6 +45,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ running: isRunning, progress });
     }
 
+    // Stop sync — kill the running process and clean up locks so the
+    // Teams/Zalo profiles are free for an interactive (headfull) login.
+    if (action === "stop") {
+      let stopped = false;
+      try {
+        if (fs.existsSync(RUNNING_FILE)) {
+          const pid = parseInt(fs.readFileSync(RUNNING_FILE, "utf-8").trim(), 10);
+          if (!isNaN(pid)) {
+            try { process.kill(pid, 9); stopped = true; } catch { /* already dead */ }
+          }
+          fs.unlinkSync(RUNNING_FILE);
+        }
+      } catch { /* */ }
+
+      // Release Chrome profile locks left behind by a killed browser
+      const locks = [
+        path.join(process.cwd(), ".zalo-session", "chrome-profile"),
+        path.join(process.cwd(), ".teams-session", "chrome-profile"),
+      ];
+      for (const dir of locks) {
+        for (const f of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+          try {
+            const p = path.join(dir, f);
+            if (fs.existsSync(p)) fs.unlinkSync(p);
+          } catch { /* */ }
+        }
+      }
+
+      return NextResponse.json({ ok: true, stopped });
+    }
+
     // Start sync
     let isRunning = false;
     try {

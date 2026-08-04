@@ -45,3 +45,14 @@ next-env.d.ts
 zalo-messages.json
 teams-messages.json
 .history
+
+# runtime state (regenerated every run — never commit)
+.health-status.json
+.teams-sync-progress.json
+.zalo-sync-progress.json
+.monitor-running
+.teams-automator-running
+.zalo-automator-running
+.sync-running
+.teams-sync-running
+teams-monitor-config.json

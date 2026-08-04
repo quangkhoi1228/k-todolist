@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3 } from "lucide-react";
+import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, Target, ChevronDown, ListPlus, MessagesSquare } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import { format } from "date-fns";
 import { WysiwygEditor } from "./WysiwygEditor";
@@ -24,6 +24,7 @@ import {
   useProjectMutations,
   useNoteMutations,
   useUploadFile,
+  useTaskMutations,
 } from "@/hooks/useDomain";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { IsdFlowDiagram } from "./IsdFlowDiagram";
@@ -629,6 +630,13 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const [isSyncing, setIsSyncing] = useState(false);
   const [clearGroup, setClearGroup] = useState<string | null>(null); // group currently being cleared
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [chatSearch, setChatSearch] = useState("");
+
+  // ─── Zalo send state ─────────────────────────
+  const [sendMessage, setSendMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [lastSent, setLastSent] = useState<{ ok: boolean; chatName: string; dryRun: boolean; at: number } | null>(null);
 
   // ─── Sync chat groups & selection when project changes ─────
   useEffect(() => {
@@ -649,8 +657,17 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   // ─── Suggestions State ────────────────────────
   const { data: projectSuggestions } = useSuggestionsByProject(project._id ?? null);
   const smx = useSuggestionMutations();
+  const tmx = useTaskMutations();
   const cmx = useChatMutations();
   const gmx = useGroupMutations();
+  const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
+  const [channelMenuId, setChannelMenuId] = useState<string | null>(null);
+  const [addingTaskId, setAddingTaskId] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [taskAddedId, setTaskAddedId] = useState<string | null>(null);
+  const [sendingChannelId, setSendingChannelId] = useState<string | null>(null);
+  const [sendChannelError, setSendChannelError] = useState<string | null>(null);
+  const [sendChannelOk, setSendChannelOk] = useState<string | null>(null);
 
   // ─── Members State ────────────────────────
   const { data: projectMembers } = useMembersByProject(project._id ?? null);
@@ -704,6 +721,14 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
             sourceTimestamp: s.sourceTimestamp || undefined,
             actionLabel: s.actionLabel || undefined,
             actionUrl: s.actionUrl || undefined,
+            suggestionData:
+              s.input || s.reasoning || s.expectedOutcome
+                ? JSON.stringify({
+                    input: s.input,
+                    reasoning: s.reasoning,
+                    expectedOutcome: s.expectedOutcome,
+                  })
+                : undefined,
           })),
         });
       }
@@ -715,12 +740,104 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
     }
   }, [project._id, project?.name, userId, smx]);
 
-  // Auto-analyse when switching to suggestions tab
-  useEffect(() => {
-    if (tab === "suggestions" && projectSuggestions && projectSuggestions.length === 0 && !analysingSuggestions) {
-      runSuggestionAnalysis();
+  // Thêm suggestion vào tasklist của project
+  const handleAddSuggestionTask = useCallback(async (s: any) => {
+    if (addingTaskId) return;
+    setAddingTaskId(s._id);
+    setTaskError(null);
+    setTaskAddedId(null);
+    try {
+      let priority: string | undefined;
+      try {
+        if (s.suggestionData) {
+          const parsed = JSON.parse(s.suggestionData);
+          priority = parsed?.priority;
+        }
+      } catch { /* ignore */ }
+      await tmx.createTask({
+        userId,
+        title: s.title,
+        estimatedTime: 0,
+        notes: s.description,
+        project: project._id,
+        status: "todo",
+        priority: priority === "high" ? "high" : priority === "low" ? "low" : "normal",
+      });
+      setTaskAddedId(s._id);
+    } catch (err) {
+      console.error("[Suggestions] Add task failed:", err);
+      setTaskError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setAddingTaskId(null);
     }
-  }, [tab, projectSuggestions, analysingSuggestions, runSuggestionAnalysis]);
+  }, [addingTaskId, tmx, userId, project._id]);
+
+  // Gửi tin nhắn tới kênh (Teams hoặc Zalo) liên quan của project
+  const handleSendSuggestionToChannel = useCallback(async (s: any, channel: { name: string; platform?: string }) => {
+    const endpoint = channel.platform === "zalo" ? "/api/agents/zalo-send" : "/api/agents/teams-send";
+    setSendingChannelId(s._id);
+    setSendChannelError(null);
+    setSendChannelOk(null);
+    setChannelMenuId(null);
+    const message = `[Gợi ý từ PM Agent] ${s.title}\n${s.description}`;
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send",
+          chatName: channel.name,
+          message,
+          dryRun: false,
+        }),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: "Invalid JSON response" }));
+      if (data.ok) {
+        setSendChannelOk(`${channel.name} (${channel.platform === "zalo" ? "Zalo" : "Teams"})`);
+      } else {
+        setSendChannelError(data.error || "Không gửi được tin nhắn.");
+      }
+    } catch (err) {
+      console.error("[Suggestions] Send to channel failed:", err);
+      setSendChannelError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSendingChannelId(null);
+    }
+  }, []);
+
+  // Danh sách kênh nhắn cho suggestion — từ teamsGroups của project
+  const getSuggestionChannels = useCallback((s: any): Array<{ name: string; platform: string; tag: string }> => {
+    const channels: Array<{ name: string; platform: string; tag: string }> = [];
+    for (const g of activeTeamsGroups || []) {
+      if (!g?.name) continue;
+      channels.push({
+        name: g.name,
+        platform: g.platform || "teams",
+        tag: g.type === "internal" ? "Nội bộ" : "KH",
+      });
+    }
+    if (s.sourceChatName && !channels.some((c) => c.name === s.sourceChatName)) {
+      channels.unshift({ name: s.sourceChatName, platform: "teams", tag: "Nguồn" });
+    }
+    return channels;
+  }, [activeTeamsGroups]);
+
+  // Auto-analyse when switching to suggestions tab — but ONLY ONCE per project
+  // visit. Without the ref guard, an empty projectSuggestions list + failed LLM
+  // analysis re-triggers this effect forever (state flips → re-render → effect
+  // re-runs → infinite loop → page flickers continuously).
+  const analysisAttemptedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (tab !== "suggestions") return;
+    if (projectSuggestions && projectSuggestions.length > 0) {
+      analysisAttemptedRef.current = project._id;
+      return;
+    }
+    if (analysisAttemptedRef.current === project._id) return;
+    if (analysingSuggestions) return;
+    analysisAttemptedRef.current = project._id;
+    runSuggestionAnalysis();
+  }, [tab, projectSuggestions, analysingSuggestions, runSuggestionAnalysis, project._id]);
 
   const [editorContent, setEditorContent] = useState(() => {
     if (!project.notes) return DEFAULT_NOTES;
@@ -772,6 +889,7 @@ ${resourceTicketsLinks}
 
   // Auto-save with debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hasUserEditedRef = useRef(false);
 
   const doSave = useCallback(async (content: string) => {
     if (!userId) return;
@@ -779,11 +897,14 @@ ${resourceTicketsLinks}
       await pm.updateProjectDetail(project._id, content || undefined);
     } catch (err) {
       console.error(err);
+    } finally {
+      hasUserEditedRef.current = false;
     }
   }, [userId, project._id, pm]);
 
   // Debounced auto-save when editorContent changes
   useEffect(() => {
+    if (!hasUserEditedRef.current) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       doSave(editorContent);
@@ -810,9 +931,12 @@ ${resourceTicketsLinks}
   const { data: projectChatsData } = useMessagesByProject(project._id ?? null, chatGroupNames);
   const projectChats = projectChatsData ?? [];
 
-  // Fetch sync logs for this project
-  const { data: syncLogs } = useLogs(project._id ?? null, 50);
   const [showSyncLogs, setShowSyncLogs] = useState(false);
+  // Fetch sync logs for this project — refresh only while the logs panel
+  // is actually visible (prevents constant 5s polling → page flicker).
+  const { data: syncLogs } = useLogs(project._id ?? null, 50, {
+    refreshInterval: showSyncLogs ? 5000 : 0,
+  });
   const [isClearing, setIsClearing] = useState(false);
 
   // Fetch emails for this project
@@ -1210,6 +1334,38 @@ ${resourceTicketsLinks}
     }
   }, [summaryText]);
 
+  const handleSendZalo = useCallback(async (chatName: string, message: string) => {
+    if (!chatName || !message.trim()) return;
+    if (sending) return;
+    setSending(true);
+    setSendError(null);
+    setLastSent(null);
+    try {
+      const res = await fetch("/api/agents/zalo-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send",
+          chatName,
+          message: message.trim(),
+          dryRun: false,
+        }),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: "Invalid JSON response" }));
+      if (data.ok) {
+        setSendMessage("");
+        setLastSent({ ok: true, chatName, dryRun: !!data.dryRun, at: Date.now() });
+      } else {
+        setSendError(data.error || "Không gửi được tin nhắn.");
+      }
+    } catch (err) {
+      console.error("Send Zalo failed:", err);
+      setSendError("Lỗi khi gửi tin nhắn: " + (err instanceof Error ? err.message : "unknown error"));
+    } finally {
+      setSending(false);
+    }
+  }, [sending]);
+
   return (
     <div className={`border border-border/50 rounded-xl bg-card/50 backdrop-blur-sm shadow-inner ${tab === "chats" ? "h-full flex flex-col" : "overflow-hidden"}`}>
       {/* Tabs */}
@@ -1357,7 +1513,10 @@ ${resourceTicketsLinks}
               <WysiwygEditor
                 key={project._id}
                 content={editorContent}
-                onChange={(html) => setEditorContent(html)}
+                onChange={(html) => {
+                  hasUserEditedRef.current = true;
+                  setEditorContent(html);
+                }}
                 onImageUpload={handleImageUpload}
               />
             </div>
@@ -1919,6 +2078,26 @@ ${resourceTicketsLinks}
                   {projectChats?.filter((m: any) => m.chatName === selectedChatGroup)?.length || 0
                   } tin nhắn
                 </span>
+                <div className="relative ml-auto w-40">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/60 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={chatSearch}
+                    onChange={(e) => setChatSearch(e.target.value)}
+                    placeholder="Tìm tin nhắn..."
+                    className="w-full pl-7 pr-6 py-1 text-[11px] rounded-lg bg-muted/50 border border-border/50 outline-none focus:border-primary/40 placeholder:text-muted-foreground/40"
+                  />
+                  {chatSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setChatSearch("")}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground transition-colors"
+                      title="Xoá tìm kiếm"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
                 <div className="ml-auto flex items-center gap-1">
                   {selectedChatGroup && (() => {
                     const group = activeTeamsGroups.find(g => g.name === selectedChatGroup);
@@ -1981,7 +2160,25 @@ ${resourceTicketsLinks}
                 </div>
               ) : (
                 (() => {
-                  const chatMessages = projectChats.filter((m: any) => m.chatName === selectedChatGroup);
+                  const q = chatSearch.trim().toLowerCase();
+                  let chatMessages = projectChats.filter((m: any) => m.chatName === selectedChatGroup);
+                  if (q) {
+                    chatMessages = chatMessages.filter((m: any) =>
+                      (m.sender || "").toLowerCase().includes(q) ||
+                      (m.content || "").toLowerCase().includes(q) ||
+                      (m.timestamp || "").toLowerCase().includes(q)
+                    );
+                  }
+                  if (chatMessages.length === 0) {
+                    return (
+                      <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
+                        <Search className="w-5 h-5 mb-2 opacity-30" />
+                        <span className="text-[12px]">
+                          {q ? `Không tìm thấy tin nhắn nào khớp "${chatSearch.trim()}"` : "Chưa có tin nhắn nào."}
+                        </span>
+                      </div>
+                    );
+                  }
                   return chatMessages.map((msg: any, idx: number) => {
                     const prev = idx > 0 ? chatMessages[idx - 1] : undefined;
                     const next = idx < chatMessages.length - 1 ? chatMessages[idx + 1] : undefined;
@@ -2116,47 +2313,72 @@ ${resourceTicketsLinks}
                             </div>
                           )}
                           
-                          <div className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words px-3.5 py-2.5 shadow-sm w-fit ${bubbleRadius} ${
-                            isAgent 
-                              ? "bg-primary text-primary-foreground border border-primary/20" 
-                              : isMine
-                                ? "bg-blue-600 text-white border border-blue-500/20"
-                                : "bg-card text-card-foreground border border-border/50"
-                          } ${!isFirstInGroup ? "mt-0.5" : "mt-1"}`}>
-                            {quoteSender ? (
-                              <div className="flex flex-col mb-1.5">
-                                <div className={`px-2.5 py-1.5 border-l-[3px] rounded-r-md text-[11.5px] flex flex-col gap-0.5 ${isMine ? "bg-white/20 border-white/40" : "bg-foreground/5 border-primary/40"}`}>
-                                  <span className="font-bold flex items-center gap-1.5 opacity-90"><Quote className="w-3 h-3 opacity-50"/> {quoteSender}</span>
-                                  {quoteContent && <span className="opacity-80 line-clamp-3 leading-relaxed mt-0.5"><LinkifyText text={quoteContent} isMine={isMine} /></span>}
+                          {/* Bubble — only render when there is actual text.
+                              Image-only messages (no caption) should not show
+                              an empty colored bubble box. */}
+                          {(mainText || quoteContent) && (
+                            <div className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words px-3.5 py-2.5 shadow-sm w-fit ${bubbleRadius} ${
+                              isAgent 
+                                ? "bg-primary text-primary-foreground border border-primary/20" 
+                                : isMine
+                                  ? "bg-blue-600 text-white border border-blue-500/20"
+                                  : "bg-card text-card-foreground border border-border/50"
+                            } ${!isFirstInGroup ? "mt-0.5" : "mt-1"}`}>
+                              {quoteSender ? (
+                                <div className="flex flex-col mb-1.5">
+                                  <div className={`px-2.5 py-1.5 border-l-[3px] rounded-r-md text-[11.5px] flex flex-col gap-0.5 ${isMine ? "bg-white/20 border-white/40" : "bg-foreground/5 border-primary/40"}`}>
+                                    <span className="font-bold flex items-center gap-1.5 opacity-90"><Quote className="w-3 h-3 opacity-50"/> {quoteSender}</span>
+                                    {quoteContent && <span className="opacity-80 line-clamp-3 leading-relaxed mt-0.5"><LinkifyText text={quoteContent} isMine={isMine} /></span>}
+                                  </div>
+                                  <div className="mt-1.5">
+                                    <LinkifyText text={mainText} isMine={isMine} />
+                                  </div>
                                 </div>
-                                <div className="mt-1.5">
-                                  <LinkifyText text={mainText} isMine={isMine} />
+                              ) : (
+                                <LinkifyText text={mainText} isMine={isMine} />
+                              )}
+                              {/* Images */}
+                              {(msg.images ? (() => {
+                                try {
+                                  const parsed = typeof msg.images === 'string' ? JSON.parse(msg.images) : msg.images;
+                                  if (!Array.isArray(parsed)) return [];
+                                  return parsed.filter((s: unknown): s is string =>
+                                    typeof s === 'string' &&
+                                    s.length > 0 &&
+                                    (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:') || s.startsWith('storage:') || s.startsWith('/api/data/files/') || s.startsWith('/api/files/'))
+                                  );
+                                } catch { return []; }
+                              })() : []).map((imgSrc: string, imgIdx: number) => (
+                                <div key={imgIdx} className="mt-2 rounded-lg overflow-hidden border border-border/30">
+                                  <ChatImage
+                                    src={imgSrc}
+                                    alt={`Image ${imgIdx + 1}`}
+                                    className="max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+                                  />
                                 </div>
-                              </div>
-                            ) : (
-                              <LinkifyText text={mainText} isMine={isMine} />
-                            )}
-                            {/* Images */}
-                            {(msg.images ? (() => {
-                              try {
-                                const parsed = typeof msg.images === 'string' ? JSON.parse(msg.images) : msg.images;
-                                if (!Array.isArray(parsed)) return [];
-                                return parsed.filter((s: unknown): s is string =>
-                                  typeof s === 'string' &&
-                                  s.length > 0 &&
-                                  (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:') || s.startsWith('storage:') || s.startsWith('/api/data/files/') || s.startsWith('/api/files/'))
-                                );
-                              } catch { return []; }
-                            })() : []).map((imgSrc: string, imgIdx: number) => (
-                              <div key={imgIdx} className="mt-2 rounded-lg overflow-hidden border border-border/30">
-                                <ChatImage
-                                  src={imgSrc}
-                                  alt={`Image ${imgIdx + 1}`}
-                                  className="max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                                />
-                              </div>
-                            ))}
-                          </div>
+                              ))}
+                            </div>
+                          )}
+                          {/* Image-only message (no caption text) — images outside bubble */}
+                          {!(mainText || quoteContent) && (() => {
+                            try {
+                              const parsed = typeof msg.images === 'string' ? JSON.parse(msg.images) : msg.images;
+                              if (!Array.isArray(parsed)) return [];
+                              return parsed.filter((s: unknown): s is string =>
+                                typeof s === 'string' &&
+                                s.length > 0 &&
+                                (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:') || s.startsWith('storage:') || s.startsWith('/api/data/files/') || s.startsWith('/api/files/'))
+                              );
+                            } catch { return []; }
+                          })().map((imgSrc: string, imgIdx: number) => (
+                            <div key={imgIdx} className={`${isMine ? "bg-blue-600/10" : "bg-card"} p-1.5 rounded-2xl border border-border/50 shadow-sm ${!isFirstInGroup ? "mt-0.5" : "mt-1"}`}>
+                              <ChatImage
+                                src={imgSrc}
+                                alt={`Image ${imgIdx + 1}`}
+                                className="max-w-full h-auto rounded-xl cursor-pointer hover:opacity-90 transition-opacity"
+                              />
+                            </div>
+                          ))}
                         </div>
                       </div>
                     );
@@ -2164,6 +2386,59 @@ ${resourceTicketsLinks}
                 })()
               )}
             </div>
+            {/* ── Zalo Send Composer ── */}
+            {(() => {
+              const sendGroup = activeTeamsGroups.find(g => g.name === selectedChatGroup);
+              const isZaloChat = sendGroup?.platform === "zalo";
+              return (
+                <div className="shrink-0 border-t border-border/30 pt-2 pb-1">
+                  <div className="flex items-center gap-2">
+                    <textarea
+                      value={sendMessage}
+                      onChange={(e) => setSendMessage(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          if (selectedChatGroup && sendMessage.trim()) handleSendZalo(selectedChatGroup, sendMessage);
+                        }
+                      }}
+                      placeholder={
+                        !selectedChatGroup
+                          ? "Chọn một nhóm chat để gửi tin nhắn..."
+                          : isZaloChat
+                            ? "Soạn tin nhắn, nhấn Enter để gửi tới Zalo..."
+                            : "Chỉ nhóm Zalo mới có thể gửi tin từ đây..."
+                      }
+                      disabled={!selectedChatGroup || !isZaloChat || sending}
+                      rows={2}
+                      maxLength={2000}
+                      className="w-full text-[12px] resize-none rounded-lg bg-muted/50 border border-border/50 outline-none focus:border-primary/40 placeholder:text-muted-foreground/40 px-3 py-2 disabled:opacity-50"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { const g = sendGroup; if (g && sendMessage) handleSendZalo(g.name, sendMessage); }}
+                      disabled={!selectedChatGroup || !sendMessage.trim() || sending || !isZaloChat}
+                      className="self-end p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+                      title={isZaloChat ? "Gửi tin nhắn Zalo" : "Chỉ hỗ trợ gửi trên nhóm Zalo"}
+                    >
+                      {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  {(sendError || (lastSent && lastSent.chatName === selectedChatGroup)) && (
+                    <div className={`mt-1.5 text-[11px] ${sendError ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"} flex items-center gap-1`}>
+                      {sendError ? <AlertTriangle className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />}
+                      <span>
+                        {sendError
+                          ? sendError
+                          : lastSent!.ok
+                            ? `Đã gửi thành công tới "${lastSent!.chatName}".`
+                            : `Đã gửi thành công tới "${lastSent!.chatName}" (dry-run).`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             </div>
           </div>
         ) : tab === "suggestions" ? (
@@ -2207,7 +2482,7 @@ ${resourceTicketsLinks}
                 {projectSuggestions.map((s) => (
                   <div
                     key={s._id}
-                    className={`p-2.5 rounded-xl border transition-all ${
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
                       s.isResolved
                         ? "bg-muted/20 border-border/20 opacity-60"
                         : !s.isRead
@@ -2224,6 +2499,10 @@ ${resourceTicketsLinks}
                                     ? "bg-purple-50/60 dark:bg-purple-500/10 border-purple-200 dark:border-purple-500/30"
                                     : "bg-card/50 border-border/30"
                     }`}
+                    onClick={() => {
+                      if (!s.isRead) smx.markSuggestionAsRead(s._id);
+                      setExpandedSuggestionId(expandedSuggestionId === s._id ? null : s._id);
+                    }}
                   >
                     <div className="flex items-start gap-2">
                       <div className="flex flex-col items-center gap-0.5 mt-0.5 shrink-0">
@@ -2268,12 +2547,101 @@ ${resourceTicketsLinks}
                           </div>
                         )}
 
+                        {/* Reason details (input / reasoning / expected outcome) */}
+                        {(() => {
+                          let reason: { input?: string; reasoning?: string; expectedOutcome?: string } = {};
+                          try {
+                            if (s.suggestionData) {
+                              const parsed = JSON.parse(s.suggestionData);
+                              reason = {
+                                input: parsed?.input,
+                                reasoning: parsed?.reasoning,
+                                expectedOutcome: parsed?.expectedOutcome,
+                              };
+                            }
+                          } catch { /* ignore malformed data */ }
+                          const hasReason = Boolean(reason.input || reason.reasoning || reason.expectedOutcome);
+                          const expanded = expandedSuggestionId === s._id;
+                          return (
+                            <div className="mt-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedSuggestionId(expanded ? null : s._id);
+                                }}
+                                className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                                  expanded
+                                    ? "bg-primary/10 text-primary border-primary/30"
+                                    : "bg-muted/30 text-muted-foreground border-border/40 hover:bg-muted/50 hover:text-foreground"
+                                }`}
+                              >
+                                <BrainCircuit className="w-2.5 h-2.5" />
+                                {expanded ? "Thu gọn" : "Xem nguyên nhân"}
+                                <ChevronDown className={`w-2.5 h-2.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+                              </button>
+                              {expanded && (
+                                <div className="mt-1.5 space-y-1.5 rounded-lg border border-border/30 bg-background/60 dark:bg-zinc-900/60 p-2">
+                                  {reason.input && (
+                                    <div className="flex gap-1.5">
+                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Input</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.input}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {reason.reasoning && (
+                                    <div className="flex gap-1.5">
+                                      <BrainCircuit className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wide">Suy luận</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.reasoning}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {reason.expectedOutcome && (
+                                    <div className="flex gap-1.5">
+                                      <Target className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">Kết quả mong muốn</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.expectedOutcome}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {!hasReason && s.sourceMessage && (
+                                    <div className="flex gap-1.5">
+                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Tin nhắn gốc</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{s.sourceMessage}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {!hasReason && !s.sourceMessage && (
+                                    <div className="flex gap-1.5">
+                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Nguyên nhân</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{s.description}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                         {/* Actions */}
                         <div className="flex items-center gap-1.5 mt-2">
                           {!s.isRead && (
                             <button
                               type="button"
-                              onClick={() => smx.markSuggestionAsRead(s._id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                smx.markSuggestionAsRead(s._id);
+                              }}
                               className="text-[9px] px-2 py-1 rounded-md bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
                             >
                               Đã đọc
@@ -2282,7 +2650,10 @@ ${resourceTicketsLinks}
                           {!s.isResolved && (
                             <button
                               type="button"
-                              onClick={() => smx.markSuggestionAsResolved(s._id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                smx.markSuggestionAsResolved(s._id);
+                              }}
                               className="text-[9px] px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-500/20 transition-colors cursor-pointer"
                             >
                               Đã xử lý
@@ -2297,6 +2668,89 @@ ${resourceTicketsLinks}
                             >
                               {s.actionLabel}
                             </a>
+                          )}
+                          {/* Thêm vào tasklist */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAddSuggestionTask(s);
+                            }}
+                            disabled={addingTaskId !== null}
+                            className="text-[9px] px-2 py-1 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 hover:bg-indigo-500/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                            title="Thêm gợi ý này vào danh sách công việc"
+                          >
+                            {addingTaskId === s._id ? (
+                              <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang thêm...</>
+                            ) : taskAddedId === s._id ? (
+                              <><CheckCircle2 className="w-2.5 h-2.5" /> Đã thêm task</>
+                            ) : (
+                              <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
+                            )}
+                          </button>
+                          {/* Nhắn tới kênh (Teams/Zalo) */}
+                          <div className="relative inline-flex">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setChannelMenuId(channelMenuId === s._id ? null : s._id);
+                              }}
+                              disabled={sendingChannelId !== null}
+                              className="text-[9px] px-2 py-1 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-500/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                              title="Gửi tin nhắn tới kênh nội bộ Teams/Zalo liên quan"
+                            >
+                              {sendingChannelId === s._id ? (
+                                <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang gửi...</>
+                              ) : (
+                                <><MessagesSquare className="w-2.5 h-2.5" /> Nhắn kênh</>
+                              )}
+                            </button>
+                            {channelMenuId === s._id && (
+                              <div
+                                className="absolute bottom-full right-0 mb-1 w-56 rounded-xl border border-border/60 bg-background dark:bg-zinc-900 shadow-xl z-50 p-1 text-left"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <p className="px-2 py-1 text-[9px] font-semibold text-muted-foreground/60 uppercase">
+                                  Chọn kênh gửi
+                                </p>
+                                {getSuggestionChannels(s).length === 0 && (
+                                  <p className="px-2 py-1.5 text-[10px] text-muted-foreground/50">
+                                    Không có kênh liên quan
+                                  </p>
+                                )}
+                                {getSuggestionChannels(s).map((ch) => (
+                                  <button
+                                    key={ch.name + ch.platform}
+                                    type="button"
+                                    onClick={() => handleSendSuggestionToChannel(s, ch)}
+                                    disabled={sendingChannelId !== null}
+                                    className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-muted/60 transition-colors cursor-pointer text-[11px] text-foreground disabled:opacity-50"
+                                  >
+                                    <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-semibold ${
+                                      ch.platform === "zalo"
+                                        ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30"
+                                        : "bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30"
+                                    }`}>
+                                      {ch.platform === "zalo" ? "Zalo" : "Teams"}
+                                    </span>
+                                    <span className="flex-1 truncate">{ch.name}</span>
+                                    <span className="text-[8px] text-muted-foreground/50 shrink-0">{ch.tag}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {/* Kết quả gửi / lỗi */}
+                          {(sendChannelError || sendChannelOk || taskError) && (
+                            <span className={`text-[9px] ml-1 flex items-center gap-1 ${
+                              (sendChannelError || taskError) ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"
+                            }`}>
+                              {sendChannelError || taskError
+                                ? <AlertTriangle className="w-2.5 h-2.5" />
+                                : <CheckCircle2 className="w-2.5 h-2.5" />}
+                              {sendChannelError || taskError || `Đã gửi tới "${sendChannelOk}"`}
+                            </span>
                           )}
                         </div>
                       </div>

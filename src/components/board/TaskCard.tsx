@@ -16,7 +16,7 @@ import { DropdownMenu,
 } from "@/components/ui/dropdown-menu";
 import { useData, apiGet } from "@/hooks/useData";
 import { useAuth } from "@clerk/nextjs";
-import { useTasks, useProjects, useTaskMutations } from "@/hooks/useDomain";
+import { useTasks, useProjects, useTaskMutations, useAllDependencies } from "@/hooks/useDomain";
 import { NewTaskSheet, TaskData } from "./NewTaskSheet";
 import { parseTimeToHours, formatHours } from "@/lib/time-utils";
 import { cn } from "@/lib/utils";
@@ -114,18 +114,26 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
   const [isTitleEditing, setIsTitleEditing] = useState(false);
   const [tempTitle, setTempTitle] = useState(task.title);
   const tm = useTaskMutations();
-  const { data: projects } = useProjects(userId, { includeArchived: true });
+  const { data: projectsData } = useProjects(userId, { includeArchived: true, includeTrashed: true });
+  const projects = hideProjectBadge ? null : projectsData;
 
-  // Dependency queries
-  const { data: isBlocked } = useData<boolean>("taskBlocked:" + task._id, () =>
-    apiGet("/tasks", { action: "isTaskBlocked", taskId: task._id })
-  );
-  const { data: taskDependents } = useData<any[]>("taskDeps:" + task._id, () =>
-    apiGet("/tasks", { action: "getTaskDependents", taskId: task._id })
-  );
-
-  // Resolve dependent/successor task names from IDs
   const { data: allTasksQuery } = useTasks(userId);
+  const { data: allDependencies } = useAllDependencies(userId);
+
+  const isBlocked = useMemo(() => {
+    if (!allDependencies || !allTasksQuery) return false;
+    const deps = allDependencies.filter(d => d.taskId === task._id);
+    for (const dep of deps) {
+      const predecessor = allTasksQuery.find(t => t._id === dep.dependsOnTaskId);
+      if (predecessor && predecessor.status !== "done") return true;
+    }
+    return false;
+  }, [allDependencies, allTasksQuery, task._id]);
+
+  const taskDependents = useMemo(() => {
+    if (!allDependencies) return [];
+    return allDependencies.filter(d => d.dependsOnTaskId === task._id);
+  }, [allDependencies, task._id]);
 
   const {
     attributes,

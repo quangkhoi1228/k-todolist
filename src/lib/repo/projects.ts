@@ -62,11 +62,12 @@ export async function getProjects(opts: {
 
   if (!includeTrashed) {
     rows = rows.filter((p) => !p.deletedAt);
-  } else if (includeArchived) {
-      return rows.map(mapProject);
-    }
+  }
 
-  rows = rows.filter((p) => !p.archived);
+  if (!includeArchived) {
+    rows = rows.filter((p) => !p.archived);
+  }
+
   return rows.map(mapProject);
 }
 

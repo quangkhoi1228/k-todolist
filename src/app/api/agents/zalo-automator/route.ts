@@ -14,6 +14,28 @@ import path from "path";
 import fs from "fs";
 
 const RUNNING_FILE = path.join(process.cwd(), ".zalo-automator-running");
+const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+
+/** Dừng sync nền đang chạy để giải phóng Chrome profile cho login headfull. */
+function stopBackgroundSync() {
+  try {
+    if (fs.existsSync(SYNC_RUNNING_FILE)) {
+      const pid = parseInt(fs.readFileSync(SYNC_RUNNING_FILE, "utf-8").trim(), 10);
+      if (!isNaN(pid)) {
+        try { process.kill(pid, 9); } catch { /* already dead */ }
+      }
+      fs.unlinkSync(SYNC_RUNNING_FILE);
+    }
+  } catch { /* */ }
+  // Release stale Chrome profile locks
+  const profileDir = path.join(process.cwd(), ".zalo-session", "chrome-profile");
+  for (const f of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+    try {
+      const p = path.join(profileDir, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch { /* */ }
+  }
+}
 
 function isPidRunning(pid: number): boolean {
   try {
@@ -139,6 +161,11 @@ export async function POST(req: NextRequest) {
         error: "A Zalo automation process is already running.",
         pid: existingPid,
       });
+    }
+
+    // Login cần browser headfull với profile riêng — dừng sync nền đang giữ profile
+    if (!headless) {
+      stopBackgroundSync();
     }
 
     const scriptPath = path.join(process.cwd(), "agents/pm/scripts/zalo-automator.ts");

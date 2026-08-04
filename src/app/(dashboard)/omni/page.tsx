@@ -18,6 +18,7 @@ export default function OmniPage() {
   const [teamsStatus, setTeamsStatus] = useState<{ running: boolean; pid?: number; health?: string }>({ running: false });
   const [zaloStatus, setZaloStatus] = useState<{ running: boolean; pid?: number; health?: string }>({ running: false });
   const [headlessMode, setHeadlessMode] = useState(true); // default headless
+  const [lastHealthRun, setLastHealthRun] = useState<number | null>(null);
 
   // Hydrate from localStorage after mount to avoid hydration mismatch
   useEffect(() => {
@@ -27,11 +28,27 @@ export default function OmniPage() {
     if (savedTeams) setTeamsStatus({ running: false, health: savedTeams });
     if (savedZalo) setZaloStatus({ running: false, health: savedZalo });
     if (savedHeadless !== null) setHeadlessMode(savedHeadless === "true");
-    
+
     const savedTeamsChats = localStorage.getItem("chatList_teams");
     const savedZaloChats = localStorage.getItem("chatList_zalo");
     if (savedTeamsChats) setTeamsChats(JSON.parse(savedTeamsChats));
     if (savedZaloChats) setZaloChats(JSON.parse(savedZaloChats));
+
+    // Load latest server-side hourly healthcheck status
+    fetch("/api/agents/health-status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.ok && data.teams?.status) {
+          setTeamsStatus((p) => ({ ...p, health: data.teams.status }));
+        }
+        if (data.ok && data.zalo?.status) {
+          setZaloStatus((p) => ({ ...p, health: data.zalo.status }));
+        }
+        if (data.ok && data.lastRunAt) {
+          setLastHealthRun(data.lastRunAt);
+        }
+      })
+      .catch(() => { /* ignore */ });
   }, []);
   const [syncStatus, setSyncStatus] = useState<{ running: boolean; progress?: { total: number; done: number; currentChat?: string; platform?: string; message?: string } | null }>({ running: false });
   const [loadingAction, setLoadingAction] = useState<"teams" | "zalo" | "sync" | "health-teams" | "health-zalo" | null>(null);
@@ -124,10 +141,12 @@ export default function OmniPage() {
       setLoadingAction(platform);
       setError(null);
       const endpoint = platform === "teams" ? "/api/agents/teams-automator" : "/api/agents/zalo-automator";
+      // Đăng nhập LUÔN mở browser hiện ra (headfull + keepOpen) để user thấy QR/đăng nhập,
+      // không phụ thuộc toggle headless (chỉ ảnh hưởng sync tự động)
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ headless: headlessMode, keepOpen: !headlessMode }),
+        body: JSON.stringify({ headless: false, keepOpen: true, useRealChrome: true }),
       });
       const data = await res.json();
       if (!data.ok) setError(data.error || "Có lỗi xảy ra khi bật trình duyệt.");
@@ -299,6 +318,13 @@ export default function OmniPage() {
                   </label>
                 </div>
               </h2>
+              <p className="text-[11px] text-muted-foreground/70 flex items-center gap-1.5">
+                <Activity className="w-3 h-3" />
+                Tự động kiểm tra mỗi giờ
+                {lastHealthRun && (
+                  <span className="text-muted-foreground/50">· lần cuối: {format(lastHealthRun, "HH:mm:ss dd/MM")}</span>
+                )}
+              </p>
               <div className="p-1.5 rounded-2xl border border-border bg-card shadow-sm flex flex-col divide-y divide-border/50">
                 {/* Teams Row */}
                 <div className="p-2 flex items-center justify-between gap-3 transition-all hover:bg-muted/30">

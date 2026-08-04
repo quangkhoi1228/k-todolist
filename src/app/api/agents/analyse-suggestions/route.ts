@@ -63,7 +63,10 @@ Output phải là JSON array (không markdown, không code block):
     "sourceSender": "Tên người gửi",
     "sourceChatName": "Tên nhóm chat",
     "sourceMessage": "Nội dung tin nhắn gốc",
-    "actionLabel": "Nhãn nút hành động (nếu có)"
+    "actionLabel": "Nhãn nút hành động (nếu có)",
+    "input": "Tóm tắt ngắn gọn dữ liệu/tin nhắn gốc đã dùng làm căn cứ (2-3 câu, trích dẫn nội dung liên quan)",
+    "reasoning": "Suy luận/tại sao đi đến kết luận này, căn cứ vào điều gì trong tin nhắn (2-4 câu)",
+    "expectedOutcome": "Kết quả mong muốn nếu thực hiện gợi ý này (1-2 câu)"
   }
 ]`;
 

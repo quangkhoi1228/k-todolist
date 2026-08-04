@@ -453,24 +453,27 @@ export default function ProjectDetailPage() {
       });
       const data = await res.json();
       if (data.ok && data.results?.[0]?.ok) {
-        await pm.updateProjectIsdStatus({
-          id: project._id,
-          isdStatus: data.results[0].status,
-        });
+        const newStatus = data.results[0].status;
+        if (newStatus && newStatus !== (project as any).isdStatus) {
+          await pm.updateProjectIsdStatus({
+            id: project._id,
+            isdStatus: newStatus,
+          });
+        }
       }
     } catch (err) {
       console.error("[ISD] Failed to fetch status:", err);
     }
   }, [project, pm]);
 
-  const initialFetchDone = useRef(false);
+  const fetchedProjectIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!project || !(project as any).ticketId) return;
 
-    // Fetch on mount (only once)
-    if (!initialFetchDone.current) {
-      initialFetchDone.current = true;
+    // Fetch on mount (only once per project)
+    if (fetchedProjectIdRef.current !== project._id) {
+      fetchedProjectIdRef.current = project._id;
       fetchIsdStatus();
     }
 
@@ -670,7 +673,7 @@ export default function ProjectDetailPage() {
       {/* Detail Panel */}
       {showDetail && (
         <div className={detailTab === "chats" || detailTab === "emails" ? "flex-1 min-h-0 flex flex-col" : "shrink-0"}>
-          <ProjectDetailPanel project={project} tab={detailTab} onTabChange={setDetailTab} />
+          <ProjectDetailPanel key={project._id} project={project} tab={detailTab} onTabChange={setDetailTab} />
         </div>
       )}
 

@@ -5,7 +5,7 @@ import * as fs from "fs";
 import dotenv from "dotenv";
 import { getActiveProjectsWithTeamsGroups, getProject, updateProjectTeamsGroups } from "../../../src/lib/repo/projects";
 import { saveMessages, uploadChatImage } from "../../../src/lib/repo/projectChats";
-import { addSuggestionsBatch } from "../../../src/lib/repo/projectSuggestions";
+import { runMonitor, type MonitorMessage } from "../lib/monitor";
 import { addLog } from "../../../src/lib/repo/syncLogs";
 import { syncGroups } from "../../../src/lib/repo/groups";
 
@@ -85,143 +85,6 @@ async function processDataUrls(messages: any[]): Promise<any[]> {
   return processed;
 }
 
-/**
- * After saving messages, analyse if any messages need PM attention
- * by calling LLM directly. Creates suggestions in projectSuggestions table.
- */
-async function runMonitor(savedMessages: any[], projectId: string, chatName: string) {
-  if (!savedMessages || savedMessages.length === 0) return;
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  const apiBase = process.env.OPENAI_BASE_URL;
-  const model = process.env.LLM_MODEL || "deepsseek-v4_mimo_combo";
-
-  if (!apiKey || !apiBase) return;
-
-  try {
-    console.log(`[Monitor] Analysing ${savedMessages.length} new messages for PM action...`);
-
-    const messageLog = savedMessages
-      .slice(-30)
-      .map((m: any) => `[${m.sender || "Unknown"}]: ${(m.content || "").slice(0, 500)}`)
-      .join("\n");
-
-    const systemPrompt = `Bạn là PM Agent - trợ lý quản lý dự án thông minh.
-
-Phân tích tin nhắn từ nhóm chat dự án và xác định:
-1. Có cần PM tham gia giải quyết vấn đề gì không?
-2. Nếu có, cần hành động gì?
-
-Các hành động thường dùng:
-- "Gọi kỹ thuật" — khi có issue kỹ thuật, lỗi, cần support
-- "Lên template nghiệm thu khi golive" — khi gần golive, khách hàng yêu cầu bàn giao
-- "Xác nhận với khách hàng" — khi cần khách hàng xác nhận/approve
-- "Họp với team" — khi cần align giữa các bên
-- "Tạo task" — khi có đầu việc mới được giao
-- "Cập nhật tiến độ" — khi khách hàng hỏi tiến độ
-- "Theo dõi" — cần PM để mắt nhưng chưa cần hành động gấp
-
-QUAN TRỌNG: Chỉ đề xuất hành động KHI THỰC SỰ CẦN THIẾT. Nếu tin nhắn là trao đổi thông thường, trả về [].
-
-Output là JSON array, không markdown, không code block:
-[{"type":"action_item","title":"...","description":"...","sourceSender":"...","sourceMessage":"...","actionLabel":"..."}]`;
-
-    const response = await fetch(`${apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Phân tích tin nhắn:\n\n${messageLog}` },
-        ],
-        temperature: 0.1,
-        max_tokens: 8192,
-      }),
-      signal: AbortSignal.timeout(120000),
-    });
-
-    if (!response.ok) {
-      console.warn(`[Monitor] LLM error: ${response.status}`);
-      return;
-    }
-
-    const rawText = await response.text();
-    // Strip SSE trailers that some proxies append (e.g. "data: [DONE]")
-    let content = rawText.replace(/data:\s*\[DONE\]\s*$/i, "").trim();
-
-    try {
-      const parsed = JSON.parse(content);
-      const msg = parsed.choices?.[0]?.message;
-      if (msg?.content && msg.content.trim().length > 0) {
-        content = msg.content;
-      } else if (msg?.reasoning_content) {
-        // DeepSeek reasoning models put the final answer at the END of
-        // reasoning_content. Take the LAST [...] block (the final answer),
-        // not the first (which is usually a description of the task).
-        content = msg.reasoning_content;
-      }
-    } catch {}
-
-    content = content.trim();
-
-    let actions: any[] = [];
-    try {
-      actions = JSON.parse(content);
-      if (!Array.isArray(actions)) throw new Error("not array");
-    } catch {
-      // Fallback: for reasoning content, prefer the LAST [...] block (final answer)
-      const matches = content.match(/\[[\s\S]*?\]/g) || [];
-      // Keep only blocks that look like JSON arrays of objects
-      const candidates = matches.filter(m => {
-        try {
-          const arr = JSON.parse(m);
-          return Array.isArray(arr) && arr.every((x: any) => x && typeof x === "object");
-        } catch { return false; }
-      });
-      const best = candidates.length > 0 ? candidates[candidates.length - 1] : null;
-      if (best) {
-        try {
-          actions = JSON.parse(best);
-        } catch (e) {
-          console.log(`[Monitor] Could not parse JSON from LLM response`);
-          return;
-        }
-      }
-    }
-
-    // Keep only actions with a meaningful title (LLM sometimes returns
-    // placeholder objects like {actionLabel: ""} for "no action needed")
-    actions = actions.filter((a: any) => a && typeof a.title === "string" && a.title.trim().length > 0);
-
-    if (!Array.isArray(actions) || actions.length === 0) {
-      console.log(`[Monitor] No PM action needed`);
-      return;
-    }
-
-    console.log(`[Monitor] Found ${actions.length} action(s) needing PM:`);
-    actions.forEach((a: any) => console.log(`  - ${a.title}: ${a.actionLabel}`));
-
-    await addSuggestionsBatch({
-      projectId: projectId,
-      userId: userId!,
-      suggestions: actions.map((a: any) => ({
-        type: a.type || "action_item",
-        title: a.title || "Cần PM xử lý",
-        description: a.description || "",
-        sourceSender: a.sourceSender,
-        sourceChatName: a.sourceChatName || chatName,
-        sourceMessage: a.sourceMessage,
-        actionLabel: a.actionLabel,
-      })),
-    });
-
-    console.log(`[Monitor] Saved ${actions.length} suggestion(s) to Postgres.`);
-  } catch (err) {
-    console.warn(`[Monitor] Error:`, err);
-  }
-}
-
 async function log(projectId: string | undefined, chatName: string | undefined, type: string, message: string, details?: string) {
   try {
     await addLog({
@@ -295,8 +158,11 @@ async function main() {
 
     // Fallback to old schema fields if needed
     if (groups.length === 0) {
-      if (p.customerGroupUrl) groups.push({ name: p.customerGroupUrl, type: "customer" });
-      if (p.internalGroupUrl) groups.push({ name: p.internalGroupUrl, type: "internal" });
+      // Legacy fields hold chat NAMES in most cases, but some projects
+      // stored full URLs here. URLs can't be matched in the sidebar, so
+      // skip them (they spam sync_error logs every run).
+      if (p.customerGroupUrl && !p.customerGroupUrl.startsWith("http")) groups.push({ name: p.customerGroupUrl, type: "customer" });
+      if (p.internalGroupUrl && !p.internalGroupUrl.startsWith("http")) groups.push({ name: p.internalGroupUrl, type: "internal" });
     }
 
     for (const group of groups) {
@@ -320,6 +186,10 @@ async function main() {
   let totalChats = 0;
   let totalExtracted = 0;
   let totalSaved = 0;
+
+  // Fresh messages per project, gathered across ALL groups of the project.
+  // runMonitor is called once per project AFTER all groups are synced.
+  const freshByProject = new Map<string, MonitorMessage[]>();
 
   const headlessMode = process.env.HEADLESS !== "false"; // default headless
 
@@ -350,7 +220,7 @@ async function main() {
       for (let idx = 0; idx < teamsGroups.length; idx++) {
         const task = teamsGroups[idx];
         writeProgress({ total: allGroupTasks.length, done: totalChats, currentChat: task.chatName, platform: "teams", type: "syncing", message: `Teams: ${task.chatName}` });
-        const result = await syncTeamsChat(teamsPage, teamsContext, teamsConfig, task.projectId, task.chatName);
+        const result = await syncTeamsChat(teamsPage, teamsContext, teamsConfig, task.projectId, task.chatName, freshByProject);
         totalChats++;
         totalExtracted += result.extracted;
         totalSaved += result.saved;
@@ -394,7 +264,7 @@ async function main() {
       for (let idx = 0; idx < zaloGroups.length; idx++) {
         const task = zaloGroups[idx];
         writeProgress({ total: allGroupTasks.length, done: totalChats, currentChat: task.chatName, platform: "zalo", type: "syncing", message: `Zalo: ${task.chatName}` });
-        const result = await syncZaloChat(zaloPage, zaloConfig, task.projectId, task.chatName);
+        const result = await syncZaloChat(zaloPage, zaloConfig, task.projectId, task.chatName, freshByProject);
         totalChats++;
         totalExtracted += result.extracted;
         totalSaved += result.saved;
@@ -409,6 +279,13 @@ async function main() {
     }
   }
 
+  // ─── Monitor: ONE LLM call per project (not per chat) ────
+  for (const [pid, fresh] of freshByProject) {
+    if (!fresh.length) continue;
+    console.log(`[Sync] Running monitor for project ${pid} (${fresh.length} new messages)...`);
+    await runMonitor(fresh.slice(-40), pid, fresh[fresh.length - 1].chatName || "", userId!);
+  }
+
   const totalDuration = Date.now() - syncStartTime;
   console.log(`[Sync] Total: ${totalChats} chats, ${totalExtracted} extracted, ${totalSaved} saved in ${totalDuration}ms`);
   await log(undefined, undefined, "sync_end", `Kết thúc đồng bộ: ${totalChats} nhóm chat, ${totalExtracted} tin nhắn trích xuất, ${totalSaved} tin nhắn lưu mới`, JSON.stringify({ chats: totalChats, extracted: totalExtracted, saved: totalSaved, durationMs: totalDuration }));
@@ -416,7 +293,7 @@ async function main() {
 
 // ─── Teams Chat Sync ────────────────────────────────────────
 
-async function syncTeamsChat(page: any, context: any, config: any, projectId: string, chatName: string): Promise<{ extracted: number; saved: number }> {
+async function syncTeamsChat(page: any, context: any, config: any, projectId: string, chatName: string, freshByProject: Map<string, MonitorMessage[]>): Promise<{ extracted: number; saved: number }> {
   console.log(`\n[Sync-Teams] --- Syncing chat: "${chatName}" ---`);
   await log(projectId, chatName, "sync_start", `Bắt đầu đồng bộ Teams: "${chatName}"`);
 
@@ -500,9 +377,12 @@ async function syncTeamsChat(page: any, context: any, config: any, projectId: st
     console.log(`[Sync-Teams] Saved ${savedCount} new messages to Postgres.`);
     await log(projectId, chatName, "sync_end", `Đã lưu ${savedCount} tin nhắn Teams mới từ "${chatName}"`, JSON.stringify({ extracted: finalMessages.length, saved: savedCount }));
 
-    // Monitor new messages for PM actions
+    // Collect fresh messages for the per-project monitor pass (one LLM call
+    // per project instead of one per chat).
     if (savedCount > 0) {
-      await runMonitor(cleanedMessages.slice(-20), projectId as any, chatName);
+      const fresh = freshByProject.get(projectId) || [];
+      fresh.push(...cleanedMessages.slice(-20));
+      freshByProject.set(projectId, fresh);
     }
   } else {
     await log(projectId, chatName, "sync_end", `Không có tin nhắn Teams mới từ "${chatName}"`);
@@ -513,7 +393,7 @@ async function syncTeamsChat(page: any, context: any, config: any, projectId: st
 
 // ─── Zalo Chat Sync ─────────────────────────────────────────
 
-async function syncZaloChat(page: any, config: any, projectId: string, chatName: string): Promise<{ extracted: number; saved: number }> {
+async function syncZaloChat(page: any, config: any, projectId: string, chatName: string, freshByProject: Map<string, MonitorMessage[]>): Promise<{ extracted: number; saved: number }> {
   console.log(`\n[Sync-Zalo] --- Syncing chat: "${chatName}" ---`);
   await log(projectId, chatName, "sync_start", `Bắt đầu đồng bộ Zalo: "${chatName}"`);
 
@@ -547,6 +427,7 @@ async function syncZaloChat(page: any, config: any, projectId: string, chatName:
       images: (m as any).images?.length ? (m as any).images : undefined,
       timestamp: m.timestamp,
       timestampMs: (m as any).timestampMs,
+      platformMsgId: (m as any).platformMsgId,
       isMine: (m as any).isMine,
     })));
     const saved = await saveMessages({
@@ -559,9 +440,11 @@ async function syncZaloChat(page: any, config: any, projectId: string, chatName:
     console.log(`[Sync-Zalo] Saved ${savedCount} new messages to Postgres.`);
     await log(projectId, chatName, "sync_end", `Đã lưu ${savedCount} tin nhắn Zalo mới từ "${chatName}"`, JSON.stringify({ extracted: result.totalMessages, saved: savedCount }));
 
-    // Monitor new messages for PM actions
+    // Collect fresh messages for the per-project monitor pass.
     if (savedCount > 0) {
-      await runMonitor(cleanedMessages.slice(-20), projectId as any, chatName);
+      const fresh = freshByProject.get(projectId) || [];
+      fresh.push(...cleanedMessages.slice(-20));
+      freshByProject.set(projectId, fresh);
     }
   } else {
     await log(projectId, chatName, "sync_end", `Không có tin nhắn Zalo mới từ "${chatName}"`);
