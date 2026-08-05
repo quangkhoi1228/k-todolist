@@ -1,0 +1,20 @@
+---
+description: Chạy check build tự động ở bước cuối sau khi sửa xong hết các file
+alwaysApply: true
+---
+
+# Check build ở bước cuối
+
+Sau khi **sửa xong hết** các file của một task (không còn ý định sửa tiếp), agent **bắt buộc** chạy check TypeScript một lần để bắt lỗi, rồi fix nếu có, trước khi báo hoàn thành.
+
+## Quy tắc
+
+1. **KHÔNG chạy `tsc` trong lúc đang sửa dở** — chỉ chạy khi đã sửa xong hết (bước cuối cùng trước khi tổng kết).
+2. Chạy đúng lệnh:
+   ```bash
+   node_modules/.bin/tsc --noEmit
+   ```
+   (dùng `tsc` local, không dùng `npx` để tránh phụ thuộc network).
+3. Nếu `tsc` báo lỗi: **fix hết các lỗi**, rồi chạy lại đến khi exit 0.
+4. Nếu đã sửa cả file config/schema (ví dụ `drizzle`), có thể chạy thêm `npm run build` để bắt lỗi build tổng thể — nhưng tối thiểu phải có `tsc --noEmit` exit 0.
+5. Chỉ chạy **một lần duy nhất** ở cuối — không chạy lặp sau mỗi tool call.
