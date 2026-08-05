@@ -24,12 +24,12 @@ async function main() {
       await context.storageState({ path: config.sessionDir + "/state.json" });
     }
 
-    // Expand sections
+    // Expand sections — bao gồm cả các section chứa chat cá nhân (1:1)
     await page.evaluate(() => {
       const treeitems = document.querySelectorAll('[role="treeitem"]');
       for (const item of treeitems) {
         const text = item.textContent?.trim() || "";
-        if (["Chats", "External", "Đợi chốt manday"].includes(text)) {
+        if (["Chats", "External", "Đợi chốt manday", "Favorites", "Gần đây", "Recent", "Yêu thích"].includes(text)) {
           (item as HTMLElement).click();
         }
       }
@@ -53,6 +53,8 @@ async function main() {
           text = text.split("\n")[0].trim();
           text = text.replace(/\d{1,2}:\d{2}\s*(AM|PM).*/, "");
           text = text.replace(/ \(\d+\)$/, "");
+          // Skip UI-only labels that are not actual chats
+          if (/^(Chats|Chat|External|Favorites|Gần đây|Recent|Yêu thích|Tin nhắn|Đợi chốt manday)$/i.test(text)) continue;
           if (text) found.push(text);
         }
         return found;

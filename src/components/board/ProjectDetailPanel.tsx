@@ -668,6 +668,13 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const [sendingChannelId, setSendingChannelId] = useState<string | null>(null);
   const [sendChannelError, setSendChannelError] = useState<string | null>(null);
   const [sendChannelOk, setSendChannelOk] = useState<string | null>(null);
+  // Email dialog cho gợi ý kickoff — gửi thẳng tin nhắn qua email sale
+  const [emailTarget, setEmailTarget] = useState<{
+    s: any;
+    to: string[];
+    subject: string;
+    body: string;
+  } | null>(null);
 
   // ─── Members State ────────────────────────
   const { data: projectMembers } = useMembersByProject(project._id ?? null);
@@ -948,46 +955,34 @@ ${resourceTicketsLinks}
     projectChatsRef.current = projectChats || [];
   }, [projectChats]);
 
-  const fetchChats = async () => {
+  const fetchChats = async (platform?: "teams" | "zalo") => {
     if (!userId) return;
     setFetchingChats(true);
     try {
-      const [teamsRes, zaloRes] = await Promise.all([
-        fetch("/api/agents/teams-automator", {
+      const platforms = platform ? [platform] : (["teams", "zalo"] as const);
+      await Promise.all(platforms.map(async (p) => {
+        const res = await fetch(`/api/agents/${p}-automator`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "list_chats" }),
-        }),
-        fetch("/api/agents/zalo-automator", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "list_chats" }),
-        }),
-      ]);
-      if (teamsRes.ok) {
-        const data = await teamsRes.json();
-        const chatNames: string[] = data.chats || [];
-        setAvailableTeamsChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
-        // Save teams groups
-        await gmx.syncGroups({
-          userId,
-          platform: "teams",
-          groups: chatNames.map((n: string) => ({ name: n })),
-        }).catch(console.error);
-        setLastListedAt((prev: any) => ({ ...prev, teams: Date.now() }));
-      }
-      if (zaloRes.ok) {
-        const data = await zaloRes.json();
-        const chatNames: string[] = data.chats || [];
-        setAvailableZaloChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
-        // Save zalo groups
-        await gmx.syncGroups({
-          userId,
-          platform: "zalo",
-          groups: chatNames.map((n: string) => ({ name: n })),
-        }).catch(console.error);
-        setLastListedAt((prev: any) => ({ ...prev, zalo: Date.now() }));
-      }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const chatNames: string[] = data.chats || [];
+          if (p === "teams") {
+            setAvailableTeamsChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
+          } else {
+            setAvailableZaloChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
+          }
+          // Save groups
+          await gmx.syncGroups({
+            userId,
+            platform: p,
+            groups: chatNames.map((n: string) => ({ name: n })),
+          }).catch(console.error);
+          setLastListedAt((prev) => ({ ...prev, [p]: Date.now() }));
+        }
+      }));
     } catch (e) {
       console.error(e);
     } finally {
@@ -1819,7 +1814,7 @@ ${resourceTicketsLinks}
                           <label className="text-sm font-medium text-foreground/80">Nền tảng</label>
                           <select
                             value={newGroupPlatform}
-                            onChange={(e) => setNewGroupPlatform(e.target.value as "teams" | "zalo")}
+                            onChange={(e) => { setNewGroupPlatform(e.target.value as "teams" | "zalo"); setIsDropdownOpen(true); }}
                             className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-primary/50"
                           >
                             <option value="teams">Microsoft Teams</option>
@@ -1851,8 +1846,9 @@ ${resourceTicketsLinks}
                           onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
                           onKeyDown={(e) => { if (e.key === "Enter") handleAddGroup(); }}
                         />
-                        {isDropdownOpen && (newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats).length > 0 && (
-                          <div className="absolute top-full left-0 w-full mt-1 bg-background border border-border rounded-md shadow-lg max-h-48 overflow-y-auto z-50">
+                        {isDropdownOpen && (
+                          <div className="absolute top-full left-0 w-full mt-1 bg-background border border-border rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
+                               onMouseDown={(e) => e.preventDefault() /* keep input focus while clicking list */}>
                             {(newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats)
                               .filter((c: any) => c.name.toLowerCase().includes(newGroupName.toLowerCase()))
                               .map((chat: any, i: number) => (
@@ -1865,6 +1861,27 @@ ${resourceTicketsLinks}
                                   )}
                                 </div>
                               ))}
+                            {(newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats).length === 0 && (
+                              <div className="px-3 py-3 text-xs text-muted-foreground space-y-2">
+                                <div>Chưa có danh sách nhóm {newGroupPlatform === "zalo" ? "Zalo" : "Teams"}.</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); fetchChats(newGroupPlatform); }}
+                                  disabled={fetchingChats}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                                >
+                                  {fetchingChats ? <Loader2 className="w-3 h-3 animate-spin" /> : "🔄"}
+                                  Tải danh sách nhóm
+                                </button>
+                              </div>
+                            )}
+                            {(newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats).length > 0 &&
+                              (newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats)
+                                .filter((c: { name: string }) => c.name.toLowerCase().includes(newGroupName.toLowerCase())).length === 0 && (
+                              <div className="px-3 py-3 text-xs text-muted-foreground">
+                                Không tìm thấy nhóm nào khớp &quot;{newGroupName}&quot;. Bạn có thể gõ tên chính xác và thêm trực tiếp.
+                              </div>
+                            )}
                           </div>
                         )}
                         <p className="text-xs text-muted-foreground">Bạn có thể gõ một phần tên để tìm kiếm nếu đã lấy danh sách chat.</p>
@@ -2688,6 +2705,39 @@ ${resourceTicketsLinks}
                               <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
                             )}
                           </button>
+                          {/* Gửi thẳng qua email sale (gợi ý kickoff) */}
+                          {(() => {
+                            let saleEmail: string | undefined;
+                            let emailSubject: string | undefined;
+                            let emailBody: string | undefined;
+                            try {
+                              if (s.suggestionData) {
+                                const parsed = JSON.parse(s.suggestionData);
+                                saleEmail = parsed?.saleEmail;
+                                emailSubject = parsed?.emailSubject;
+                                emailBody = parsed?.emailBody;
+                              }
+                            } catch { /* ignore malformed data */ }
+                            if (!saleEmail) return null;
+                            return (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEmailTarget({
+                                    s,
+                                    to: [saleEmail as string],
+                                    subject: emailSubject || `[Kickoff] ${s.title}`,
+                                    body: emailBody || s.description,
+                                  });
+                                }}
+                                className="text-[9px] px-2 py-1 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-500/30 hover:bg-teal-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                                title={`Gửi tin nhắn qua email: ${saleEmail}`}
+                              >
+                                <Mail className="w-2.5 h-2.5" /> Gửi Email
+                              </button>
+                            );
+                          })()}
                           {/* Nhắn tới kênh (Teams/Zalo) */}
                           <div className="relative inline-flex">
                             <button
@@ -3015,6 +3065,19 @@ ${resourceTicketsLinks}
           </div>
         ) : null}
       </div>
+
+      {/* Email dialog cho gợi ý kickoff — controlled, render bất kể tab nào */}
+      {emailTarget && (
+        <EmailComposeDialog
+          key={emailTarget.s._id}
+          projectId={project._id as any}
+          defaultTo={emailTarget.to}
+          defaultSubject={emailTarget.subject}
+          defaultBody={emailTarget.body}
+          open={true}
+          onOpenChange={(open) => { if (!open) setEmailTarget(null); }}
+        />
+      )}
     </div>
   );
 }

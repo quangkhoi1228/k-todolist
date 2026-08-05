@@ -291,6 +291,14 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
           title: s.title,
           description: s.description,
           actionLabel: s.actionLabel,
+          suggestionData:
+            s.saleEmail || s.emailSubject || s.emailBody
+              ? JSON.stringify({
+                  saleEmail: s.saleEmail,
+                  emailSubject: s.emailSubject,
+                  emailBody: s.emailBody,
+                })
+              : undefined,
         })),
       });
     } catch (err) {

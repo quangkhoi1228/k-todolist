@@ -4,11 +4,12 @@ import { useState, useMemo, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { useUnresolvedSuggestionsByUser, useSuggestionMutations, useTaskMutations, useProject } from "@/hooks/useDomain";
+import { EmailComposeDialog } from "@/components/board/EmailComposeDialog";
 import {
   Sparkles, X, CheckCircle2,
   MessageSquare, AlertTriangle, Clock, Users, ArrowUpRight,
   BrainCircuit, Target, Quote, ChevronDown, Send, Loader2,
-  ListPlus, MessagesSquare
+  ListPlus, MessagesSquare, Mail
 } from "lucide-react";
 
 interface SuggestionsQuickViewProps {
@@ -78,6 +79,21 @@ function getReasonDetails(s: any): { input?: string; reasoning?: string; expecte
   } catch { /* ignore malformed data */ }
   return {};
 }
+
+/** Lấy thông tin email gửi sale từ suggestionData (kickoff suggestion) */
+function getEmailInfo(s: any): { saleEmail?: string; emailSubject?: string; emailBody?: string } {
+  try {
+    if (s.suggestionData) {
+      const parsed = JSON.parse(s.suggestionData);
+      return {
+        saleEmail: parsed?.saleEmail,
+        emailSubject: parsed?.emailSubject,
+        emailBody: parsed?.emailBody,
+      };
+    }
+  } catch { /* ignore malformed data */ }
+  return {};
+}
 export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewProps) {
   const { userId } = useAuth();
   const router = useRouter();
@@ -92,6 +108,14 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
   const [addingTaskId, setAddingTaskId] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
   const [taskAddedId, setTaskAddedId] = useState<string | null>(null);
+
+  // Email dialog cho gợi ý kickoff — gửi thẳng tin nhắn qua email sale
+  const [emailTarget, setEmailTarget] = useState<{
+    s: any;
+    to: string[];
+    subject: string;
+    body: string;
+  } | null>(null);
 
   // Suggest channels come from the project's teamsGroups (internal + customer)
   // so each suggestion can be forwarded to the right related group chat.
@@ -440,6 +464,29 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                           <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
                         )}
                       </button>
+                      {/* Gửi thẳng qua email sale (gợi ý kickoff) */}
+                      {(() => {
+                        const emailInfo = getEmailInfo(s);
+                        if (!emailInfo.saleEmail) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEmailTarget({
+                                s,
+                                to: [emailInfo.saleEmail as string],
+                                subject: emailInfo.emailSubject || `[Kickoff] ${s.title}`,
+                                body: emailInfo.emailBody || s.description,
+                              });
+                            }}
+                            className="text-[9px] px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-500/30 hover:bg-teal-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                            title={`Gửi tin nhắn qua email: ${emailInfo.saleEmail}`}
+                          >
+                            <><Mail className="w-2.5 h-2.5" /> Gửi Email</>
+                          </button>
+                        );
+                      })()}
                       {/* Nhắn tới kênh (Teams/Zalo) */}
                       <div className="relative inline-flex">
                         <button
@@ -538,6 +585,19 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
           })
         )}
       </div>
+      {/* Email dialog — gửi tin nhắn kickoff thẳng qua email sale */}
+      {emailTarget && (
+        <EmailComposeDialog
+          key={emailTarget.s._id}
+          projectId={String((emailTarget.s as any).projectId || "") || undefined}
+          defaultTo={emailTarget.to}
+          defaultSubject={emailTarget.subject}
+          defaultBody={emailTarget.body}
+          trigger={<span className="hidden" />}
+          open={true}
+          onOpenChange={(open) => { if (!open) setEmailTarget(null); }}
+        />
+      )}
     </div>
   );
 }

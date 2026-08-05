@@ -30,23 +30,38 @@ async function main() {
       } catch { /* persistent context */ }
     }
 
-    // ─── Click "Nhóm" (Groups) tab to filter only group chats ──
+    // ─── Không lọc tab "Nhóm" — quét cả chat cá nhân (1:1) và nhóm ──
+    // Tab "Nhóm" chỉ hiển thị group chats; bỏ qua nó để bao gồm cả
+    // các cuộc hội thoại cá nhân (khách hàng, sale, đồng nghiệp) mà
+    // PM cũng cần theo dõi.
+    // (Giữ lại cảnh báo nếu tab vẫn được render, nhưng không click.)
     const tabClicked = await page.evaluate(() => {
       const allElements = document.querySelectorAll('div, span, a, button, [role="tab"]');
       for (const el of allElements) {
         const text = (el.textContent || "").trim().replace(/\u00a0/g, " ");
         if (/^Nhóm$/i.test(text) && el.children.length === 0) {
-          (el as HTMLElement).click();
+          // Không click — chỉ ghi nhận sự tồn tại của tab
           return true;
         }
       }
       return false;
     });
     if (tabClicked) {
-      console.error("[zalo-list-chats] Da click tab Nhóm.");
+      console.error("[zalo-list-chats] Phat hien tab Nhóm — nhung khong click, quet ca chat ca nhan.");
     } else {
-      console.error("[zalo-list-chats] Khong tim thay tab Nhóm, lay tat ca.");
+      console.error("[zalo-list-chats] Khong thay tab Nhóm — quet toan bo danh sach.");
     }
+    // Đảm bảo đang ở tab "Gần đây" (Recent) / "Tin nhắn" (Messages) để thấy cả 1:1
+    await page.evaluate(() => {
+      const allElements = document.querySelectorAll('div, span, a, button, [role="tab"]');
+      for (const el of allElements) {
+        const text = (el.textContent || "").trim().replace(/\u00a0/g, " ").toLowerCase();
+        if (/(^gần đây$|^tin nhắn$|^recent$|^messages$|^chat$|^hội thoại$)/i.test(text) && el.children.length === 0) {
+          (el as HTMLElement).click();
+          return;
+        }
+      }
+    });
     // Wait for filter to take effect
     await page.waitForTimeout(1_500);
 
@@ -60,23 +75,17 @@ async function main() {
     for (let i = 0; i < MAX_SCROLLS; i++) {
       // Extract names from currently visible items
       const names = await page.evaluate(() => {
-        const items = document.querySelectorAll('[class*="conv-item"], [role="listitem"]');
+        // Chỉ lấy các phần tử con có title thực sự — tránh match wrapper lẫn preview.
+        // Zalo vẽ mỗi conversation 1 item, tên nằm trong element chứa class title.
+        const titleEls = document.querySelectorAll(
+          '.conv-item-title__name.truncate.grid-item, [class*="conv-item-title__name"], [class*="conv-title"], [class*="conversation-title"], [class*="conv_item"] .title, [class*="conv-item"] [class*="name"][class*="truncate"]'
+        );
         const found: string[] = [];
-        for (const item of items) {
-          // Use exact title class if available
-          const title = item.querySelector('.conv-item-title__name.truncate.grid-item');
-          if (title) {
-            const text = (title.textContent || "").trim().replace(/\u00a0/g, " ");
-            if (text.length >= 2) found.push(text);
-            continue;
-          }
-          // Fallback: bold element (Zalo renders group names in bold)
-          const bold = item.querySelector('strong, b');
-          if (bold) {
-            const text = (bold.textContent || "").trim().replace(/\u00a0/g, " ");
-            if (text.length >= 2) found.push(text);
-            continue;
-          }
+        for (const el of titleEls) {
+          const text = (el.textContent || "").trim().replace(/\u00a0/g, " ").replace(/\s+/g, " ");
+          if (text.length < 2) continue;
+          if (/^(Tất cả|Cá nhân|Nhóm|Gần đây|Tin nhắn|All|Personal|Groups|Recent|Messages)$/i.test(text)) continue;
+          if (!found.includes(text)) found.push(text);
         }
         return found;
       });

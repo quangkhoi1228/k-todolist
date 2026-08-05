@@ -34,6 +34,12 @@ interface SuggestionTemplate {
   title: string;
   description: string;
   actionLabel?: string;
+  /** Email sale (reporter) để gửi tin nhắn kickoff trực tiếp */
+  saleEmail?: string;
+  /** Subject email gợi ý */
+  emailSubject?: string;
+  /** Body email gợi ý (plain text / HTML) */
+  emailBody?: string;
 }
 
 // ─── Match raw ISD status to state ID ────────────────────────
@@ -228,10 +234,19 @@ function buildKickoffMessage(saleName: string, gender: string, ticketId: string)
   return `Hi ${gender} ${saleName} ơi, em Khôi PM mới nhận ticket này ${ticketLink} nhờ ${gender} add giúp em vào nhóm nội bộ và KH nếu dc giúp nhé ạ`;
 }
 
+/** Escapes a plain-text body into HTML paragraphs for the email composer. */
+function textToHtml(text: string): string {
+  return text
+    .split(/\n{2,}/)
+    .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
+    .join("");
+}
+
 // ─── Generate kickoff suggestion (orchestrator) ─────────────
 
 async function generateKickoffSuggestion(
   saleName: string,
+  saleEmail: string,
   ticketId: string,
 ): Promise<SuggestionTemplate | null> {
   const ticketLink = `https://servicedesk.fci.vn/browse/${ticketId}`;
@@ -247,6 +262,9 @@ async function generateKickoffSuggestion(
     title: "Gửi tin nhắn chào Sale",
     description: message,
     actionLabel: "Sao chép tin nhắn",
+    saleEmail: saleEmail || undefined,
+    emailSubject: `[Kickoff] Dự án ${ticketId} — nhờ hỗ trợ add vào nhóm`,
+    emailBody: textToHtml(message),
   };
 }
 
@@ -263,13 +281,15 @@ export async function POST(req: NextRequest) {
     const data = isdData ? (typeof isdData === "string" ? JSON.parse(isdData) : isdData) : {};
     const rawStatus = data.status || data.ticketStatus || "";
     const saleName = data.reporter || data.requester || data.creator || "";
+    // Email của sale (reporter/requester) — dùng để gửi email kickoff trực tiếp
+    const saleEmail = data.reporterEmail || data.requesterEmail || data.creatorEmail || "";
 
     const currentStateId = matchState(rawStatus);
 
     const suggestions: SuggestionTemplate[] = [];
 
     if (currentStateId === "kickoff") {
-      const kickoffSuggestion = await generateKickoffSuggestion(saleName, ticketId);
+      const kickoffSuggestion = await generateKickoffSuggestion(saleName, saleEmail, ticketId);
       if (kickoffSuggestion) {
         suggestions.push(kickoffSuggestion);
       }
