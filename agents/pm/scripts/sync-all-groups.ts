@@ -12,12 +12,20 @@ const USER_ID = process.env.USER_ID || "demo-user";
 async function scrapeTeamsGroups(page: Page): Promise<{ name: string; url?: string }[]> {
   console.log("Scraping Teams groups...");
   
-  // Expand sections
+  // Đợi sidebar render (New Teams load chậm — tối đa 30s)
+  try {
+    await page.waitForSelector('[data-testid="list-item"], [data-tid="app-bar-wrapper"], [role="treeitem"]', { timeout: 30_000 });
+  } catch {
+    console.log("WARN: sidebar selectors not found after 30s");
+  }
+  await page.waitForTimeout(3000);
+  
+  // Expand sections — bao gồm cả các section chứa chat cá nhân (1:1)
   await page.evaluate(() => {
     const treeitems = document.querySelectorAll('[role="treeitem"]');
     for (const item of treeitems) {
       const text = item.textContent?.trim() || "";
-      if (["Chats", "External", "Đợi chốt manday"].includes(text)) {
+      if (["Chats", "External", "Đợi chốt manday", "Favorites", "Gần đây", "Recent", "Yêu thích"].includes(text)) {
         (item as HTMLElement).click();
       }
     }
@@ -45,6 +53,8 @@ async function scrapeTeamsGroups(page: Page): Promise<{ name: string; url?: stri
       text = text.split("\n")[0].trim();
       text = text.replace(/\d{1,2}:\d{2}\s*(AM|PM).*/, "");
       text = text.replace(/ \(\d+\)$/, ""); // e.g. "Chat (2)"
+      // Skip UI-only labels that are not actual chats (giống teams-list-chats)
+      if (/^(Chats|Chat|External|Favorites|Gần đây|Recent|Yêu thích|Tin nhắn|Đợi chốt manday)$/i.test(text)) continue;
       
       const aTag = item.querySelector("a");
       let url: string | undefined = aTag?.href;
@@ -185,55 +195,73 @@ async function scrapeZaloGroups(page: Page): Promise<{ name: string; url?: strin
 
 async function run() {
   console.log("Starting Group Sync...");
+  const targetPlatform = (process.env.PLATFORM || "all") as "all" | "teams" | "zalo";
 
   // --- TEAMS ---
-  try {
-    const headless = process.env.HEADLESS !== "false";
-    const { browser: tBrowser, context: teamsCtx } = await createTeamsContext({ ...DEFAULT_TEAMS_CONFIG, headless });
-    const tPage = teamsCtx.pages().length > 0 ? teamsCtx.pages()[0] : await teamsCtx.newPage();
-    
-    await tPage.goto("https://teams.microsoft.com/v2/", { waitUntil: "domcontentloaded" });
-    await waitTeamsLogin(tPage, { ...DEFAULT_TEAMS_CONFIG, headless });
-    await navigateToTeams(tPage, { ...DEFAULT_TEAMS_CONFIG, headless });
-    
-    const teamsGroups = await scrapeTeamsGroups(tPage);
-    
-    if (teamsGroups.length > 0) {
-      await syncGroups({
-        userId: USER_ID,
-        platform: "teams",
-        groups: teamsGroups,
-      });
-      console.log(`Saved ${teamsGroups.length} Teams groups to Postgres.`);
+  if (targetPlatform === "all" || targetPlatform === "teams") {
+    try {
+      const headless = process.env.HEADLESS !== "false";
+      const { browser: tBrowser, context: teamsCtx } = await createTeamsContext({ ...DEFAULT_TEAMS_CONFIG, headless });
+      // CDP mode: dùng tab Teams có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+      let tPage = teamsCtx.pages()[0];
+      if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+        const teamsPage = teamsCtx.pages().find((p) => p.url().includes("teams.microsoft.com"));
+        tPage = teamsPage || await teamsCtx.newPage();
+      }
+
+      // Teams Classic (v2/) đã bị khai tử 01/07/2025 — goto thẳng "teams.microsoft.com"
+      // để có redirect flow đúng (login check → app load). Goto thẳng v2/ → white screen.
+      await tPage.goto("https://teams.microsoft.com", { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await waitTeamsLogin(tPage, { ...DEFAULT_TEAMS_CONFIG, headless });
+      // Chờ app render (New Teams load chậm — up to ~20s)
+      await tPage.waitForTimeout(12_000);
+      
+      const teamsGroups = await scrapeTeamsGroups(tPage);
+      
+      if (teamsGroups.length > 0) {
+        await syncGroups({
+          userId: USER_ID,
+          platform: "teams",
+          groups: teamsGroups,
+        });
+        console.log(`Saved ${teamsGroups.length} Teams groups to Postgres.`);
+      }
+      
+      await tBrowser.close();
+    } catch (e) {
+      console.error("Teams sync failed:", e);
     }
-    
-    await tBrowser.close();
-  } catch (e) {
-    console.error("Teams sync failed:", e);
   }
 
   // --- ZALO ---
-  try {
-    const { browser: zBrowser, context: zaloCtx } = await createZaloStealthContext({ ...DEFAULT_ZALO_CONFIG, headless: process.env.HEADLESS !== "false" });
-    const zPage = zaloCtx.pages().length > 0 ? zaloCtx.pages()[0] : await zaloCtx.newPage();
-    
-    await zPage.goto("https://chat.zalo.me", { waitUntil: "domcontentloaded" });
-    await waitForZaloLogin(zPage, { ...DEFAULT_ZALO_CONFIG, headless: process.env.HEADLESS !== "false" });
-    
-    const zaloGroups = await scrapeZaloGroups(zPage);
-    
-    if (zaloGroups.length > 0) {
-      await syncGroups({
-        userId: USER_ID,
-        platform: "zalo",
-        groups: zaloGroups,
-      });
-      console.log(`Saved ${zaloGroups.length} Zalo groups to Postgres.`);
+  if (targetPlatform === "all" || targetPlatform === "zalo") {
+    try {
+      const { browser: zBrowser, context: zaloCtx } = await createZaloStealthContext({ ...DEFAULT_ZALO_CONFIG, headless: process.env.HEADLESS !== "false" });
+      // CDP mode: dùng tab Zalo có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+      let zPage = zaloCtx.pages()[0];
+      if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+        const zaloPg = zaloCtx.pages().find((p) => p.url().includes("zalo.me"));
+        zPage = zaloPg || await zaloCtx.newPage();
+      }
+      
+      await zPage.goto("https://chat.zalo.me", { waitUntil: "domcontentloaded" });
+      await waitForZaloLogin(zPage, { ...DEFAULT_ZALO_CONFIG, headless: process.env.HEADLESS !== "false" });
+      
+      const zaloGroups = await scrapeZaloGroups(zPage);
+      
+      if (zaloGroups.length > 0) {
+        await syncGroups({
+          userId: USER_ID,
+          platform: "zalo",
+          groups: zaloGroups,
+        });
+        console.log(`Saved ${zaloGroups.length} Zalo groups to Postgres.`);
+      }
+      
+      await zBrowser.close();
+    } catch (e) {
+      console.error("Zalo sync failed:", e);
     }
-    
-    await zBrowser.close();
-  } catch (e) {
-    console.error("Zalo sync failed:", e);
   }
 
   console.log("Group Sync complete!");

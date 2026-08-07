@@ -13,7 +13,12 @@ async function main() {
   };
 
   const { browser, context } = await createStealthContext(config);
-  const page = context.pages()[0] || await context.newPage();
+  // CDP mode: dùng tab Teams có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+  let page = context.pages()[0];
+  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+    const teamsPage = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
+    page = teamsPage || await context.newPage();
+  }
   await applyStealthPatches(page);
 
   try {
@@ -37,15 +42,16 @@ async function main() {
     await page.waitForTimeout(3_000);
 
     // Scroll sidebar and collect names at each step (Teams uses virtual list — items recycle)
+    // NOTE (CDP mode): mỗi page.evaluate qua CDP roundtrip trên Teams heavy rất chậm (~10s).
+    // Gộp extract + scroll vào 1 evaluate để giảm roundtrip.
     const MAX_ITEMS = 200;
-    const MAX_SCROLLS = 15;
+    const MAX_SCROLLS = 12;
     let allNames = new Set<string>();
     let prevCount = 0;
     let staleRounds = 0;
 
     for (let i = 0; i < MAX_SCROLLS; i++) {
-      // Extract names from currently visible items (before scrolling, so we catch current batch)
-      const names = await page.evaluate(() => {
+      const result = await page.evaluate(() => {
         const items = document.querySelectorAll('[data-testid="list-item"]');
         const found: string[] = [];
         for (const item of items) {
@@ -57,34 +63,7 @@ async function main() {
           if (/^(Chats|Chat|External|Favorites|Gần đây|Recent|Yêu thích|Tin nhắn|Đợi chốt manday)$/i.test(text)) continue;
           if (text) found.push(text);
         }
-        return found;
-      });
-
-      for (const n of names) allNames.add(n);
-
-      console.error(
-        `[teams-list-chats] Scroll ${i+1}/${MAX_SCROLLS}: ` +
-        `visible=${names.length} cumulative=${allNames.size}`
-      );
-
-      if (allNames.size >= MAX_ITEMS) {
-        console.error(`[teams-list-chats] Reached target: ${allNames.size} items`);
-        break;
-      }
-
-      if (names.length === prevCount) {
-        staleRounds++;
-        if (staleRounds >= 3) {
-          console.error(`[teams-list-chats] No new items after ${staleRounds} scrolls. Stopping.`);
-          break;
-        }
-      } else {
-        staleRounds = 0;
-      }
-      prevCount = names.length;
-
-      // Scroll all sizable scrollable containers
-      await page.evaluate(() => {
+        // Scroll all sizable scrollable containers (cùng lúc với extract)
         const allDivs = document.querySelectorAll('div');
         for (const div of allDivs) {
           const style = window.getComputedStyle(div);
@@ -96,7 +75,32 @@ async function main() {
             }
           }
         }
+        return found;
       });
+
+      for (const n of result) allNames.add(n);
+
+      console.error(
+        `[teams-list-chats] Scroll ${i+1}/${MAX_SCROLLS}: ` +
+        `visible=${result.length} cumulative=${allNames.size}`
+      );
+
+      if (allNames.size >= MAX_ITEMS) {
+        console.error(`[teams-list-chats] Reached target: ${allNames.size} items`);
+        break;
+      }
+
+      if (result.length === prevCount) {
+        staleRounds++;
+        if (staleRounds >= 3) {
+          console.error(`[teams-list-chats] No new items after ${staleRounds} scrolls. Stopping.`);
+          break;
+        }
+      } else {
+        staleRounds = 0;
+      }
+      prevCount = result.length;
+
       await page.waitForTimeout(1_500);
     }
 
@@ -113,4 +117,8 @@ async function main() {
 
 main().catch((err) => {
   console.log(JSON.stringify({ ok: false, error: String(err) }));
+}).finally(() => {
+  // CDP connection keeps the event loop alive — force-exit so the UI
+  // doesn't wait forever on this child process.
+  process.exit(0);
 });

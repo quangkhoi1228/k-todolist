@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useTasks, useProjects, useTaskMutations, useProjectMutations } from "@/hooks/useDomain";
-import { useRouter, useParams } from "next/navigation";
+import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -235,7 +235,17 @@ export default function ProjectDetailPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
   const [showDetail, setShowDetail] = useState(true);
+  const searchParams = useSearchParams();
   const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members">("info");
+
+  // Điều hướng từ suggestion "Thêm nhóm" (SuggestionsQuickView) — mở sẵn tab Chats
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    if (t === "chats" || t === "suggestions" || t === "emails" || t === "members" || t === "notes" || t === "summary" || t === "history") {
+      setDetailTab(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteMode, setDeleteMode] = useState<"soft" | "hard" | null>(null);

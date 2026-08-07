@@ -51,6 +51,11 @@ export async function syncGroups(args: {
     }
   }
 
+  // Chỉ xoá nhóm stale khi listing mới đủ lớn (>= 5) — nếu listing trả ít (bị
+  // lỗi scroll/UI, ví dụ chỉ 1-2 nhóm) thì GIỮ nguyên dữ liệu cũ thay vì xoá
+  // sạch toàn bộ nhóm đã sync trước đó.
+  const staleRemoval = uniqueGroups.length >= 5;
+
   let added = 0;
   let updated = 0;
   let removed = 0;
@@ -76,9 +81,11 @@ export async function syncGroups(args: {
     }
   }
 
-  for (const [_, stale] of existingByName) {
-    await db.delete(scrapedGroups).where(eq(scrapedGroups.id, stale.id));
-    removed++;
+  if (staleRemoval) {
+    for (const [_, stale] of existingByName) {
+      await db.delete(scrapedGroups).where(eq(scrapedGroups.id, stale.id));
+      removed++;
+    }
   }
 
   return { ok: true, added, updated, removed };

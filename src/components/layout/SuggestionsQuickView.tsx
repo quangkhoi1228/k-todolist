@@ -3,13 +3,12 @@
 import { useState, useMemo, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
-import { useUnresolvedSuggestionsByUser, useSuggestionMutations, useTaskMutations, useProject } from "@/hooks/useDomain";
-import { EmailComposeDialog } from "@/components/board/EmailComposeDialog";
+import { useUnresolvedSuggestionsByUser, useSuggestionMutations, useTaskMutations } from "@/hooks/useDomain";
 import {
   Sparkles, X, CheckCircle2,
   MessageSquare, AlertTriangle, Clock, Users, ArrowUpRight,
-  BrainCircuit, Target, Quote, ChevronDown, Send, Loader2,
-  ListPlus, MessagesSquare, Mail
+  BrainCircuit, Target, Quote, ChevronDown, Loader2,
+  ListPlus, MessagesSquare
 } from "lucide-react";
 
 interface SuggestionsQuickViewProps {
@@ -80,8 +79,8 @@ function getReasonDetails(s: any): { input?: string; reasoning?: string; expecte
   return {};
 }
 
-/** Lấy thông tin email gửi sale từ suggestionData (kickoff suggestion) */
-function getEmailInfo(s: any): { saleEmail?: string; emailSubject?: string; emailBody?: string } {
+/** Lấy thông tin email gửi sale + deep link Teams từ suggestionData (kickoff suggestion) */
+function getEmailInfo(s: any): { saleEmail?: string; emailSubject?: string; emailBody?: string; teamsDeepLink?: string } {
   try {
     if (s.suggestionData) {
       const parsed = JSON.parse(s.suggestionData);
@@ -89,10 +88,34 @@ function getEmailInfo(s: any): { saleEmail?: string; emailSubject?: string; emai
         saleEmail: parsed?.saleEmail,
         emailSubject: parsed?.emailSubject,
         emailBody: parsed?.emailBody,
+        teamsDeepLink: parsed?.teamsDeepLink,
       };
     }
   } catch { /* ignore malformed data */ }
   return {};
+}
+
+/** Build deep link Teams với nội dung prefill */
+function buildTeamsDeepLink(deepLink: string | undefined, text: string): string | undefined {
+  if (!deepLink) return undefined;
+  try {
+    const base = new URL(deepLink);
+    base.searchParams.set("message", text);
+    return base.toString();
+  } catch {
+    return deepLink;
+  }
+}
+
+/** Lấy groupAction từ suggestionData (vd: add_groups — cần thêm nhóm vào dự án) */
+function getGroupAction(s: any): string | undefined {
+  try {
+    if (s.suggestionData) {
+      const parsed = JSON.parse(s.suggestionData);
+      if (parsed?.groupAction) return parsed.groupAction;
+    }
+  } catch { /* ignore malformed data */ }
+  return undefined;
 }
 export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewProps) {
   const { userId } = useAuth();
@@ -101,58 +124,9 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
   const tm = useTaskMutations();
   const [filter, setFilter] = useState<string>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [teamsSendingId, setTeamsSendingId] = useState<string | null>(null);
-  const [teamsSendError, setTeamsSendError] = useState<string | null>(null);
-  const [teamsSent, setTeamsSent] = useState<string | null>(null);
-  const [channelMenuId, setChannelMenuId] = useState<string | null>(null);
   const [addingTaskId, setAddingTaskId] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
   const [taskAddedId, setTaskAddedId] = useState<string | null>(null);
-
-  // Email dialog cho gợi ý kickoff — gửi thẳng tin nhắn qua email sale
-  const [emailTarget, setEmailTarget] = useState<{
-    s: any;
-    to: string[];
-    subject: string;
-    body: string;
-  } | null>(null);
-
-  // Suggest channels come from the project's teamsGroups (internal + customer)
-  // so each suggestion can be forwarded to the right related group chat.
-  const [projectForChannel, setProjectForChannel] = useState<any | null>(null);
-
-  // Gửi tin nhắn tới kênh (Teams hoặc Zalo) — chọn endpoint theo platform
-  const handleSendToChannel = useCallback(async (s: any, channel: { name: string; platform?: string }) => {
-    const endpoint = channel.platform === "zalo" ? "/api/agents/zalo-send" : "/api/agents/teams-send";
-    setTeamsSendingId(s._id);
-    setTeamsSendError(null);
-    setTeamsSent(null);
-    setChannelMenuId(null);
-    const message = `[Gợi ý từ PM Agent] ${s.title}\n${s.description}`;
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "send",
-          chatName: channel.name,
-          message,
-          dryRun: false,
-        }),
-      });
-      const data = await res.json().catch(() => ({ ok: false, error: "Invalid JSON response" }));
-      if (data.ok) {
-        setTeamsSent(`${channel.name} (${channel.platform === "zalo" ? "Zalo" : "Teams"})`);
-      } else {
-        setTeamsSendError(data.error || "Không gửi được tin nhắn.");
-      }
-    } catch (err) {
-      console.error("Send to channel failed:", err);
-      setTeamsSendError("Lỗi khi gửi tin nhắn: " + (err instanceof Error ? err.message : "unknown error"));
-    } finally {
-      setTeamsSendingId(null);
-    }
-  }, []);
 
   // Thêm gợi ý vào tasklist của project
   const handleAddTask = useCallback(async (s: any) => {
@@ -180,31 +154,6 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
       setAddingTaskId(null);
     }
   }, [addingTaskId, tm, userId]);
-
-  const { data: channelProjectData } = useProject(
-    projectForChannel ? String(projectForChannel) : undefined
-  );
-
-  // Danh sách kênh nhắn cho một suggestion:
-  // 1) Kênh nguồn gốc (sourceChatName) — ưu tiên
-  // 2) Các kênh liên quan từ teamsGroups của project
-  const getChannelsForSuggestion = useCallback((s: any): Array<{ name: string; platform: string; tag: string }> => {
-    const channels: Array<{ name: string; platform: string; tag: string }> = [];
-    if (s.projectId && String(s.projectId) === String(projectForChannel) && channelProjectData?.teamsGroups) {
-      for (const g of channelProjectData.teamsGroups || []) {
-        if (!g?.name) continue;
-        channels.push({
-          name: g.name,
-          platform: (g.platform as string) || "teams",
-          tag: g.type === "internal" ? "Nội bộ" : "KH",
-        });
-      }
-    }
-    if (s.sourceChatName && !channels.some((c) => c.name === s.sourceChatName)) {
-      channels.unshift({ name: s.sourceChatName, platform: "teams" as string, tag: "Nguồn" });
-    }
-    return channels;
-  }, [projectForChannel, channelProjectData]);
 
   const { data: unresolvedSuggestionsData } = useUnresolvedSuggestionsByUser(userId);
   const unresolvedSuggestions = unresolvedSuggestionsData ?? [];
@@ -416,23 +365,23 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                       );
                     })()}
                     <div className="flex items-center gap-1.5 mt-2">
-                      {s.actionLabel === "Sao chép tin nhắn" && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigator.clipboard.writeText(s.description).then(() => {
-                              e.currentTarget.textContent = "Đã sao chép!";
-                              setTimeout(() => {
-                                e.currentTarget.textContent = s.actionLabel || "";
-                              }, 2000);
-                            });
-                          }}
-                          className="text-[9px] px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-500/20 transition-colors cursor-pointer"
-                        >
-                          {s.actionLabel}
-                        </button>
-                      )}
+                      {/* Gửi tin nhắn qua Teams — mở deep link chat 1:1 với Sale, tin nhắn điền sẵn */}
+                      {(() => {
+                        const emailInfo = getEmailInfo(s);
+                        if (!emailInfo.teamsDeepLink) return null;
+                        return (
+                          <a
+                            href={buildTeamsDeepLink(emailInfo.teamsDeepLink, s.description)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[9px] px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 hover:bg-sky-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                            title={`Mở chat Teams với Sale: ${emailInfo.saleEmail || ""} — tin nhắn được điền sẵn`}
+                          >
+                            <><MessagesSquare className="w-2.5 h-2.5" /> Gửi tin nhắn qua Teams</>
+                          </a>
+                        );
+                      })()}
                       {!s.isResolved && (
                         <button
                           type="button"
@@ -443,6 +392,22 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                           className="text-[9px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-500/20 transition-colors cursor-pointer"
                         >
                           Đã xử lý
+                        </button>
+                      )}
+                      {/* Thêm nhóm nội bộ & khách hàng — chuyển sang panel quản lý nhóm của dự án */}
+                      {getGroupAction(s) === "add_groups" && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if ((s as any).projectId) {
+                              router.push(`/projects/${(s as any).projectId}?tab=chats&addGroup=1`);
+                            }
+                          }}
+                          className="text-[9px] px-2 py-0.5 rounded-md bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-500/30 hover:bg-orange-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                          title="Chuyển tới panel quản lý nhóm của dự án để thêm nhóm nội bộ và nhóm khách hàng"
+                        >
+                          <><Users className="w-2.5 h-2.5" /> Thêm nhóm vào dự án</>
                         </button>
                       )}
                       {/* Thêm vào tasklist */}
@@ -464,97 +429,6 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                           <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
                         )}
                       </button>
-                      {/* Gửi thẳng qua email sale (gợi ý kickoff) */}
-                      {(() => {
-                        const emailInfo = getEmailInfo(s);
-                        if (!emailInfo.saleEmail) return null;
-                        return (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEmailTarget({
-                                s,
-                                to: [emailInfo.saleEmail as string],
-                                subject: emailInfo.emailSubject || `[Kickoff] ${s.title}`,
-                                body: emailInfo.emailBody || s.description,
-                              });
-                            }}
-                            className="text-[9px] px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-500/30 hover:bg-teal-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
-                            title={`Gửi tin nhắn qua email: ${emailInfo.saleEmail}`}
-                          >
-                            <><Mail className="w-2.5 h-2.5" /> Gửi Email</>
-                          </button>
-                        );
-                      })()}
-                      {/* Nhắn tới kênh (Teams/Zalo) */}
-                      <div className="relative inline-flex">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (channelMenuId === s._id) {
-                              setChannelMenuId(null);
-                            } else {
-                              setProjectForChannel((s as any).projectId || null);
-                              setChannelMenuId(s._id);
-                            }
-                          }}
-                          disabled={teamsSendingId !== null}
-                          className="text-[9px] px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-500/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                          title="Gửi tin nhắn tới kênh nội bộ Teams/Zalo liên quan"
-                        >
-                          {teamsSendingId === s._id ? (
-                            <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang gửi...</>
-                          ) : (
-                            <><MessagesSquare className="w-2.5 h-2.5" /> Nhắn kênh</>
-                          )}
-                        </button>
-                        {channelMenuId === s._id && (
-                          <div
-                            className="absolute bottom-full right-0 mb-1 w-56 rounded-xl border border-border/60 bg-background dark:bg-zinc-900 shadow-xl z-50 p-1 text-left"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <p className="px-2 py-1 text-[9px] font-semibold text-muted-foreground/60 uppercase">
-                              Chọn kênh gửi
-                            </p>
-                            {projectForChannel === String((s as any).projectId) && !channelProjectData && (
-                              <p className="px-2 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1">
-                                <Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang tải kênh...
-                              </p>
-                            )}
-                            {projectForChannel !== String((s as any).projectId) && (
-                              <p className="px-2 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1">
-                                <Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang tải kênh...
-                              </p>
-                            )}
-                            {projectForChannel === String((s as any).projectId) && channelProjectData && getChannelsForSuggestion(s).length === 0 && (
-                              <p className="px-2 py-1.5 text-[10px] text-muted-foreground/50">
-                                Không có kênh liên quan
-                              </p>
-                            )}
-                            {projectForChannel === String((s as any).projectId) && channelProjectData && getChannelsForSuggestion(s).map((ch) => (
-                              <button
-                                key={ch.name + ch.platform}
-                                type="button"
-                                onClick={() => handleSendToChannel(s, ch)}
-                                disabled={teamsSendingId !== null}
-                                className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-muted/60 transition-colors cursor-pointer text-[11px] text-foreground disabled:opacity-50"
-                              >
-                                <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-semibold ${
-                                  ch.platform === "zalo"
-                                    ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30"
-                                    : "bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30"
-                                }`}>
-                                  {ch.platform === "zalo" ? "Zalo" : "Teams"}
-                                </span>
-                                <span className="flex-1 truncate">{ch.name}</span>
-                                <span className="text-[8px] text-muted-foreground/50 shrink-0">{ch.tag}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
                       <span className="text-[8px] text-muted-foreground/40 flex items-center gap-0.5 ml-auto">
                         <button
                           type="button"
@@ -570,12 +444,10 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                         </button>
                       </span>
                     </div>
-                    {(teamsSendError || teamsSent || taskError) && (
-                      <p className={`text-[9px] mt-1.5 flex items-center gap-1 ${
-                        (teamsSendError || taskError) ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"
-                      }`}>
-                        {teamsSendError || taskError ? <AlertTriangle className="w-2.5 h-2.5" /> : <CheckCircle2 className="w-2.5 h-2.5" />}
-                        {teamsSendError || taskError || `Đã gửi tới "${teamsSent}"`}
+                    {taskError && (
+                      <p className={`text-[9px] mt-1.5 flex items-center gap-1 text-red-600 dark:text-red-400`}>
+                        <AlertTriangle className="w-2.5 h-2.5" />
+                        {taskError}
                       </p>
                     )}
                   </div>
@@ -585,19 +457,6 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
           })
         )}
       </div>
-      {/* Email dialog — gửi tin nhắn kickoff thẳng qua email sale */}
-      {emailTarget && (
-        <EmailComposeDialog
-          key={emailTarget.s._id}
-          projectId={String((emailTarget.s as any).projectId || "") || undefined}
-          defaultTo={emailTarget.to}
-          defaultSubject={emailTarget.subject}
-          defaultBody={emailTarget.body}
-          trigger={<span className="hidden" />}
-          open={true}
-          onOpenChange={(open) => { if (!open) setEmailTarget(null); }}
-        />
-      )}
     </div>
   );
 }

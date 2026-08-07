@@ -12,7 +12,7 @@ function mapLog(l: any): any {
 }
 
 // ─── Queries ───────────────────────────────────────────────
-export async function getLogs(opts: { projectId?: number | string; limit?: number }) {
+export async function getLogs(opts: { projectId?: number | string; userId?: string; limit?: number }) {
   const db = getDb();
   const limit = opts.limit ?? 100;
   let rows: any[];
@@ -23,6 +23,15 @@ export async function getLogs(opts: { projectId?: number | string; limit?: numbe
       .where(eq(syncLogs.projectId, Number(opts.projectId)))
       .orderBy(desc(syncLogs.createdAt))
       .limit(limit);
+  } else if (opts.userId) {
+    // Không có projectId nhưng có userId — chỉ trả log thuộc user đó
+    // (log gắn project: userId đã được gán khi ghi; log toàn cục không thuộc ai → không hiện)
+    rows = await db
+      .select()
+      .from(syncLogs)
+      .where(eq(syncLogs.userId, opts.userId))
+      .orderBy(desc(syncLogs.createdAt))
+      .limit(limit);
   } else {
     rows = await db.select().from(syncLogs).orderBy(desc(syncLogs.createdAt)).limit(limit);
   }
@@ -31,6 +40,7 @@ export async function getLogs(opts: { projectId?: number | string; limit?: numbe
 
 export async function getLogsPaginated(opts: {
   projectId?: number | string;
+  userId?: string;
   cursor?: number | null;
   limit?: number;
 }) {
@@ -45,6 +55,18 @@ export async function getLogsPaginated(opts: {
       .where(
         and(
           eq(syncLogs.projectId, Number(opts.projectId)),
+          opts.cursor ? lte(syncLogs.createdAt, opts.cursor) : undefined
+        )
+      )
+      .orderBy(desc(syncLogs.createdAt))
+      .limit(limit + 1);
+  } else if (opts.userId) {
+    rows = await db
+      .select()
+      .from(syncLogs)
+      .where(
+        and(
+          eq(syncLogs.userId, opts.userId),
           opts.cursor ? lte(syncLogs.createdAt, opts.cursor) : undefined
         )
       )
@@ -71,11 +93,23 @@ export async function getLogsPaginated(opts: {
   };
 }
 
-export async function getRecentLogs(opts: { type?: string; limit?: number }) {
+export async function getRecentLogs(opts: { type?: string; userId?: string; limit?: number }) {
   const db = getDb();
   const limit = opts.limit ?? 50;
   let rows: any[];
-  if (opts.type) {
+  if (opts.userId) {
+    rows = await db
+      .select()
+      .from(syncLogs)
+      .where(
+        and(
+          opts.type ? eq(syncLogs.type, opts.type) : undefined,
+          eq(syncLogs.userId, opts.userId)
+        )
+      )
+      .orderBy(desc(syncLogs.createdAt))
+      .limit(limit);
+  } else if (opts.type) {
     rows = await db
       .select()
       .from(syncLogs)
@@ -91,6 +125,7 @@ export async function getRecentLogs(opts: { type?: string; limit?: number }) {
 // ─── Mutations ─────────────────────────────────────────────
 export async function addLog(args: {
   projectId?: number | string;
+  userId?: string;
   chatName?: string;
   type: string;
   message: string;
@@ -99,6 +134,7 @@ export async function addLog(args: {
   const db = getDb();
   await db.insert(syncLogs).values({
     projectId: args.projectId ? Number(args.projectId) : null,
+    userId: args.userId ?? null,
     chatName: args.chatName ?? null,
     type: args.type,
     message: args.message,
@@ -109,6 +145,7 @@ export async function addLog(args: {
 
 export async function addLogsBatch(logs: Array<{
   projectId?: number | string;
+  userId?: string;
   chatName?: string;
   type: string;
   message: string;
@@ -119,6 +156,7 @@ export async function addLogsBatch(logs: Array<{
   for (const log of logs) {
     await db.insert(syncLogs).values({
       projectId: log.projectId ? Number(log.projectId) : null,
+      userId: log.userId ?? null,
       chatName: log.chatName ?? null,
       type: log.type,
       message: log.message,

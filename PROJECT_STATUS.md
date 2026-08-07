@@ -3,8 +3,8 @@
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-05
-- **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes`
+- **Cập nhật lần cuối:** 2026-08-07
+- **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
 
@@ -29,6 +29,7 @@
 - Backend **không còn Convex** — đã chuyển hoàn toàn sang PostgreSQL. Không viết code Convex mới.
 - Next.js bản này có **breaking changes** so với training data — đọc guide trong `node_modules/next/dist/docs/` trước khi viết code.
 - `.env.local` chứa `DATABASE_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, ISD creds.
+- **Verify UI app (K-todolist) KHÔNG cần user đăng nhập lại** — đã có sẵn session Clerk. Xem mục `### Verify UI app đã đăng nhập sẵn (Clerk)` bên dưới.
 
 ---
 
@@ -59,18 +60,30 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 2. `monitor-messages` / `analyse-suggestions` → LLM phân tích message → gợi ý lưu vào `projectSuggestions`.
 3. `generate-project-suggestions/route.ts` → match trạng thái ticket ISD → sinh gợi ý kịch bản (vd: kickoff → gợi ý "Gửi tin nhắn chào Sale").
 4. UI hiển thị gợi ý trong **SuggestionsQuickView** (panel phải) + **ProjectDetailPanel** (tab Suggestions).
-   - Người dùng có thể: Đã xử lý · Thêm task · Nhắn kênh (Teams/Zalo) · **Gửi Email** (mới, đang dang dở).
+   - Người dùng có thể: Đã xử lý · Thêm task · **Gửi tin nhắn qua Teams** (deep link chat 1:1 với Sale, nội dung prefill sẵn).
+
+### Verify UI app đã đăng nhập sẵn (Clerk) — KHÔNG bắt user đăng nhập lại
+
+- **Session Clerk app nằm trong Chrome profile thật của user** tại `~/Library/Application Support/Google/Chrome/` (thư mục gốc, chứa `Default/` — 983M). Cookies `localhost|__session` còn hạn tới 2027.
+- **SAI LẦM CẦN TRÁNH** (đã mắc 07/08): dùng `chromium.launchPersistentContext` trỏ vào **profile con `Default`** (vd `/Users/.../Google/Chrome/Default`) → Chrome tạo `Default/Default` mới → **mất session, bắt đăng nhập** dù cookie vẫn còn. Cũng **không dùng** `--user-data-dir="$HOME/.../Google/Chrome"` kèm `--remote-debugging-port` trực tiếp: Chrome báo *"DevTools remote debugging requires a non-default data directory"*.
+- **CÁCH ĐÚNG khi cần verify UI với browser thật** (07/08 đã chạy OK):
+  1. Copy profile đã login sang thư mục tạm: `rm -rf /tmp/kflow-login-profile && mkdir -p /tmp/kflow-login-profile && cp -R "$HOME/Library/Application Support/Google/Chrome/Default" /tmp/kflow-login-profile/Default && rm -f /tmp/kflow-login-profile/Default/Singleton* /tmp/kflow-login-profile/Default/Preferences /tmp/kflow-login-profile/Default/"Secure Preferences"`
+  2. Mở Chrome CDP bằng profile copy: `nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir=/tmp/kflow-login-profile --no-first-run --no-default-browser-check --no-sandbox "http://localhost:3000/projects" >/tmp/chrome-verify.log 2>&1 & disown`
+  3. Verify qua `http://127.0.0.1:9222/json/list` — page URL trỏ `/projects` (không phải `/sign-in`) là session OK. Khi verify xong `pkill -f kflow-login-profile`.
+  - Nếu dùng Playwright `launchPersistentContext` thì trỏ **thư mục gốc** `/tmp/kflow-login-profile` (KHÔNG phải `/tmp/kflow-login-profile/Default`).
+- **Lưu ý**: copy profile này KHÔNG nên dùng để chạy sync Teams/Zalo (dùng `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` riêng, xem mục CDP bên dưới).
 
 ### Ping/SSE vs polling
 - `useData` dùng SWR (polling/invalidate), không có real-time server push. Fetch chat có thể **kẹt lâu** khi browser thật (Chrome profile) bị mở popup/login — không phải app treo.
 
 ### Các khu vực code chính
-- `src/app/(dashboard)/` — board, gantt, list, notes, omni, pm-agent (chat + `[id]` + new), projects (+`[id]`), settings/roles, email.
-- `src/app/api/data/*` — repo cho UI (projects, tasks, notes, suggestions, chats, groups, members, roles, isd, logs, emails, files, preferences, agents-pm).
+- `src/app/(dashboard)/` — board, gantt, list, notes, omni, pm-agent (chat + `[id]` + new), projects (+`[id]`), settings/roles, email, **business-processes (kho quy trình)**.
+- `src/app/api/data/*` — repo cho UI (projects, tasks, notes, suggestions, chats, groups, members, roles, isd, logs, emails, files, preferences, agents-pm, **business-processes**).
 - `src/app/api/agents/*` — pipeline PM agent (parse-intent, match-project, fetch-isd, refresh-isd-statuses, sync-groups, sync-projects, sync-single-chat, monitor-messages, analyse-suggestions, generate-project-suggestions, teams/zalo-automator, teams/zalo-send, teams-messages, outlook-send, health-status, project-teams-groups).
-- `agents/pm/lib/` — automator (Teams/Zalo bằng Chrome thật), teams-monitor, outlook-automator, intent-parser, llm-client, isd-api, workflow (các bước PM), monitor.
+- `agents/pm/lib/` — automator (Teams/Zalo bằng Chrome thật), teams-monitor, outlook-automator, intent-parser, llm-client, isd-api, workflow (các bước PM), monitor (**tham khảo kho business processes khi phân tích gợi ý**).
 - `agents/pm/scripts/` — scripts chạy ngoài: sync-all-projects, sync-single-chat, sync-all-groups, teams/zalo-extractor/health/list-chats/send, teams-automator, zalo-automator, outlook-send, hourly-healthcheck. *(Các script này được route API gọi — không được xoá.)*
 - `src/lib/db/schema.ts` + `src/lib/repo/*` + `src/lib/db/index.ts` — DB layer. Push schema: `npm run db:push`.
+- Scripts seed/test reusable: `scripts/seed-business-processes.ts` (seed 8 quy trình mẫu cho Kho quy trình), `scripts/test-db.ts`, `scripts/check-pg-*`.
 
 ---
 
@@ -84,15 +97,158 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - PM Agent: session theo ticket ISD, workflow `init → teams_intro → consulting_check → kickoff → sow_draft → sow_review → in_progress → handover → completed`, prompt chat (LLM) trong PMAgentPopup / chat page.
 - Sync Teams + Zalo bằng Playwright **Chrome profile thật** (`useRealChrome: true`, `createStealthContext`); sync từng chat, sync all groups/projects; health check; sync logs.
 - ISD pipeline: fetch ticket (fetch-isd), refresh statuses, lưu `projectIsdData`; match trạng thái → suggestions.
-- Suggestion actions: mark read/resolve, **Thêm task**, **Nhắn kênh** (chọn nhóm Teams/Zalo từ teamsGroups), "Sao chép tin nhắn".
+- Suggestion actions: mark read/resolve, **Thêm task**, "Sao chép tin nhắn".
 
 **Đang làm dở (working tree — CHƯA commit, khả năng chưa hoàn thiện):**
-1. **Gửi Email cho suggestion kickoff** — `generate-project-suggestions/route.ts` thêm `saleEmail`/`emailSubject`/`emailBody`; `SuggestionsQuickView` + `ProjectDetailPanel` + PMAgentPopup + chat page thêm nút "Gửi Email" mở `EmailComposeDialog` với data mặc định (to=saleEmail, subject/body từ suggestion).
-   - *Cần kiểm tra:* field `saleEmail` có được populate đúng từ ISD reporter/requester không; email flow có chạy được end-to-end không (ProjectDetailPanel đã render `EmailComposeDialog` ở `onOpenChange`).
-2. **Zalo list-chats quét cả chat 1:1** (không còn chỉ lọc tab "Nhóm") + `teams-list-chats` thêm section "Favorites/Gần đây" và skip label ảo.
-3. **Chat page + channel dropdown** trong ProjectDetailPanel: `fetchChats(platform)` cho phép tải từng nền tảng, dropdown mới ("Tải danh sách nhóm" khi rỗng).
-4. **Đã xoá** `sync-hungdt.ts` (script dùng 1 lần).
-5. **Đã gỡ hook auto check** (05/08) — xoá `afterAgentResponse` trong `.cursor/hooks.json` (trước đây tự chạy `npx tsc --noEmit` sau mỗi lần agent trả lời, gây chậm/treo khi đang sửa dở) + xoá `.cursor/hooks/build-check.sh`. Thay bằng **rule `final-build-check.mdc`**: agent tự chạy `node_modules/.bin/tsc --noEmit` **một lần ở bước cuối** sau khi sửa xong hết, fix lỗi rồi mới báo hoàn thành.
+1. **Deep link Teams cho suggestion kickoff** — `generate-project-suggestions/route.ts` thêm `saleEmail`/`emailSubject`/`emailBody`/`teamsDeepLink`/`input`/`reasoning`/`expectedOutcome`; `SuggestionsQuickView` + `ProjectDetailPanel` + PMAgentPopup + chat page thêm:
+   - **Chỉ còn 1 nút "Gửi tin nhắn qua Teams"** trên card suggestion kickoff → mở deep link `https://teams.microsoft.com/l/chat/0/0?users=<email>&message=<nội dung>` tự điền sẵn tin nhắn vào ô soạn thảo Teams. Đã **bỏ** các nút: "Sao chép tin nhắn" (dialog chỉnh sửa/copy), "Gửi Email", "Nhắn kênh" (menu chọn Teams/Zalo + email dialog cho suggestion) — cả QuickView lẫn ProjectDetailPanel.
+   - *Đã thử @mention (prepend `@Tên sale`) nhưng Teams không resolve @ từ deep link nên đã gỡ.*
+   - *Cần kiểm tra:* field `saleEmail` có được populate đúng từ ISD reporter/requester không (quyết định nút có hiển thị hay không).
+2. **Suggestion "Thêm nhóm nội bộ & khách hàng vào dự án"** — khi project ở trạng thái **kickoff**, `generate-project-suggestions/route.ts` sinh thêm suggestion `groupAction: "add_groups"`:
+   - `SuggestionsQuickView` + `ProjectDetailPanel` hiển thị nút **"Thêm nhóm vào dự án"** (màu cam) trên card suggestion → click chuyển sang tab **Chats** + tự mở dialog **"Thêm nhóm Chat mới"** (đã verify browser: URL `/projects/<id>?tab=chats&addGroup=1`, dialog mở sẵn).
+   - Cơ chế: QuickView dùng `router.push` với query `?tab=chats&addGroup=1`; `projects/[id]/page.tsx` đọc `tab` trong `useEffect` (tránh hydration error — không đọc `searchParams` trong `useState` init); `ProjectDetailPanel` đọc `addGroup=1` → `handleTabChange("chats")` + `setIsGroupManagerOpen(true)`.
+   - **Dialog thêm nhóm đã nâng cấp: thêm nhiều nhóm cùng lúc** (05/08) — dạng multi-row, mỗi dòng chọn nền tảng (Teams/Zalo) + loại nhóm (Khách hàng/Nội bộ) + tên nhóm (có dropdown gợi ý từ danh sách chat đã tải); nút "Thêm dòng" để thêm row, "Thêm N nhóm" submit batch; cùng lúc lưu `pm.updateProject(teamsGroups)` toàn bộ + tự động `sync-single-chat` cho từng nhóm mới thêm (đã verify bằng browser thật: thêm 2 nhóm mix Teams+Zalo, dữ liệu DB đúng platform/type).
+   - **UX dialog thêm nhóm** (05/08): khi mở dialog → tự động thêm sẵn 1 dòng nhập + focus ô tên + mở sẵn dropdown gợi ý danh sách nhóm (Teams/Zalo đã tải) → user thấy ngay gợi ý, không phải tự click thêm dòng; nút "Tải danh sách nhóm (Teams + Zalo)" luôn hiển thị; khi chưa tải danh sách → dropdown hiện hint "Chưa có danh sách nhóm" + nút tải (fix lỗi trước đó: bản multi-row đầu mất phần hint/nút tải khi chưa có dữ liệu).
+   - **Fix dropdown gợi ý bị cắt/không hiện trong dialog thêm nhóm** (05/08): nguyên nhân kép — (1) dropdown `absolute` nằm trong container `.space-y-2 max-h-64 overflow-y-auto` bị clip bởi `overflow` của container (chỉ cao bằng 1 dòng nhập); (2) dù đã chuyển sang `position: fixed`, dropdown vẫn bị tính sai vị trí (render lệch ~850px sang phải, xuống dưới) vì Radix Dialog tạo containing block khiến `fixed` behave như `absolute` so với dialog content. **Giải pháp**: render dropdown qua **React Portal** (`createPortal(..., document.body)`) với vị trí đo từ `getBoundingClientRect` của input (`dropdownAnchor` state, cập nhật khi focus/typing/scroll) — dropdown thoát hẳn khỏi dialog DOM nên không bị clip cũng không bị lệch vị trí. Đã verify bằng browser thật: mở dialog tự hiện 97 nhóm, gõ "FRT" filter ra 12 kết quả hiển thị đúng ngay dưới ô nhập (elementFromPoint xác nhận visible), chọn item điền đúng tên, thêm dòng 2 + chuyển Zalo dropdown vẫn hoạt động, đóng dialog không còn dropdown rò rỉ.
+   - **Dropdown gợi ý rõ platform** (05/08): theo yêu cầu user "search chỉ thấy option Teams" — giữ nguyên cơ chế dropdown chỉ filter theo platform của row (đã xác nhận với user), nhưng thêm header dính đầu dropdown **"Nhóm Teams (97)" / "Nhóm Zalo (67)"** để user biết đang search trong kênh nào + hint khi không có kết quả: *"Đổi Nền tảng sang Zalo nếu nhóm bạn cần thuộc kênh kia..."*. Đã verify: search "thần tài" (chỉ có ở Zalo) khi row đang Teams → hiện hint đổi platform; chuyển Zalo → ra đúng kết quả.
+   - **Section "Nhóm đã sync" trong tab Chats** (05/08): hiển thị nhóm Teams/Zalo đã lưu trong DB `scrapedGroups` (đếm tổng, badge nền tảng, **hiện đầy đủ tất cả nhóm — đã bỏ giới hạn 60 nhóm/nền tảng**, trước đây slice(0,60) khiến user không thấy đủ nhóm + cá nhân 1:1 khi tổng > 120) với nút **+** click 1 lần thêm thẳng vào dự án (`quickAddGroup` — lưu `teamsGroups` + auto `sync-single-chat`), nhóm đã thêm hiện dấu ✓. Kèm caption "Nhóm đã lưu trong DB sau khi tải danh sách".
+   - **Fix sync nhóm bị URL** (05/08): dữ liệu cũ lưu **URL deep link làm tên nhóm** trong `teamsGroups`/`customerGroupUrl`/`internalGroupUrl` (vd `https://zalo.me/g/...`, `https://teams.microsoft.com/l/chat/...`) → `sync-all-projects` đem đi search sidebar → spam "Không tìm thấy chat". 3 lớp fix:
+     1. **`sync-all-projects.ts`**: skip mọi group có name là URL (`/^https?:\/\//i`) + **trim trước khi check** legacy fields (dữ liệu cũ có space đầu chuỗi nên `startsWith("http")` không nhận diện được).
+     2. **`sync-single-chat.ts`**: `extractNameFromUrl()` — nếu chatName là URL thì trích ID → sync với tên `[Teams] 19:...` / `[Zalo] okcmgz519` (đúng platform), URL không nhận diện được → báo lỗi rõ ràng và thoát sớm (không mở browser).
+     3. **`ProjectDetailPanel.tsx`**: khi dán URL vào ô tên nhóm → tự detect platform + đổi tên thành `[Zalo] okcmgz519`/`[Teams] 19:...`, hiện hint xanh "Tự nhận diện: nhóm Zalo (...)" hoặc hint vàng nếu link không nhận diện được. Đã verify browser: dán Zalo link → hint hiện + submit lưu DB đúng `{name: "[Zalo] okcmgz519", platform: "zalo"}` (trước đây lưu URL raw + platform teams).
+   - **`sync-all-groups.ts`**: đồng bộ expand sections ("Favorites/Gần đây/Recent/Yêu thích") + skip label ảo (giống `teams-list-chats`) để quét đủ chat 1:1.
+   - **Đã dọn data cũ**: xoá URL raw khỏi legacy fields project 16 (`customerGroupUrl`/`internalGroupUrl`); DB hiện sạch — scan toàn bộ projects không còn URL làm tên nhóm.
+   - **Fix mất dữ liệu scraped groups** (05/08) trong `src/lib/repo/groups.ts`: `syncGroups` trước đây **xóa toàn bộ nhóm stale** mỗi lần sync — khi listing bị lỗi (chỉ trả 1-2 nhóm, vd Zalo) thì 60+ nhóm cũ bị xóa sạch khỏi DB. Giờ chỉ xóa stale khi listing mới có **≥ 5 nhóm** (listing thành công hầu như luôn ≥ 5), listing lỗi sẽ giữ nguyên dữ liệu cũ. Đã verify: Zalo 67 + Teams 97 nhóm được giữ nguyên sau sync.
+2. **CDP mode — kết nối Chrome thật qua DevTools Protocol** (05/08, giải quyết "Teams chặn profile test"):
+   - `teams-automator.ts` + `zalo-automator.ts`: khi `USE_CDP=1` → `chromium.connectOverCDP("http://127.0.0.1:9222")` kết nối **Chrome thật do user mở tay** (đăng nhập Teams/Zalo sẵn, không bị detect bot); `fakeBrowser.close()` no-op để **không đóng Chrome của user**; **bỏ hẳn `context.route` interceptor trong CDP mode** (mỗi `route.continue()` là 1 CDP roundtrip — làm Teams chậm cực nặng, script 20s chạy thành 5 phút).
+   - Mọi script (`teams/zalo-list-chats`, `sync-all-groups`, `sync-single-chat`, `sync-all-projects`) trong CDP mode **tìm tab Teams/Zalo đã mở sẵn** (`pages().find(p => p.url().includes("teams.microsoft.com"))`) → dùng lại, không mở tab mới (tránh tích tụ tab nặng).
+   - `teams-list-chats.ts` + `zalo-list-chats.ts`: gộp extract + scroll vào **1 `page.evaluate`** (giảm CDP roundtrip, script ~10-20s thay vì 5+ phút) + **thêm `process.exit(0)`** ở cuối (CDP connection giữ event loop sống → process không bao giờ thoát, UI tưởng script treo).
+   - `navigateToTeams`: nếu page đã ở `teams.microsoft.com`/`teams.live.com` → **không navigate lại** (tránh reload SPA nặng, giữ sidebar state).
+   - **Cách mở Chrome thật với CDP** (đã verify 05/08): `open -n -a "Google Chrome" --args --user-data-dir="/Volumes/home/Project/k-todolist/.teams-session/chrome-profile" --remote-debugging-port=9222 --no-first-run --no-default-browser-check` — dùng `open -n` (detached khỏi shell, không bị kill khi terminal đóng). Profile `.teams-session/chrome-profile` vẫn giữ session Teams đăng nhập. Khi Chrome bị đóng (user tắt / restart), script CDP fail `ECONNREFUSED` → cần mở lại Chrome theo lệnh trên.
+   - **Kết quả verify (05/08):** `teams-list-chats` CDP lấy 96 chat Teams ~20s; `sync-all-groups PLATFORM=teams` lưu 52 nhóm thật vào `scrapedGroups` cho `user_3GR4jOa1wskoz2wg26s8X2D9FOZ` (các mục 1:1/"Unread"/"Unknown User" bị filter); UI dropdown "Thêm nhóm Chat mới" hiện **"Nhóm Teams (52)"** + gợi ý đầy đủ, chọn "[Internal] TCSC x FCI" → nút "Thêm 1 nhóm" active.
+   - **Zalo session hết hạn** (05/08): tab Zalo bị đẩy về `id.zalo.me/account` — **cần user scan QR** trong Chrome thật để sync Zalo tiếp (Teams đã OK).
+
+3. **Zalo list-chats quét cả chat 1:1** (không còn chỉ lọc tab "Nhóm") + `teams-list-chats` thêm section "Favorites/Gần đây" và skip label ảo.
+4. **Chat page + channel dropdown** trong ProjectDetailPanel: `fetchChats(platform)` cho phép tải từng nền tảng, dropdown mới ("Tải danh sách nhóm" khi rỗng).
+5. **Đã xoá** `sync-hungdt.ts` (script dùng 1 lần).
+6. **Đã gỡ hook auto check** (05/08) — xoá `afterAgentResponse` trong `.cursor/hooks.json` (trước đây tự chạy `npx tsc --noEmit` sau mỗi lần agent trả lời, gây chậm/treo khi đang sửa dở) + xoá `.cursor/hooks/build-check.sh`. Thay bằng **rule `final-build-check.mdc`**: agent tự chạy `node_modules/.bin/tsc --noEmit` **một lần ở bước cuối** sau khi sửa xong hết, fix lỗi rồi mới báo hoàn thành.
+7. **Fix "nhóm Teams join có nhưng không hiển thị để add vào dự án"** (06/08):
+   - **Root cause 1 — dữ liệu**: `scrapedGroups` bị phân tán theo 3 userId cũ (`user_2jJ4`/`user_3GR4`/`user_3H33`) do trước đây script chạy với USER_ID khác nhau. User đang đăng nhập app (`user_3H33...`) chỉ có **1 nhóm Teams** ("Team") trong khi 52 nhóm Teams thật nằm ở user khác → "Nhóm đã sync" không hiển thị đủ. **Đã xử lý**: chạy `USER_ID=user_3H33tqEKNl3DVKINbhrQcvckqF4 PLATFORM=teams npx tsx agents/pm/scripts/sync-all-groups.ts` với Chrome thật CDP → DB giờ có **53 Teams + 67 Zalo** cho đúng user đang đăng nhập (verify: API `/api/data/groups?action=getScrapedGroups&userId=user_3H33...&platform=teams` trả 53 nhóm).
+   - **Root cause 2 — UI nuốt lỗi**: `fetchChats` trong `ProjectDetailPanel.tsx` chỉ check `res.ok` (HTTP 200) mà không check `data.ok` — khi Chrome thật CDP chưa mở, script `teams-list-chats` fail (`connectOverCDP` ECONNREFUSED) nhưng route vẫn trả HTTP 200 `{ok:false}` → UI set danh sách rỗng, không báo gì. **Đã fix**: check `data.ok` + `chatFetchError` state hiển thị lỗi đỏ kèm mẹo "mở Chrome thật CDP (port 9222) trước khi tải".
+   - **Verify**: `teams-list-chats.ts` qua Chrome thật CDP port 9222 lấy **96 chats Teams ~12s**; route `POST /api/agents/teams-automator` body `{action:"list_chats"}` trả `{"ok":true,"chats":[...]}` đúng. `tsc --noEmit` exit 0.
+8. **Fix dữ liệu hiển thị lẫn lộn giữa các user** (06/08):
+   - **Audit toàn bộ API data routes** (`src/app/api/data/*`) — xác nhận tất cả route chính đều filter theo `userId` (projects, tasks, notes, suggestions, chats, groups, emails, roles, preferences, agents-pm) hoặc theo `projectId` (members, isd, projectChats — project là của user nên không lẫn).
+   - **Fix nguồn lẫn duy nhất: `syncLogs` không có cột `userId`** → trang Omni (`usePaginatedLogs`) và log toàn cục hiển thị log của **mọi user**. Xử lý:
+     1. Thêm cột `userId` vào schema `syncLogs` + `npm run db:push`.
+     2. Repo `syncLogs.ts`: `getLogs`/`getLogsPaginated`/`getRecentLogs` nhận thêm `userId` filter (khi có projectId → ưu tiên projectId; không projectId nhưng có userId → chỉ trả log của user đó); `addLog`/`addLogsBatch` ghi kèm `userId`.
+     3. Scripts ghi log kèm `userId`: `sync-all-projects.ts`, `sync-single-chat.ts`. (`hourly-healthcheck` chạy qua launchd không gắn user → log healthcheck giữ `userId=NULL`, tự bị loại khi lọc theo user.)
+     4. Route `logs` + hooks `usePaginatedLogs(userId, limit)` / `useRecentLogs(userId, type, limit)` + trang Omni truyền `userId` từ `useAuth`.
+     5. **Migrate dữ liệu cũ**: gán `userId` cho 1682 log theo `projectId → projects.userId` + 431 log theo regex `user_xxx` trong message (sync-all-projects). Còn lại ~2030 log (healthcheck/sync project đã xoá) giữ `NULL` — không hiện cho ai.
+   - **Verify**: API `getLogsPaginated&userId=<user>` trả đúng log của từng user (test user_3H33 vs user_3GR4 — không lẫn). `tsc --noEmit` exit 0.
+9. **Fix project 45 hiển thị "chưa add nhóm nhưng có 130 message + 26 gợi ý"** (06/08):
+   - **Root cause**: project 45 (`[ PM-FRT] DỰ ÁN FINOPS`) có `teamsGroups=[]` nhưng `internalGroupUrl="Team"` + `customerGroupUrl="fptchat"` (field **deprecated**). UI chỉ đọc `teamsGroups` → danh sách nhóm trống; nhưng script sync `sync-all-projects.ts` có fallback đọc field cũ → vẫn sync "Team" (lưu 130 messages `projectChats`) và monitor LLM sinh 26 suggestions — tất cả đúng user `user_3H33...`, **không lẫn user**.
+   - **Nguồn gốc 2 nhóm ma**: không phải user thêm — `createProjectFromTicket` (tạo project từ ticket ISD qua PM Agent chat) đọc `customfield_14730`/`customfield_14731` của ticket Jira (ISD-93943 chứa `"Team"`/`"fptchat"`) → ghi vào `internalGroupUrl`/`customerGroupUrl` → sync-all-projects fallback đọc chúng thành nhóm thật.
+   - **Đã xử lý (theo yêu cầu "xoá 2 nhóm ma")**:
+     1. **DB**: xoá `teamsGroups` (2 nhóm ma), xoá 130 `projectChats`, xoá 34 `projectSuggestions`, xoá 67 `syncLogs` của project 45 → project sạch (0 message, 0 gợi ý). Verify API `getProjects` trả `teamsGroups: []`.
+     2. **Chặn tái phát**: bỏ fallback legacy fields trong `sync-all-projects.ts` (không còn đọc `internalGroupUrl`/`customerGroupUrl` làm nhóm sync); `createProjectFromTicket` không ghi 2 field này vào project nữa (dữ liệu ISD vẫn lưu trong `projectIsdData` để hiển thị); `getActiveProjectsWithTeamsGroups` chỉ dựa trên `teamsGroups`.
+   - **Còn lại**: project 16 có field cũ nhưng rỗng (không cần xử lý). TeamsMonitorPanel (không còn import trong app) vẫn đọc 2 field cũ — không ảnh hưởng.
+10. **Animation trạng thái đồng bộ chat trên UI** (06/08):
+   - Khi sync 1 nhóm chat (nút 🔄 nhóm / thêm nhóm / thêm nhanh từ "Nhóm đã sync" / "Xóa & đồng bộ lại"), UI chi tiết project giờ hiển thị:
+     - **Spinner + badge "Đang đồng bộ..."** cạnh tên nhóm đang sync trong danh sách nhóm (nút 🔄 nhóm cũng thành spinner).
+     - **Banner "Đang đồng bộ chat \"<tên>\"..."** phía trên messages area khi sync nhóm đang được chọn.
+     - **Badge "Lỗi đồng bộ"** đỏ khi sync thất bại (tooltip hiện chi tiết lỗi).
+   - Cơ chế: state `syncingGroups` (Set tên nhóm) + `syncErrors` (map tên→lỗi); helper `syncChat()` gọi `/api/agents/sync-single-chat`, invalidate `chats:`/`suggestions:`/`logs:` sau khi xong để messages mới hiện ngay. Hỗ trợ sync **nhiều nhóm cùng lúc** (mỗi nhóm có spinner riêng).
+   - **Chưa verify browser** (Chrome CDP chưa mở) — cần user mở CDP port 9222 + có nhóm thật để xem animation.
+11. **Kho quy trình nghiệp vụ (business processes) + tích hợp vào gợi ý** (06/08):
+   - **Mục đích**: user muốn có 1 "kho quy trình" mô tả cách xử lý tình huống nghiệp vụ; phần gợi ý sẽ **tham khảo kho này + lịch sử chat** để đưa ra gợi ý.
+   - **Bảng mới `businessProcesses`** (schema + `npm run db:push`): `userId`, `name`, `category` (kickoff/sow/delivery/handover/general), `description`, `steps` (jsonb array {order,title,description,owner,duration}), `triggers` (jsonb array từ khoá kích hoạt), `outcome`, `isActive`, `createdAt`, `updatedAt`. Index theo user + user/active.
+   - **Repo** `src/lib/repo/businessProcesses.ts`: CRUD + `searchBusinessProcesses(userId, keywords, category?, limit)` — match theo tên/mô tả/triggers/steps (dùng `::text ilike` cho jsonb).
+   - **API** `src/app/api/data/business-processes/route.ts`: GET (list/search/get-one) + POST (create/update/delete) — có `requireUserId` như các route khác.
+   - **Hooks** `useDomain.ts`: `useBusinessProcesses`, `useSearchBusinessProcesses`, `useBusinessProcessMutations`.
+   - **UI** `src/app/(dashboard)/business-processes/page.tsx` + link "Kho quy trình" trong Sidebar: tạo/sửa/xoá/tạm ẩn (toggle active), editor từng bước (title/desc/owner/duration), triggers dạng 1 từ khoá 1 dòng, filter nhóm + search, expand xem chi tiết.
+   - **Tích hợp monitor**: `agents/pm/lib/monitor.ts` rút từ khoá từ tin nhắn → `searchBusinessProcesses` → đưa các quy trình khớp vào system prompt + user message (mục "QUY TRÌNH THAM KHẢO") → LLM tham khảo để sinh gợi ý cụ thể theo quy trình.
+   - **Verify**: API CRUD + search hoạt động (curl: tạo → search match "kickoff/hợp đồng" → update → get → delete, dữ liệu demo-user đã dọn). `tsc --noEmit` exit 0.
+   - **Chưa verify browser** — cần user login mở `/business-processes` xem UI; cần Chrome CDP + sync thật để thấy quy trình được LLM tham khảo trong gợi ý.
+12. **Seed data mẫu cho Kho quy trình** (06/08):
+   - Tạo `scripts/seed-business-processes.ts` (reusable — giữ lại): seed **8 quy trình mẫu** cho đúng user đang đăng nhập `user_3H33tqEKNl3DVKINbhrQcvckqF4`:
+     1. Kickoff dự án sau khi ký hợp đồng (`kickoff`, 4 bước)
+     2. Chốt SOW (Statement of Work) (`sow`, 4 bước)
+     3. Xử lý blocker / vướng mắc triển khai (`delivery`, 4 bước)
+     4. Chốt quyết định giữa các bên (`delivery`, 4 bước)
+     5. Bàn giao dự án cho vận hành (`handover`, 4 bước)
+     6. Cập nhật tiến độ định kỳ cho khách hàng (`general`, 3 bước)
+     7. Phản hồi yêu cầu thay đổi scope — change request (`general`, 4 bước)
+     8. Xử lý khách chưa phản hồi lâu ngày (`general`, 3 bước)
+   - Mỗi quy trình có `triggers` (từ khoá kích hoạt tiếng Việt, dùng cho search/match trong monitor) + `steps` (title/desc/owner/duration) + `outcome`.
+   - Script **chống chạy trùng**: nếu user đã có quy trình → bỏ qua, báo cách seed lại (xoá cũ trước).
+   - **Verify**: API trả đúng 8 quy trình cho user đăng nhập; search `kickoff,blocker,bàn giao` trả 5 quy trình khớp. `tsc --noEmit` exit 0.
+   - Cách chạy lại: `npx tsx scripts/seed-business-processes.ts` (hoặc `USER_ID=user_xxx` cho user khác).
+13. **Fix sync Teams "Không tìm thấy chat trong sidebar"** (06/08, đã verify browser thật):
+   - **Root cause 1 — double space trong tên nhóm**: Teams v2 render tên chat với **2 khoảng trắng** (`[Internal]  FRT FinOPS`), DB lưu 1 space (`[Internal] FRT FinOPS`) → `sync-single-chat.ts` tìm `text.includes(name)` **không khớp** → báo "Không tìm thấy chat trong sidebar" dù chat có ở ngay đầu danh sách. **Fix**: normalize whitespace (`replace(/\s+/g, " ")`) cả 2 phía trước khi so khớp.
+   - **Root cause 2 — thiếu fallback search**: script tự viết loop tìm list-item + scroll, không có fallback qua ô tìm kiếm Teams (cơ chế robust có trong `navigateToChatInSidebar`). **Fix**: thêm hàm `searchTeamsChat(page, chatName)` — click ô search → gõ tên → click kết quả (ưu tiên group chat `@thread.v2`, rồi row khớp) — gọi khi tìm sidebar thất bại.
+   - **Lỗi phát sinh khi fix (Teams CSP)**:
+     1. `page.addScriptTag` bị chặn (**TrustedScript**) → thay bằng inject `window.blobToBase64` trực tiếp qua `page.evaluate`.
+     2. Gán `innerHTML` bị chặn (**TrustedHTML**) tại 2 chỗ trong `extractMessages` (blockquote + div spacing) → thay bằng `textContent`.
+   - **Kết quả verify (Chrome CDP thật, 06/08 17:10)**: `sync-single-chat` nhóm `[Internal] FRT FinOPS` → `Clicked chat` → `Extracted 52 messages` → `Saved 3 new messages to Postgres`. DB project 45 giờ có **52 message Teams + 127 Zalo**. `tsc --noEmit` exit 0.
+   - **Lưu ý còn lại**: `[Monitor] LLM error: 524` (timeout OpenAI) — lỗi monitor riêng, không ảnh hưởng sync message.
+14. **Fix miss tin nhắn quote + reaction dính body khi sync Teams** (06/08, đã verify browser thật + DB):
+   - **Root cause — Teams v2 bỏ `blockquote`**: Teams v2 (2026) render tin reply bằng **"quote pill"** mới thay vì `<blockquote itemtype="schema.skype.com/Reply">` như cũ. DOM thật:
+     - Container `div.fui-Flex[aria-label^="Begin quote"]` + `div[data-tid="quoted-reply-card"]` bên trong, với:
+       - Sender: `span` ngay trước `[data-tid="quoted-reply-timestamp"]`
+       - Content: `[data-tid="quoted-reply-preview-content"]`
+       - Fallback: parse `aria-label="Begin quote, Sender, date, content, End quote"`
+     - **Hệ quả khi extractor cũ không nhận diện**: nội dung quote dính thẳng vào body dạng `Sender8/6/2026 9:40 AMnội dung quote` (không separator), tin reply mất phần quote, `> Sender: quoted` không xuất hiện trong DB.
+   - **Fix `teams-automator.ts`** (cả `extractMessages` lẫn `extractTextOnly`):
+     1. Nhận diện quote pill mới `[data-tid="quoted-reply-card"]` → lấy sender (span trước timestamp) + content (`quoted-reply-preview-content`), fallback parse `aria-label` (chia `Begin quote` theo dấu phẩy, content có thể chứa dấu phẩy), giữ `blockquote` cũ làm fallback.
+     2. Khi xoá quote khỏi body clone: xoá cả `[data-tid="quoted-reply-card"]` + blockquote.
+     3. Strip chuỗi dư `Begin quote ... End quote` (regex `[\s\S]*?`) + marker ` image ` Teams v2 chèn giữa attachments.
+     4. **Strip reaction summary** `.fui-ChatMessage__reactions` / `.fui-ChatMyMessage__reactions` (container `1 Heart reaction.`/`1 Like reaction.` trước đây dính vào cuối body) khỏi body clone.
+   - **Verify (Chrome thật, SCROLL_COUNT=30)**: sync `[Internal] FRT FinOPS` → **101 messages, 13 có ảnh, 21 tin quote tách đúng** dạng `> Sender: quoted\nreply`, body sạch không còn `1 Heart reaction.`/`Begin quote`/`image`. **DB project 45 sau dọn duplicate cũ: 93 tin Teams (34 quote đúng format `> Sender: quoted`, 13 tin có ảnh — 8 ảnh data URL hiển thị được, 5 ảnh HTTP qua proxy-image), 0 content dính reaction/date dư**. Tin mới nhất 10:42 sáng 06/08. `tsc --noEmit` exit 0.
+   - **Đã dọn dữ liệu cũ**: xoá ~50 row duplicate cũ (cùng sender+timestampMs, bản cũ dính `1 Heart reaction.` / `Sender8/6/2026...`), giữ bản mới sạch.
+   - **Lưu ý**: lần sync kế tiếp upsert theo `messageId` mới (content sạch) sẽ tự ghi đè row cũ nếu còn sót; script verify reusable giữ tại `scripts/verify-teams-quote-extract.ts` (`SCROLL_COUNT=5 npx tsx scripts/verify-teams-quote-extract.ts`).
+15. **Task Template + Import từ file SOW** (06/08, đã verify browser thật + DB):
+   - **Mục đích**: từ file SOW (Statement of Work) của dự án (vd Domesco Migration), render ra task list theo template — template lưu trong DB tái sử dụng cho nhiều dự án; tự nhận diện loại template (Migration / Security/NGFW / WAF) theo nội dung file hoặc mô tả dự án.
+   - **Bảng mới `taskTemplates`** (schema + `npm run db:push`): `userId`, `name`, `category` (migration/security/waf/general), `description`, `items` (jsonb array {phase,title,details,pic,support,manday,isGroup}), `triggers` (jsonb từ khoá auto-detect), `isActive`, `createdAt`, `updatedAt`.
+   - **Repo** `src/lib/repo/taskTemplates.ts`: CRUD + `detectTemplateForProject(userId, text)` — match triggers theo từ khoá trong mô tả dự án (score theo độ dài từ khoá).
+   - **Parser** `src/lib/sow-parser.ts`: đọc `.xlsx` qua `xlsx` package (mới cài `xlsx@0.18.5`), tìm sheet chứa cột "Task" (ưu tiên tên chứa "sow" trừ "High Level"), parse theo số thứ tự dạng `1`/`1.1`/`2.1.2` → phase = task cha trực tiếp, đánh dấu `isGroup` cho item có con, lấy cột Details/PIC/Support/Team/Manday; auto-detect template theo từ khoá trong nội dung file.
+   - **API**:
+     - `src/app/api/data/task-templates/route.ts`: GET (list/get/detectTemplateForProject) + POST (create/update/delete).
+     - `src/app/api/import-sow/route.ts`: POST multipart — `previewSow` (parse file, trả template detect + items), `importSow` (tìm/tạo template theo category + tạo tasks bỏ group items), `createFromTemplate` (tạo task từ template có sẵn không cần file).
+   - **UI** `src/components/board/SowImportDialog.tsx` + nút "Import SOW" trong tab Thông tin dự án (`ProjectDetailPanel.tsx`):
+     - Upload file `.xlsx` → parse → **Preview** bảng task (Phase/Task/Chi tiết/PIC) + badge template detect (Migration Cloud/migration...).
+     - Hoặc chọn template có sẵn (có badge "(phù hợp)" cho template detect từ mô tả dự án — tự gọi `detectTemplateForProject` khi mở dialog).
+     - Bấm "Tạo N task" → tạo task (title, notes=details, pic, support, estimatedTime=manday, project) + invalidate `tasks`/`task-templates` → kanban cập nhật ngay.
+   - **Seed** `scripts/seed-task-templates.ts` (reusable — giữ lại): tạo template Migration Cloud (35 items, parse từ file SOW Domesco thật) + Security/Firewall (6) + WAF (6); chạy `SEED_USER_ID=user_xxx npx tsx scripts/seed-task-templates.ts`.
+   - **Verify browser thật (project 45, user đang login)**: nút Import SOW hiển thị; dialog mở đúng (3 template); auto-detect project → **Security / Firewall (phù hợp)**; upload file Domesco thật → **Preview: Migration Cloud, 27 tasks** bảng đầy đủ; tạo 27 task + reload trang → task hiển thị trên kanban. **DB**: 27 tasks đúng (title/notes=details/pic) rồi đã dọn sạch test data (project 45 = 0 tasks). `tsc --noEmit` exit 0.
+16. **Sync chat incremental sau sync-all** (07/08, đã verify browser thật + DB):
+   - **Mục đích**: trước đây mỗi lần sync (sync-all/sync-single) đều scroll từ tin mới nhất 30-80 lần (Teams) / 40-200 (Zalo) dù phần lớn tin đã lưu trong DB — tốn thời gian + resource. Giờ: **lần đầu sync full, các lần sau chỉ scroll tới khi gặp tin đã lưu rồi dừng sớm (incremental)**.
+   - **Mốc dừng (watermark)**: `getLatestTimestampMs(projectId, chatName, platform)` — query `MAX(timestampMs)` từ bảng `projectChats` cho nhóm chat đó; nhóm chưa từng sync (không có mốc) → tự chạy full.
+   - **Cơ chế early-stop**:
+     - Teams (`teams-automator.ts` `incrementalScrollAndExtract`): sau mỗi batch scroll kiểm tra collection — thấy message có `timestampMs <= incrementalSince` → **break ngay, bỏ luôn Step 3 (extract top)**.
+     - Zalo (`zalo-automator.ts` `scrollZaloChatContainer`): sau mỗi scroll đọc `max(bb_msg_id_<epochMs>)` của bubble trong DOM; max ≤ mốc → dừng sớm + **skip bước nudge ảnh cuối**.
+   - **Quyết định chế độ**: `sync-single-chat.ts` tự gọi `getLatestTimestampMs` — có mốc → incremental (scrollCount Teams 10 / Zalo 20), không có → full (30/40); `SCROLL_COUNT=0` vẫn là "chỉ tin mới nhất"; `FULL_SYNC=true`/`SYNC_MODE=full` ép full (Teams 80 / Zalo 200).
+   - **`sync-all-projects.ts`**: đọc `getUserPreferences(userId).chatSyncMode` (mặc định `incremental`) → với từng nhóm gọi `getLatestTimestampMs` truyền `incrementalSince`; user đặt "full" hoặc `FULL_SYNC=true` → quét đầy đủ.
+   - **Cài đặt user**: cột mới `chatSyncMode` (default `incremental`) trong bảng `userPreferences` (schema + `npm run db:push`); UI **trang Omni** thêm dropdown "Chế độ sync" (Incremental nhanh / Full đầy đủ) cạnh dropdown hẹn giờ.
+   - **UI chi tiết project**: tab Chats — nút 🔄 (incremental, mặc định) + nút mới **"Đồng bộ toàn bộ"** (full) cạnh từng nhóm; route `sync-single-chat` nhận `syncMode` body → env `SYNC_MODE`.
+   - **Verify browser thật (Chrome CDP, project 45 nhóm `[Internal] FRT FinOPS`, 07/08)**: log `Incremental sync ... (watermark=1785987700000)` → `EARLY-STOP at batch 1` + `Step 3: Skipped` — chỉ ~10 scroll thay vì 30, lưu được **2 tin mới** (upsert dedup theo messageId, không duplicate). `SYNC_MODE=full` chạy lại → đủ Step 2 + Step 3 (extract top) như cũ. `getLatestTimestampMs` verify đúng với 10 nhóm thật (maxTs khớp). `tsc --noEmit` exit 0.
+   - **Script verify reusable giữ lại**: `scripts/check-sync-watermark.ts` (liệt kê watermark/count theo nhóm — `npx tsx scripts/check-sync-watermark.ts`).
+17. **Auto-sync thường xuyên (1/5 phút) + cơ chế queue chống đụng** (07/08):
+   - **Dropdown hẹn giờ trong trang Omni** thêm option **"Mỗi 1 phút"** và **"Mỗi 5 phút"** (trước đây tối thiểu 15 phút) — user chọn 1/5/15/30/60/120 phút hoặc Tắt.
+   - **`GlobalSyncManager` (layout dashboard)** nâng cấp cơ chế sync tự động:
+     - Check định kỳ 10s/lần; chỉ sync khi đã đủ `autoSyncInterval` kể từ `lastSyncTime`.
+     - **Queue**: nếu sync đang chạy (check `action:"status"` của `/api/agents/sync-projects`) thì **đợi tới khi xong rồi chạy tiếp** — không gửi request chồng lấn, không bị lỗi "already running" từ lock file `.teams-sync-running`.
+     - Nếu `start` bị từ chối (đã có sync khác / lỗi server) → vẫn cập nhật `lastSyncTime` để không retry spam 10s/lần, lần sau đúng interval mới chạy lại.
+   - **Lưu ý an toàn**: bản thân `sync-all-projects` giờ là **incremental** (chỉ tin mới, dừng sớm theo watermark) nên sync 5 phút không tốn resource như trước; nếu user bật chế độ "Full" thì 5 phút sẽ lâu — nên dùng "Incremental (nhanh)".
+   - `tsc --noEmit` exit 0. Chưa verify browser (cần user login bật hẹn giờ) — xem Next actions #0.
+18. **Gửi tin nhắn vào Nhóm Teams từ UI** (07/08, đã verify browser thật + dry-run thật):
+   - **Mục đích**: trước đây composer chat chỉ gửi được **Zalo** (`/api/agents/zalo-send`). Giờ gửi được **cả Teams** qua `/api/agents/teams-send` (API + script `teams-send.ts` + `sendTeamsMessage` trong `teams-automator.ts` đã có sẵn từ trước, chỉ thiếu UI hook).
+   - **UI** `src/components/board/ProjectDetailPanel.tsx`: composer đổi từ `handleSendZalo` (chỉ Zalo) → **`handleSendChat(chatName, platform, message)`** — platform `zalo` → `/api/agents/zalo-send`, còn lại → `/api/agents/teams-send`. Textarea + nút gửi (Enter hoặc click) hiện cho **cả nhóm Zalo lẫn Teams**; placeholder theo platform: *"Soạn tin nhắn, nhấn Enter để gửi tới Teams..."*.
+   - **Fix bug search nhầm người khi gửi Teams** (`teams-automator.ts` `navigateToChatInSidebar`): khi tìm chat 1:1 "An Mai Thuan", logic cũ ưu tiên **Group trước Person** → click nhầm group "Internal - PM CDC..." (member list chứa chữ khớp first-word "Anh") → verify chặn đúng (không gửi nhầm). **Fix**: đảo ưu tiên **Person trước Group** + yêu cầu mọi từ trong tên target xuất hiện trong candidate (tránh khớp substring 1 từ).
+   - **Verify (07/08)**:
+     - **Dry-run thật với Chrome thật** (`teams-send.ts --chat "An Mai Thuan" --dry-run`): search click đúng **"Person: An Mai Thuan (ANMT3) FCI - CLOUD"** → `Verify OK: chat="An Mai Thuan"` → nhập 42 ký tự rồi **xoá, KHÔNG gửi** (dry-run an toàn).
+     - **UI browser thật** (CDP profile copy đã login Clerk — xem mục "Verify UI app đã đăng nhập sẵn"): project 45 → tab Chats → chọn "An Mai Thuan | Teams" → composer hiển thị placeholder *"...gửi tới Teams..."*, nút title **"Gửi tin nhắn Teams"** disabled khi trống → gõ chữ → nút active. `tsc --noEmit` exit 0.
+   - **Script verify reusable**: `scripts/verify-teams-send-ui.ts` (cần Chrome CDP port 9222 + profile copy đã login, xem rule `verify-app-login.mdc`).
+   - **Lưu ý**: tên chat đúng trong DB là **"An Mai Thuan"** (teams, KH) — project 45; alias hiển thị là ANMT3.
 
 **Còn biết tới (chưa confirm làm / tồn đọng):**
 - `src/proxy.ts` + `proxy-image` — proxy image (cần xác nhận role hiện tại).
@@ -103,11 +259,19 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 
 ## 4. Next actions trước mắt
 
-1. **Hoàn thiện & test luồng "Gửi Email" suggestion kickoff** — chạy `npm run build`/lint để bắt lỗi type; verify `EmailComposeDialog` mở đúng khi bấm "Gửi Email" (ProjectDetailPanel, SuggestionsQuickView).
-2. **Commit working tree hiện tại** (sau khi test) — gồm thay đổi: PMAgentPopup, teams/zalo-list-chats, chat page, generate-project-suggestions, ProjectDetailPanel, SuggestionsQuickView (thêm "Gửi Email" + dropdown tải nhóm).
-3. **Verify sync thật** — chạy `HEADLESS=false npx tsx agents/pm/scripts/sync-all-projects.ts` / `sync-single-chat.ts` (Chrome thật), kiểm tra list-chats mới (chat 1:1 Zalo, section Favorites) có bị nhiễu label ảo không.
-4. **Xác nhận luồng suggestions end-to-end** — từ message → `analyse-suggestions` → hiển thị + action thành công (add task / nhắn kênh / gửi email).
-5. **Sau khi ổn định** — đánh giá: tự động hóa theo dõi ISD status (scheduled), gắn `team` field check, tối ưu luồng kickoff (đã có `docs/fmon-project-action-logic.md` làm mẫu).
+0. **Verify auto-sync 5 phút + queue** (07/08, cần user login + Chrome CDP) — bật hẹn giờ 5 phút trong `/omni`: check 10s/lần, đủ interval mới sync; nếu sync đang chạy thì đợi xong rồi chạy tiếp (không xếp chồng, không spam lỗi "already running").
+0a. **Gửi tin thật tới "An Mai Thuan" (ANMT3)** (07/08, optional) — dry-run + UI verify đã OK; khi user muốn gửi thật: bấm gửi trong composer Teams (tab Chats project 45) → Chrome thật mở + verify header rồi mới Enter gửi; kiểm tra tin hiển thị sau khi sync.
+
+1. **Verify reload UI project 45** (06/08, cần user login) — mở `http://localhost:3000/projects/45` → tab Chats: **93 tin Teams** hiển thị đủ, **34 tin có block quote `> Sender: quoted`**, **13 tin có ảnh** (8 ảnh base64 hiển thị trực tiếp, 5 ảnh sharepoint qua proxy-image có thể 401 nếu cookie hết hạn), tin mới nhất 10:42 06/08. Không còn tin nào dính `1 Heart reaction.`/`Sender8/6/2026...`.
+2. **Verify animation sync chat** (06/08, cần Chrome CDP port 9222 + user login) — thêm 1 nhóm thật vào project → UI phải hiện spinner "Đang đồng bộ..." trên nhóm + banner ở messages area, sau sync messages mới hiện ngay (invalidate chats/suggestions/logs).
+3. **Verify deep link Teams suggestion kickoff end-to-end** — khi 1 ticket ISD chuyển kickoff, gợi ý "Gửi tin nhắn chào Sale" hiển thị nút **"Gửi tin nhắn qua Teams"** → mở chat Teams với Sale (`users=<email>`) và prefill `message`. Xác nhận `saleEmail` populate đúng từ ISD reporter/requester (quyết định nút có hiện hay không).
+4. **Verify trang Kho quy trình** (06/08, cần user login) — mở `/business-processes`: tạo 1 quy trình (vd Kickoff: gửi mail → họp kickoff → chốt timeline), search/filter, toggle tạm ẩn, edit, xoá. Kiểm tra dữ liệu chỉ hiển thị cho user đang đăng nhập.
+5. **Verify quy trình được tham khảo trong gợi ý** (06/08, cần Chrome CDP + sync thật) — sau khi sync 1 nhóm có tin nhắn liên quan quy trình đã tạo (vd "kickoff"), log `[Monitor] Found N relevant business process(es)` phải hiện trong terminal; suggestion LLM sinh ra có nội dung bám theo quy trình.
+6. **Commit working tree hiện tại** (sau khi test) — gồm thay đổi: PMAgentPopup, teams/zalo-list-chats, chat page, generate-project-suggestions, ProjectDetailPanel, SuggestionsQuickView (gỡ "Sao chép tin nhắn"/"Gửi Email"/"Nhắn kênh", chỉ còn nút deep link Teams + suggestion add groups), sync-all-projects/sync-single-chat/sync-all-groups (chống URL làm tên nhóm), teams/zalo-automator (CDP mode), fix nuốt lỗi `fetchChats`, **business processes (schema/repo/API/hooks/UI/monitor)**, **teams-automator (quote pill mới + strip reaction)**.
+7. **Verify sync incremental cho Zalo** (07/08, cần Chrome CDP + session Zalo QR) — nhóm Zalo đã có watermark: log dừng sớm `< [Incremental] EARLY-STOP`, thời gian giảm; `sync-all-projects` với cài `incremental` dừng sớm từng nhóm. (Teams đã verify OK.)
+8. **Xác nhận luồng suggestions end-to-end** — từ message → `analyse-suggestions` → hiển thị + action thành công (add task / nhắn kênh / gửi email).
+9. **Sau khi ổn định** — đánh giá: tự động hóa theo dõi ISD status (scheduled), gắn `team` field check, tối ưu luồng kickoff (đã có `docs/fmon-project-action-logic.md` làm mẫu).
+10. **Verify Import SOW trên project thật có dữ liệu** — đã verify trên project 45 (user đang login): dialog + preview + tạo task + reload đều OK (test data đã dọn). Có thể test thêm với file SOW khác (WAF/NGFW sheet) để xác nhận auto-detect "security"/"waf" qua đường upload file.
 
 ### Lưu ý về run check
 - **Agent tự chạy check ở bước cuối** (sau khi sửa xong hết) theo rule `.cursor/rules/final-build-check.mdc`: `node_modules/.bin/tsc --noEmit`, fix lỗi đến khi exit 0, trước khi báo hoàn thành.

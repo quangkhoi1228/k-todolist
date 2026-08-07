@@ -47,6 +47,9 @@ export interface ZaloAutomatorConfig {
   keepOpen?: boolean;
   /** Use real Chrome (with persistent profile) instead of bundled Chromium */
   useRealChrome?: boolean;
+  /** Incremental sync watermark: stop scrolling once messages at/below this
+   *  timestampMs are seen (they are already in the DB). Omit for full sync. */
+  incrementalSince?: number;
 }
 
 export const DEFAULT_ZALO_CONFIG: ZaloAutomatorConfig = {
@@ -173,6 +176,28 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
 }> {
   ensureDir(config.sessionDir);
   ensureDir(config.screenshotDir);
+
+  // ── CDP mode: connect to a REAL Chrome already running (opened manually) ──
+  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+    const port = Number(process.env.CDP_PORT || 9222);
+    const cdpUrl = `http://127.0.0.1:${port}`;
+    log(`CDP mode: connecting to real Chrome at ${cdpUrl}`);
+    const browser = await chromium.connectOverCDP(cdpUrl);
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("CDP browser has no default context.");
+
+    context.on("page", (newPage) => {
+      newPage.on("dialog", async (dialog) => {
+        log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
+        await dialog.dismiss().catch(() => {});
+      });
+    });
+
+    // Do NOT close the user's Chrome when the automation finishes.
+    const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
+
+    return { browser: fakeBrowser, context };
+  }
 
   if (config.useRealChrome) {
     const profileDir = path.join(config.sessionDir, "chrome-profile");
@@ -566,6 +591,26 @@ export async function scrollZaloChatContainer(page: Page, config: ZaloAutomatorC
     `);
 
     await page.waitForTimeout(config.scrollWaitMs + randomInt(500, 1500));
+
+    // Incremental early-stop: if the newest bubble still visible in the DOM is
+    // at/below the DB watermark, everything older is already stored — stop.
+    if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+      const maxVisibleTs = await page.evaluate(() => {
+        let maxTs = -1;
+        document.querySelectorAll<HTMLElement>('[id^="bb_msg_id_"]').forEach((el) => {
+          const m = (el.id || "").match(/bb_msg_id_(\d+)/);
+          if (m) {
+            const ts = parseInt(m[1], 10);
+            if (ts > maxTs) maxTs = ts;
+          }
+        });
+        return maxTs;
+      });
+      if (maxVisibleTs > 0 && maxVisibleTs <= config.incrementalSince) {
+        log(`[Incremental] EARLY-STOP at scroll ${i + 1}: max visible timestamp ${maxVisibleTs} <= watermark ${config.incrementalSince}`);
+        break;
+      }
+    }
     if (i % 10 === 9) log(`  Scroll ${i + 1}/${config.scrollCount}`);
   }
 
@@ -582,21 +627,27 @@ export async function scrollZaloChatContainer(page: Page, config: ZaloAutomatorC
   // Kick lazy loading on all images with a small nudge (down then back up).
   // We do NOT scroll all the way to the bottom — that would unload the old
   // messages from ReactVirtualized's DOM and we'd lose them for extraction.
-  await page.evaluate(`
-    const __getZaloScrollContainer = ${getScrollContainer.toString()};
-    (function() {
-      const container = __getZaloScrollContainer();
-      const pos = container.scrollTop;
-      container.scrollBy({ top: 120 });
-      container.scrollBy({ top: -120 });
-      container.scrollTop = pos;
-      document.querySelectorAll('img').forEach(img => {
-        img.scrollIntoView({ block: "center", inline: "nearest" });
-      });
-      container.scrollTop = pos;
-    })();
-  `);
-  await page.waitForTimeout(4_000);
+  // (In incremental mode we skip this: the oldest already-synced messages
+  // were just reached, and bottom-nudging may recycle them anyway.)
+  if (config.incrementalSince === undefined || config.incrementalSince <= 0) {
+    await page.evaluate(`
+      const __getZaloScrollContainer = ${getScrollContainer.toString()};
+      (function() {
+        const container = __getZaloScrollContainer();
+        const pos = container.scrollTop;
+        container.scrollBy({ top: 120 });
+        container.scrollBy({ top: -120 });
+        container.scrollTop = pos;
+        document.querySelectorAll('img').forEach(img => {
+          img.scrollIntoView({ block: "center", inline: "nearest" });
+        });
+        container.scrollTop = pos;
+      })();
+    `);
+    await page.waitForTimeout(4_000);
+  } else {
+    log(`[Incremental] Skipped bottom-nudge (incremental mode)`);
+  }
 }
 
 /**

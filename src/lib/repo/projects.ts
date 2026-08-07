@@ -85,9 +85,9 @@ export async function getActiveProjectsWithTeamsGroups(userId: string) {
     .filter((p) => {
       if (p.archived) return false;
       if (p.deletedAt) return false;
-      if (p.teamsGroups && Array.isArray(p.teamsGroups) && p.teamsGroups.length > 0) return true;
-      if (!p.internalGroupUrl && !p.customerGroupUrl) return false;
-      return true;
+      // Chỉ dựa trên teamsGroups (field chính thức). internalGroupUrl/customerGroupUrl
+      // deprecated — không dùng làm tiêu chí nữa để tránh nhóm ma từ ticket ISD.
+      return p.teamsGroups && Array.isArray(p.teamsGroups) && p.teamsGroups.length > 0;
     })
     .map(mapProject);
 }

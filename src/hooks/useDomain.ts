@@ -377,20 +377,23 @@ export function useGroupMutations() {
 }
 
 // ─── Sync logs ─────────────────────────────────────────────
-export function useLogs(projectId?: string | null, limit?: number, opts?: { refreshInterval?: number }) {
-  const key = `logs:${projectId ?? "all"}:${limit ?? ""}`;
+export function useLogs(projectId?: string | null, limit?: number, opts?: { refreshInterval?: number, userId?: string | null }) {
+  const resolvedProjectId = projectId ?? undefined;
+  // Khi không có projectId → bắt buộc truyền userId để không lẫn log mọi user
+  const resolvedUserId = opts?.userId ?? undefined;
+  const key = `logs:${resolvedProjectId ?? resolvedUserId ?? "all"}:${limit ?? ""}`;
   return useData<any[]>(
     key,
-    () => apiGet("/logs", { action: "getLogs", projectId, limit }),
+    () => apiGet("/logs", { action: "getLogs", projectId: resolvedProjectId, userId: resolvedUserId, limit }),
     { refreshInterval: opts?.refreshInterval ?? 0 }
   );
 }
 
-export function useRecentLogs(type?: string, limit?: number) {
-  const key = `logs:recent:${type ?? ""}:${limit ?? ""}`;
+export function useRecentLogs(userId?: string | null, type?: string, limit?: number) {
+  const key = userId ? `logs:recent:${userId}:${type ?? ""}:${limit ?? ""}` : null;
   return useData<any[]>(
     key,
-    () => apiGet("/logs", { action: "getRecentLogs", type, limit }),
+    key ? () => apiGet("/logs", { action: "getRecentLogs", type, userId, limit }) : null,
     { refreshInterval: 10000 }
   );
 }
@@ -417,7 +420,7 @@ export function useLogMutations() {
 }
 
 // ─── Paginated logs (thay usePaginatedQuery) ───────────────
-export function usePaginatedLogs(limit = 20) {
+export function usePaginatedLogs(userId?: string | null, limit = 20) {
   const [logs, setLogs] = useState<any[] | undefined>(undefined);
   const [status, setStatus] = useState<"LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted">("LoadingFirstPage");
   const cursorRef = useRef<number | null>(null);
@@ -425,7 +428,7 @@ export function usePaginatedLogs(limit = 20) {
   const fetchFirst = useCallback(async () => {
     setStatus("LoadingFirstPage");
     try {
-      const res = await apiGet("/logs", { action: "getLogsPaginated", cursor: null, limit });
+      const res = await apiGet("/logs", { action: "getLogsPaginated", cursor: null, userId, limit });
       setLogs(res.results ?? []);
       cursorRef.current = res.nextCursor;
       setStatus(res.hasMore ? "CanLoadMore" : "Exhausted");
@@ -433,13 +436,13 @@ export function usePaginatedLogs(limit = 20) {
       console.error("[logs] failed to load first page:", err);
       setStatus("Exhausted");
     }
-  }, [limit]);
+  }, [limit, userId]);
 
   const loadMore = useCallback(async (count = 20) => {
     if (status === "LoadingMore") return;
     setStatus("LoadingMore");
     try {
-      const res = await apiGet("/logs", { action: "getLogsPaginated", cursor: cursorRef.current, limit: count });
+      const res = await apiGet("/logs", { action: "getLogsPaginated", cursor: cursorRef.current, userId, limit: count });
       setLogs((prev) => [...(prev ?? []), ...(res.results ?? [])]);
       cursorRef.current = res.nextCursor;
       setStatus(res.hasMore ? "CanLoadMore" : "Exhausted");
@@ -447,7 +450,7 @@ export function usePaginatedLogs(limit = 20) {
       console.error("[logs] failed to load more:", err);
       setStatus("CanLoadMore");
     }
-  }, [status]);
+  }, [status, userId]);
 
   useEffect(() => {
     void fetchFirst();
@@ -729,4 +732,96 @@ export function useUploadFile() {
     const res = await apiPost<any>("/files", { userId, dataUrl, name, mimeType });
     return res.url as string;
   }, []);
+}
+
+// ─── Business Processes (kho quy trình) ────────────────────
+export function useBusinessProcesses(userId?: string | null, includeInactive = false) {
+  const key = userId ? `business-processes:${userId}:${includeInactive ? "all" : "active"}` : null;
+  return useData<any[]>(
+    key,
+    key
+      ? () =>
+          apiGet("/business-processes", {
+            action: "getBusinessProcesses",
+            userId,
+            includeInactive: includeInactive ? "true" : "false",
+          })
+      : null
+  );
+}
+
+export function useSearchBusinessProcesses(userId?: string | null, keywords?: string[], category?: string, limit = 5) {
+  const stableKeywords = keywords?.join(",") ?? "";
+  const key = userId ? `business-processes:search:${userId}:${category ?? "*"}:${stableKeywords}:${limit}` : null;
+  return useData<any[]>(
+    key,
+    key
+      ? () =>
+          apiGet("/business-processes", {
+            action: "searchBusinessProcesses",
+            userId,
+            keywords: stableKeywords,
+            category,
+            limit: String(limit),
+          })
+      : null
+  );
+}
+
+export function useBusinessProcessMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    createBusinessProcess: async (body: any) => {
+      const res = await apiPost("/business-processes", { action: "createBusinessProcess", ...body });
+      await invalidate(["business-processes"]);
+      return res;
+    },
+    updateBusinessProcess: async (body: any) => {
+      const res = await apiPost("/business-processes", { action: "updateBusinessProcess", ...body });
+      await invalidate(["business-processes"]);
+      return res;
+    },
+    deleteBusinessProcess: async (body: any) => {
+      const res = await apiPost("/business-processes", { action: "deleteBusinessProcess", ...body });
+      await invalidate(["business-processes"]);
+      return res;
+    },
+  }), [invalidate]);
+}
+
+// ─── Task Templates (task list mẫu — render task list theo template) ────────
+export function useTaskTemplates(userId?: string | null, includeInactive = false) {
+  const key = userId ? `task-templates:${userId}:${includeInactive ? "all" : "active"}` : null;
+  return useData<any[]>(
+    key,
+    key
+      ? () =>
+          apiGet("/task-templates", {
+            action: "getTaskTemplates",
+            userId,
+            includeInactive: includeInactive ? "true" : "false",
+          })
+      : null
+  );
+}
+
+export function useTaskTemplateMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    createTaskTemplate: async (body: any) => {
+      const res = await apiPost("/task-templates", { action: "createTaskTemplate", ...body });
+      await invalidate(["task-templates"]);
+      return res;
+    },
+    updateTaskTemplate: async (body: any) => {
+      const res = await apiPost("/task-templates", { action: "updateTaskTemplate", ...body });
+      await invalidate(["task-templates"]);
+      return res;
+    },
+    deleteTaskTemplate: async (body: any) => {
+      const res = await apiPost("/task-templates", { action: "deleteTaskTemplate", ...body });
+      await invalidate(["task-templates"]);
+      return res;
+    },
+  }), [invalidate]);
 }

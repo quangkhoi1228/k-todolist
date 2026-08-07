@@ -1,0 +1,40 @@
+# Verify UI K-Todolist — dùng session Clerk có sẵn, KHÔNG bắt user đăng nhập lại
+
+Khi cần verify UI app (localhost:3000) bằng browser thật: **session Clerk đã tồn tại trong Chrome profile thật của user** — không bắt user đăng nhập lại.
+
+## Profile có session
+
+- Thư mục: `~/Library/Application Support/Google/Chrome/` (gốc, chứa `Default/` ~983M)
+- Cookie: `localhost | __session` (+ `__client_uat`, `__refresh_*`) — hạn tới 2027
+
+## Các cách SAI (đã mắc lỗi 07/08 — đừng lặp lại)
+
+1. `chromium.launchPersistentContext(".../Google/Chrome/Default")` — trỏ vào **profile con Default** → Chrome tạo `Default/Default` mới, **mất session**, cứ bắt đăng nhập.
+2. `--user-data-dir="$HOME/.../Google/Chrome" --remote-debugging-port=9222` trực tiếp → Chrome báo **"DevTools remote debugging requires a non-default data directory"** và thoát.
+3. Mở browser bằng profile mới trắng `/tmp/kflow-verify-profile` rồi chờ user đăng nhập thủ công — lãng phí thời gian, user không cần đăng nhập.
+
+## CÁCH ĐÚNG (verify 07/08 OK)
+
+```bash
+# 1. Copy profile đã login sang thư mục tạm
+rm -rf /tmp/kflow-login-profile && mkdir -p /tmp/kflow-login-profile
+cp -R "$HOME/Library/Application Support/Google/Chrome/Default" /tmp/kflow-login-profile/Default
+rm -f /tmp/kflow-login-profile/Default/Singleton* /tmp/kflow-login-profile/Default/Preferences /tmp/kflow-login-profile/Default/"Secure Preferences"
+
+# 2. Mở Chrome CDP bằng profile copy (detached, không bị kill)
+nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 --user-data-dir=/tmp/kflow-login-profile \
+  --no-first-run --no-default-browser-check --no-sandbox \
+  "http://localhost:3000/projects" >/tmp/chrome-verify.log 2>&1 & disown
+
+# 3. Kiểm tra session OK: URL page trỏ /projects (không phải /sign-in)
+curl -s http://127.0.0.1:9222/json/list | python3 -c "import sys,json; [print(p['url'][:100]) for p in json.load(sys.stdin) if p['type']=='page']"
+
+# 4. Khi xong: pkill -f kflow-login-profile
+```
+
+Nếu dùng Playwright `launchPersistentContext` thì trỏ **thư mục gốc** `/tmp/kflow-login-profile` (KHÔNG trỏ `/tmp/kflow-login-profile/Default`).
+
+## Không áp dụng cho sync Teams/Zalo
+
+Profile này CHỈ dùng verify UI app. Sync Teams/Zalo vẫn dùng `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` (xem real-browser-verification.mdc). Chrome CDP 9222 dùng cho sync chỉ được mở bằng lệnh `open -n -a "Google Chrome" --args --user-data-dir="<profile>" --remote-debugging-port=9222 ...`.

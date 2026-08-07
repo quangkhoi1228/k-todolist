@@ -210,11 +210,16 @@ export default function PMAgentChatPage() {
                   description: s.description,
                   actionLabel: s.actionLabel,
                   suggestionData:
-                    s.saleEmail || s.emailSubject || s.emailBody
+                    s.saleEmail || s.emailSubject || s.emailBody || s.teamsDeepLink || s.input || s.reasoning || s.expectedOutcome || s.groupAction
                       ? JSON.stringify({
                           saleEmail: s.saleEmail,
                           emailSubject: s.emailSubject,
                           emailBody: s.emailBody,
+                          teamsDeepLink: s.teamsDeepLink,
+                          input: s.input,
+                          reasoning: s.reasoning,
+                          expectedOutcome: s.expectedOutcome,
+                          groupAction: s.groupAction,
                         })
                       : undefined,
                 })),

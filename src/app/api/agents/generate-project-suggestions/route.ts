@@ -40,6 +40,16 @@ interface SuggestionTemplate {
   emailSubject?: string;
   /** Body email gợi ý (plain text / HTML) */
   emailBody?: string;
+  /** Deep link Teams mở chat 1:1 với Sale (AM) */
+  teamsDeepLink?: string;
+  /** Đánh dấu hành động đặc biệt của suggestion (vd: add_groups — chuyển tới panel quản lý nhóm) */
+  groupAction?: string;
+  /** Phần "Xem nguyên nhân": dữ liệu đầu vào */
+  input?: string;
+  /** Phần "Xem nguyên nhân": suy luận */
+  reasoning?: string;
+  /** Phần "Xem nguyên nhân": kết quả mong muốn */
+  expectedOutcome?: string;
 }
 
 // ─── Match raw ISD status to state ID ────────────────────────
@@ -231,7 +241,7 @@ async function detectGender(saleName: string): Promise<string> {
 function buildKickoffMessage(saleName: string, gender: string, ticketId: string): string {
   const ticketLink = `https://servicedesk.fci.vn/browse/${ticketId}`;
   // gender is "anh", "chị", or "anh/chị"
-  return `Hi ${gender} ${saleName} ơi, em Khôi PM mới nhận ticket này ${ticketLink} nhờ ${gender} add giúp em vào nhóm nội bộ và KH nếu dc giúp nhé ạ`;
+  return `Hi ${gender} ${saleName} ơi, em Khôi PM mới nhận ticket này ${ticketLink}. Vì đây là dự án mới nên em đang cần sync thông tin từ ${gender} về yêu cầu và phạm vi dự án để chuẩn bị triển khai cho đúng. Nhờ ${gender} add giúp em vào nhóm nội bộ và nhóm khách hàng nếu được giúp nhé ạ`;
 }
 
 /** Escapes a plain-text body into HTML paragraphs for the email composer. */
@@ -240,6 +250,23 @@ function textToHtml(text: string): string {
     .split(/\n{2,}/)
     .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
     .join("");
+}
+
+// ─── Generate suggestion "Thêm nhóm nội bộ & khách hàng vào dự án" ─
+
+/** Gợi ý add nhóm nội bộ + khách hàng vào dự án để tracking — khi kickoff. */
+function generateAddGroupsSuggestion(saleName: string, ticketId: string): SuggestionTemplate {
+  return {
+    type: "action_item",
+    title: "Thêm nhóm nội bộ & khách hàng vào dự án",
+    description:
+      `Dự án ${ticketId} đang ở giai đoạn kickoff — cần thêm nhóm nội bộ (Internal) và nhóm khách hàng (External) vào dự án để tracking tin nhắn và cập nhật thông tin xuyên suốt quá trình triển khai.`,
+    actionLabel: "Thêm nhóm vào dự án",
+    groupAction: "add_groups",
+    input: `Ticket ${ticketId} vừa được tạo/chuyển sang trạng thái Kickoff, reporter (Sale) là ${saleName || "chưa rõ"}.`,
+    reasoning: `Giai đoạn kickoff cần theo dõi 2 nhóm chat: nhóm nội bộ (trao đổi team kỹ thuật) và nhóm khách hàng (cập nhật tiến độ cho KH). Chưa add nhóm nào vào dự án nên PM chưa tracking được tin nhắn.`,
+    expectedOutcome: `Nhóm nội bộ và nhóm khách hàng được thêm vào dự án, PM tracking được tin nhắn và cập nhật thông tin liên tục.`,
+  };
 }
 
 // ─── Generate kickoff suggestion (orchestrator) ─────────────
@@ -257,6 +284,12 @@ async function generateKickoffSuggestion(
   // Phase 2: build message from template using detected gender
   const message = buildKickoffMessage(saleName || "", gender, ticketId);
 
+  // Deep link Teams tới cuộc trò chuyện 1:1 với Sale (AM)
+  // `message` param giúp Teams tự điền sẵn nội dung vào ô soạn tin
+  const teamsDeepLink = saleEmail
+    ? `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(saleEmail)}&message=${encodeURIComponent(message)}`
+    : undefined;
+
   return {
     type: "action_item",
     title: "Gửi tin nhắn chào Sale",
@@ -265,6 +298,10 @@ async function generateKickoffSuggestion(
     saleEmail: saleEmail || undefined,
     emailSubject: `[Kickoff] Dự án ${ticketId} — nhờ hỗ trợ add vào nhóm`,
     emailBody: textToHtml(message),
+    teamsDeepLink: teamsDeepLink,
+    input: `Ticket ${ticketId} vừa được tạo/chuyển sang trạng thái Kickoff, reporter (Sale) là ${saleName || "chưa rõ"}${saleEmail ? ` (${saleEmail})` : ""}.`,
+    reasoning: `Dự án mới cần sync thông tin từ Sale về yêu cầu, phạm vi và các nhóm liên quan trước khi team triển khai bắt đầu.`,
+    expectedOutcome: `Sale add PM vào nhóm nội bộ + nhóm khách hàng và cung cấp thông tin dự án để triển khai đúng yêu cầu.`,
   };
 }
 
@@ -293,6 +330,8 @@ export async function POST(req: NextRequest) {
       if (kickoffSuggestion) {
         suggestions.push(kickoffSuggestion);
       }
+      // Gợi ý add nhóm nội bộ + khách hàng vào dự án để tracking
+      suggestions.push(generateAddGroupsSuggestion(saleName, ticketId));
     }
 
     return NextResponse.json({ ok: true, suggestions });

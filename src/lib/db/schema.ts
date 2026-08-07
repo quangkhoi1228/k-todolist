@@ -108,6 +108,7 @@ export const userPreferences = pgTable(
     hideDoneTasks: boolean("hideDoneTasks").notNull().default(false),
     autoSyncInterval: integer("autoSyncInterval").notNull().default(0),
     lastSyncTime: real("lastSyncTime").notNull().default(0),
+    chatSyncMode: text("chatSyncMode").notNull().default("incremental"),
   },
   (t) => [uniqueIndex("prefs_by_user").on(t.userId)]
 );
@@ -239,6 +240,7 @@ export const syncLogs = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     projectId: integer("projectId"),
+    userId: text("userId"), // chủ sở hữu log (lọc theo user đang đăng nhập)
     chatName: text("chatName"),
     type: text("type").notNull(),
     message: text("message").notNull(),
@@ -247,6 +249,7 @@ export const syncLogs = pgTable(
   },
   (t) => [
     index("logs_by_project").on(t.projectId),
+    index("logs_by_user").on(t.userId),
     index("logs_by_type").on(t.type),
     index("logs_by_created").on(t.createdAt),
   ]
@@ -382,4 +385,47 @@ export const files = pgTable(
     createdAt: real("createdAt").notNull(),
   },
   (t) => [index("files_by_user").on(t.userId)]
+);
+
+// ─── businessProcesses (kho quy trình nghiệp vụ — nguồn tham khảo cho gợi ý) ─────
+export const businessProcesses = pgTable(
+  "businessProcesses",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("userId").notNull(),
+    name: text("name").notNull(), // tên quy trình (vd: "Kickoff dự án FPT Cloud")
+    category: text("category"), // phân loại (vd: "kickoff", "sow", "handover", "general")
+    description: text("description").notNull(), // mô tả ngắn quy trình
+    steps: jsonb("steps").notNull(), // array of {order, title, description, action?, owner?, duration?}
+    triggers: jsonb("triggers"), // array of trigger conditions (từ khoá/hoàn cảnh kích hoạt)
+    outcome: text("outcome"), // kết quả mong đợi khi hoàn thành quy trình
+    isActive: boolean("isActive").notNull().default(true),
+    createdAt: real("createdAt").notNull(),
+    updatedAt: real("updatedAt").notNull(),
+  },
+  (t) => [
+    index("bp_by_user").on(t.userId),
+    index("bp_by_user_active").on(t.userId, t.isActive),
+  ]
+);
+
+// ─── taskTemplates (task list mẫu — render task list theo template) ─────────
+export const taskTemplates = pgTable(
+  "taskTemplates",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("userId").notNull(),
+    name: text("name").notNull(), // tên template (vd: "Migration Cloud")
+    category: text("category"), // phân loại (vd: "migration", "security", "waf", "general")
+    description: text("description"), // mô tả khi nào dùng template này
+    items: jsonb("items").notNull(), // array of { phase, title, details?, pic?, support?, manday?, startOffsetDays?, endOffsetDays? }
+    triggers: jsonb("triggers"), // từ khoá để auto-detect từ mô tả dự án (vd: ["migrate", "migration", "onpremise"])
+    isActive: boolean("isActive").notNull().default(true),
+    createdAt: real("createdAt").notNull(),
+    updatedAt: real("updatedAt").notNull(),
+  },
+  (t) => [
+    index("tt_by_user").on(t.userId),
+    index("tt_by_user_active").on(t.userId, t.isActive),
+  ]
 );

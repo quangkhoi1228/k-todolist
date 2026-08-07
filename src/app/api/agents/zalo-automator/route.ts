@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
       const headless = body.headless !== false;
 
       // Pass full env so Playwright/Chrome get system vars (TMPDIR, DYLD_*, etc.)
-      const env = { ...process.env };
+      const env = { ...process.env, USE_CDP: process.env.USE_CDP ?? "1", CDP_PORT: process.env.CDP_PORT ?? "9222" };
 
       try {
         const headlessFlag = headless ? "--headless" : "";
@@ -180,6 +180,9 @@ export async function POST(req: NextRequest) {
       ...process.env,
       ZALO_GROUP_NAME: groupName || "",
       PLATFORM: "zalo",
+      // Dùng Chrome thật (CDP) — tránh bị chặn
+      USE_CDP: process.env.USE_CDP ?? "1",
+      CDP_PORT: process.env.CDP_PORT ?? "9222",
     };
 
     const opts: Record<string, unknown> = {

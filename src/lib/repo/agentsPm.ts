@@ -516,8 +516,11 @@ ${resourceTicketsLinks}
       ticketId: args.ticketId,
       isdStatus: ticketStatus || null,
       isdUpdatedAt: Date.now(),
-      internalGroupUrl: internalGroupUrl ?? null,
-      customerGroupUrl: customerGroupUrl ?? null,
+      // KHÔNG ghi internalGroupUrl/customerGroupUrl vào project — 2 field deprecated này
+      // chứa tên nhóm thường (không phải deep link) từ ticket ISD, gây sync nhóm ma.
+      // Dữ liệu ISD vẫn lưu đầy đủ trong `projectIsdData` (xem bên dưới) để hiển thị.
+      internalGroupUrl: null,
+      customerGroupUrl: null,
     })
     .returning();
   const projectId = project[0].id;

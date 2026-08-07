@@ -11,19 +11,22 @@ export async function GET(req: NextRequest) {
     switch (action) {
       case "getLogs": {
         const projectId = sp.get("projectId") ?? undefined;
+        const userId = sp.get("userId") ?? undefined;
         const limit = sp.get("limit") ? Number(sp.get("limit")) : undefined;
-        return await getLogs({ projectId, limit });
+        return await getLogs({ projectId, userId, limit });
       }
       case "getLogsPaginated": {
         const projectId = sp.get("projectId") ?? undefined;
+        const userId = sp.get("userId") ?? undefined;
         const cursor = sp.get("cursor") ? Number(sp.get("cursor")) : null;
         const limit = sp.get("limit") ? Number(sp.get("limit")) : undefined;
-        return await getLogsPaginated({ projectId, cursor, limit });
+        return await getLogsPaginated({ projectId, userId, cursor, limit });
       }
       case "getRecentLogs": {
         const type = sp.get("type") ?? undefined;
+        const userId = sp.get("userId") ?? undefined;
         const limit = sp.get("limit") ? Number(sp.get("limit")) : undefined;
-        return await getRecentLogs({ type, limit });
+        return await getRecentLogs({ type, userId, limit });
       }
       default:
         return { error: `Unknown action: ${action}` };

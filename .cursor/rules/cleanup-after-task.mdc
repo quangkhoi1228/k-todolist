@@ -17,26 +17,47 @@ Bước dọn dẹp này **chỉ xoá file rác/test trong source code** (các f
 - **ISD / Teams / Zalo / Outlook** — không xoá ticket, group, message, email, session, config runtime
 - **File cấu hình đang dùng** — ví dụ `teams-monitor-config.json` (được route API đọc/ghi)
 
-## 1. Xoá test/debug scripts
+## 1. Phân loại test/debug scripts: GIỮ reusable, XOÁ one-off
 
-Xoá các file tạm được tạo ra trong quá trình debug/test, trừ khi file đó:
+Không xoá tất cả file test. Trước khi xoá, phân loại từng file:
 
-- Được import hoặc chạy bởi code chính thức (`src/`, `agents/pm/lib/`, API routes, `sync-*.ts`)
-- Là công cụ dùng thường xuyên mà user yêu cầu giữ lại
+### GIỮ LẠI — file test/module có thể reuse sau này
 
-Danh sách mẫu cần xoá: `debug_*.ts`, `test-*.ts`, `check_*.ts` (nếu không được dùng), `*.dump.*`, `*_eval.ts`, script seed test, v.v.
+File được giữ lại khi thuộc 1 trong các nhóm sau:
 
-## 2. Xoá file rác khác
+- **Script kiểm tra (verify/health)** có thể chạy lại bất kỳ lúc nào: kiểm tra DB, đếm dữ liệu, check columns, test kết nối, health-check (VD: `scripts/test-db.ts`, `scripts/check-pg-counts.ts`, `scripts/check-pg-columns.ts` — đã tracked trong `scripts/`)
+- **Script seed/test data** dùng để tạo dữ liệu mẫu cho việc dev/verify về sau (VD: seed suggestion kickoff để test UI)
+- **Module test** (hàm/lib/helper) có logic rõ ràng, không hardcode dữ liệu cá nhân, có thể import hoặc chạy lại trong task khác
+- **Script debug có cấu trúc tốt**: nhận tham số qua env/CLI, không chứa ID/secret/email cá nhân hardcode, có header comment hướng dẫn chạy
+
+Cách xử lý file GIỮ LẠI:
+- **Đặt vào nơi chuẩn** để dễ tìm lại: `scripts/` (công cụ kiểm tra/DB) hoặc `agents/pm/scripts/` (nếu liên quan automation Teams/Zalo)
+- **Đặt tên rõ ràng** theo chức năng (`check-*`, `verify-*`, `seed-*`, `test-*`) — bỏ prefix tạm như `debug_`, `tmp_`, `test123`
+- **Làm sạch trước khi giữ**: bỏ hardcode ID/email/secret, thay bằng biến env hoặc tham số; thêm comment `/* Chạy: npx tsx <path> */`
+- Báo cáo trong phần tổng kết: "đã giữ lại các file test reusable sau: ..." để user biết
+
+### XOÁ — file thật sự là rác/one-off
+
+- File debug **ad-hoc, dùng 1 lần**: `debug_*.ts`, `test-*.ts`, `check_*.ts` tạo trong lúc mò lỗi (không có cấu trúc, in console rác, hardcode ID/email để chạy 1 lần)
+- Script seed test **chỉ phục vụ 1 lần kiểm tra UI** mà data đã được xoá / không còn dùng
+- `*.dump.*`, `*_eval.ts`, script một-lần (`patch_*.py`, `fix_*.py`, `recover.py`) nếu không còn dùng
+- File **không được import hoặc chạy bởi code chính thức** (`src/`, `agents/pm/lib/`, API routes, `sync-*.ts`) và cũng không thuộc nhóm reusable ở trên
+
+## 2. Xoá file rác khác (luôn xoá)
 
 - Screenshot chụp tạm khi debug (`teams-screenshots/`, `zalo-screenshots/` chứa file test không cần)
-- File dump DOM/html/json (`compose-*.txt`, `zalo-dom.html`, `*-dump.*`, v.v.)
-- Script một-lần (`patch_*.py`, `fix_*.py`, `recover.py`, v.v.) nếu không còn dùng
+- File dump DOM/html/json (`compose-*.txt`, `zalo-dom.html`, `*-dump.*`, v.v.) — nội dung chụp 1 lần, không có giá trị tái sử dụng
 
 ## 3. Kiểm tra trước khi kết thúc
 
-Chạy `git status --porcelain` và rà soát các file untracked mới phát sinh; nếu là file test/tạm thì xoá trước khi báo cáo xong tác vụ.
+Chạy `git status --porcelain` và rà soát các file untracked mới phát sinh:
+
+- File test/tạm **one-off** → xoá
+- File test **reusable** → chuyển vào `scripts/` (hoặc nơi chuẩn) rồi giữ lại
+- Báo cáo trong tổng kết: file nào giữ, file nào xoá
 
 ## Ngoại lệ
 
 - Các script trong `agents/pm/scripts/` được gọi từ `src/app/api/agents/*/route.ts` **không được xoá** (teams-health, teams-list-chats, zalo-health, zalo-list-chats, teams-extractor, zalo-extractor, teams-automator, zalo-automator, sync-*)
+- Các script công cụ trong `scripts/` (test-db, check-pg-*, truncate-pg, v.v.) **được giữ lại** — là công cụ dùng thường xuyên để verify DB
 - File cấu hình dùng thật (`teams-monitor-config.json`) nếu đang dùng

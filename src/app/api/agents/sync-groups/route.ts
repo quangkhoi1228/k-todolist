@@ -17,6 +17,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const action = body.action as string | undefined;
     const headless = body.headless !== false;
+    // Chỉ sync 1 nền tảng nếu được chỉ định (vd: "teams" — đồng bộ Teams trước)
+    const platform = (body.platform as string | undefined) || "all";
 
     // Status check
     if (action === "status") {
@@ -61,7 +63,11 @@ export async function POST(req: NextRequest) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       USER_ID: userId,
+      PLATFORM: platform,
       HEADLESS: headless ? "true" : "false",
+      // Dùng Chrome thật (CDP) — Teams chặn Playwright profile
+      USE_CDP: process.env.USE_CDP ?? "1",
+      CDP_PORT: process.env.CDP_PORT ?? "9222",
     };
 
     const child = spawn("npx", ["tsx", scriptPath], {

@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { projectId, chatName, platform } = body;
+    const { projectId, chatName, platform, syncMode } = body;
     const headless = body.headless !== false; // default true
 
     if (!projectId || !chatName) {
@@ -28,6 +28,11 @@ export async function POST(req: NextRequest) {
       CHAT_NAME: chatName,
       PLATFORM: platform || "teams",
       HEADLESS: headless ? "true" : "false",
+      // Chế độ sync: "incremental" (mặc định) hoặc "full"
+      SYNC_MODE: syncMode === "full" ? "full" : "incremental",
+      // Dùng Chrome thật (CDP) — Teams chặn Playwright profile
+      USE_CDP: process.env.USE_CDP ?? "1",
+      CDP_PORT: process.env.CDP_PORT ?? "9222",
     };
 
     const child = spawn("npx", ["tsx", scriptPath], {

@@ -1,9 +1,12 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "@clerk/nextjs";
-import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, Target, ChevronDown, ListPlus, MessagesSquare } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, Target, ChevronDown, ListPlus, MessagesSquare, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
+import { SowImportDialog } from "./SowImportDialog";
 import { format } from "date-fns";
 import { WysiwygEditor } from "./WysiwygEditor";
 import type { Doc } from "@/lib/types";
@@ -26,7 +29,9 @@ import {
   useUploadFile,
   useTaskMutations,
 } from "@/hooks/useDomain";
+import { useInvalidate } from "@/hooks/useData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { IsdFlowDiagram } from "./IsdFlowDiagram";
 
 const DEFAULT_NOTES = `<h2>Thông tin chung</h2>
@@ -113,6 +118,39 @@ function PriorityBadge({ priority }: { priority?: string }) {
 function proxyImageUrl(src: string): string {
   if (src.startsWith("blob:") || src.startsWith("data:") || src.startsWith("storage:")) return src;
   return `/api/proxy-image?url=${encodeURIComponent(src)}`;
+}
+
+/** Lấy groupAction từ suggestionData (vd: add_groups — cần thêm nhóm vào dự án) */
+function getGroupAction(s: any): string | undefined {
+  try {
+    if (s.suggestionData) {
+      const parsed = JSON.parse(s.suggestionData);
+      if (parsed?.groupAction) return parsed.groupAction;
+    }
+  } catch { /* ignore malformed data */ }
+  return undefined;
+}
+
+/** Từ deep link Teams/Zalo → { platform, name } để lưu làm tên nhóm.
+ *  Nếu không nhận diện được → trả null (giữ nguyên, để backend báo lỗi). */
+function deriveGroupFromUrl(url: string): { platform: "teams" | "zalo"; name: string } | null {
+  const trimmed = url.trim();
+  try {
+    const u = new URL(trimmed);
+    if (/zalo/i.test(u.hostname)) {
+      const hashMatch = u.hash.match(/#\/g\/([\w-]+)/);
+      const pathMatch = u.pathname.match(/\/g\/([\w-]+)/);
+      const id = hashMatch?.[1] || pathMatch?.[1];
+      if (id) return { platform: "zalo", name: `[Zalo] ${id}` };
+      return null;
+    }
+    if (/teams\.(microsoft|live)\.com/i.test(u.hostname)) {
+      const m = trimmed.match(/19:[%a-zA-Z0-9._-]+@thread\.(v2|unq\.gbl\.thread\.2)/);
+      if (m) return { platform: "teams", name: `[Teams] ${m[0].replace(/%3a/gi, ":")}` };
+      return null;
+    }
+  } catch { /* not a valid URL */ }
+  return null;
 }
 
 function isTeamsOrZaloUrl(src: string): boolean {
@@ -615,24 +653,44 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members">("info");
   const tab = propTab ?? localTab;
   const handleTabChange = propOnTabChange ?? setLocalTab;
+  const searchParams = useSearchParams();
+  const [sowImportOpen, setSowImportOpen] = useState(false);
+
+  // Nếu được điều hướng tới từ suggestion "Thêm nhóm" (query ?tab=chats&addGroup=1)
+  // → tự chuyển tab Chats và mở dialog quản lý nhóm
+  useEffect(() => {
+    if (searchParams.get("addGroup") !== "1") return;
+    handleTabChange("chats");
+    setIsGroupManagerOpen(true);
+  }, [searchParams]);
 
 // ─── Chats State ───────────────────────────────────
   const [activeTeamsGroups, setActiveTeamsGroups] = useState<{name: string, type: "internal" | "customer", platform?: string, url?: string}[]>((project as any).teamsGroups || []);
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
-  const [newGroupName, setNewGroupName] = useState("");
-  const [newGroupType, setNewGroupType] = useState<"internal" | "customer">("customer");
-  const [newGroupPlatform, setNewGroupPlatform] = useState<"teams" | "zalo">("teams");
+  // Danh sách nhóm đang được nhập trong dialog — cho phép thêm nhiều nhóm Teams/Zalo cùng lúc
+  const [pendingGroups, setPendingGroups] = useState<{id: string; name: string; type: "internal" | "customer"; platform: "teams" | "zalo"}[]>([]);
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  // Vị trí (viewport) của ô tên nhóm đang mở dropdown — dùng cho dropdown position:fixed
+  // để thoát khỏi container overflow-y-auto (trước đây dropdown bị clip, không hiện)
+  const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
+  const updateDropdownAnchor = useCallback((rowId: string) => {
+    const input = document.querySelector<HTMLInputElement>(`[data-dropdown-row="${rowId}"]`);
+    if (!input) { setDropdownAnchor(null); return; }
+    const r = input.getBoundingClientRect();
+    setDropdownAnchor({ top: r.bottom + 4, left: r.left, width: r.width });
+  }, []);
   const [selectedChatGroup, setSelectedChatGroup] = useState<string>("");
   const [fetchingChats, setFetchingChats] = useState(false);
+  const [chatFetchError, setChatFetchError] = useState<string | null>(null);
   const [availableTeamsChats, setAvailableTeamsChats] = useState<{name: string; scrapedAt?: number}[]>([]);
   const [availableZaloChats, setAvailableZaloChats] = useState<{name: string; scrapedAt?: number}[]>([]);
   const [lastListedAt, setLastListedAt] = useState<{teams: number | null; zalo: number | null}>({teams: null, zalo: null});
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncingGroups, setSyncingGroups] = useState<Set<string>>(new Set());
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [clearGroup, setClearGroup] = useState<string | null>(null); // group currently being cleared
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
 
-  // ─── Zalo send state ─────────────────────────
+  // ─── Chat send state (Zalo + Teams) ─────────────────
   const [sendMessage, setSendMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -651,8 +709,24 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
     });
     setActiveTeamsGroups(deduped);
     setSelectedChatGroup("all");
-    setNewGroupName("");
+    setPendingGroups([]);
   }, [project._id]);
+
+  // Khi mở dialog: tự động thêm dòng nhập đầu tiên + mở dropdown gợi ý + focus ô tên
+  useEffect(() => {
+    if (isGroupManagerOpen && pendingGroups.length === 0) {
+      const newId = crypto.randomUUID();
+      setPendingGroups([{ id: newId, name: "", type: "customer", platform: "teams" }]);
+      setOpenDropdownId(newId);
+      setDropdownAnchor(null);
+      const t = setTimeout(() => {
+        const input = document.querySelector<HTMLInputElement>('[role=dialog] input');
+        input?.focus();
+        updateDropdownAnchor(newId);
+      }, 200);
+      return () => clearTimeout(t);
+    }
+  }, [isGroupManagerOpen, updateDropdownAnchor]);
 
   // ─── Suggestions State ────────────────────────
   const { data: projectSuggestions } = useSuggestionsByProject(project._id ?? null);
@@ -661,20 +735,9 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const cmx = useChatMutations();
   const gmx = useGroupMutations();
   const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
-  const [channelMenuId, setChannelMenuId] = useState<string | null>(null);
   const [addingTaskId, setAddingTaskId] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
   const [taskAddedId, setTaskAddedId] = useState<string | null>(null);
-  const [sendingChannelId, setSendingChannelId] = useState<string | null>(null);
-  const [sendChannelError, setSendChannelError] = useState<string | null>(null);
-  const [sendChannelOk, setSendChannelOk] = useState<string | null>(null);
-  // Email dialog cho gợi ý kickoff — gửi thẳng tin nhắn qua email sale
-  const [emailTarget, setEmailTarget] = useState<{
-    s: any;
-    to: string[];
-    subject: string;
-    body: string;
-  } | null>(null);
 
   // ─── Members State ────────────────────────
   const { data: projectMembers } = useMembersByProject(project._id ?? null);
@@ -778,56 +841,6 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
       setAddingTaskId(null);
     }
   }, [addingTaskId, tmx, userId, project._id]);
-
-  // Gửi tin nhắn tới kênh (Teams hoặc Zalo) liên quan của project
-  const handleSendSuggestionToChannel = useCallback(async (s: any, channel: { name: string; platform?: string }) => {
-    const endpoint = channel.platform === "zalo" ? "/api/agents/zalo-send" : "/api/agents/teams-send";
-    setSendingChannelId(s._id);
-    setSendChannelError(null);
-    setSendChannelOk(null);
-    setChannelMenuId(null);
-    const message = `[Gợi ý từ PM Agent] ${s.title}\n${s.description}`;
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "send",
-          chatName: channel.name,
-          message,
-          dryRun: false,
-        }),
-      });
-      const data = await res.json().catch(() => ({ ok: false, error: "Invalid JSON response" }));
-      if (data.ok) {
-        setSendChannelOk(`${channel.name} (${channel.platform === "zalo" ? "Zalo" : "Teams"})`);
-      } else {
-        setSendChannelError(data.error || "Không gửi được tin nhắn.");
-      }
-    } catch (err) {
-      console.error("[Suggestions] Send to channel failed:", err);
-      setSendChannelError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setSendingChannelId(null);
-    }
-  }, []);
-
-  // Danh sách kênh nhắn cho suggestion — từ teamsGroups của project
-  const getSuggestionChannels = useCallback((s: any): Array<{ name: string; platform: string; tag: string }> => {
-    const channels: Array<{ name: string; platform: string; tag: string }> = [];
-    for (const g of activeTeamsGroups || []) {
-      if (!g?.name) continue;
-      channels.push({
-        name: g.name,
-        platform: g.platform || "teams",
-        tag: g.type === "internal" ? "Nội bộ" : "KH",
-      });
-    }
-    if (s.sourceChatName && !channels.some((c) => c.name === s.sourceChatName)) {
-      channels.unshift({ name: s.sourceChatName, platform: "teams", tag: "Nguồn" });
-    }
-    return channels;
-  }, [activeTeamsGroups]);
 
   // Auto-analyse when switching to suggestions tab — but ONLY ONCE per project
   // visit. Without the ref guard, an empty projectSuggestions list + failed LLM
@@ -943,6 +956,7 @@ ${resourceTicketsLinks}
   // is actually visible (prevents constant 5s polling → page flicker).
   const { data: syncLogs } = useLogs(project._id ?? null, 50, {
     refreshInterval: showSyncLogs ? 5000 : 0,
+    userId,
   });
   const [isClearing, setIsClearing] = useState(false);
 
@@ -958,6 +972,7 @@ ${resourceTicketsLinks}
   const fetchChats = async (platform?: "teams" | "zalo") => {
     if (!userId) return;
     setFetchingChats(true);
+    setChatFetchError(null);
     try {
       const platforms = platform ? [platform] : (["teams", "zalo"] as const);
       await Promise.all(platforms.map(async (p) => {
@@ -966,25 +981,33 @@ ${resourceTicketsLinks}
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "list_chats" }),
         });
-        if (res.ok) {
-          const data = await res.json();
-          const chatNames: string[] = data.chats || [];
-          if (p === "teams") {
-            setAvailableTeamsChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
-          } else {
-            setAvailableZaloChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
-          }
-          // Save groups
-          await gmx.syncGroups({
-            userId,
-            platform: p,
-            groups: chatNames.map((n: string) => ({ name: n })),
-          }).catch(console.error);
-          setLastListedAt((prev) => ({ ...prev, [p]: Date.now() }));
+        const data = await res.json().catch(() => ({}));
+        // Script có thể trả HTTP 200 nhưng ok:false (vd Chrome thật CDP chưa mở
+        // → connectOverCDP fail) — phải check data.ok, không chỉ res.ok, nếu
+        // không UI sẽ set danh sách rỗng và nuốt lỗi im lặng.
+        if (!data.ok) {
+          const errMsg = data.error
+            ? String(data.error).slice(0, 300)
+            : `HTTP ${res.status}`;
+          throw new Error(`[${p === "teams" ? "Teams" : "Zalo"}] ${errMsg}`);
         }
+        const chatNames: string[] = data.chats || [];
+        if (p === "teams") {
+          setAvailableTeamsChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
+        } else {
+          setAvailableZaloChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
+        }
+        // Save groups
+        await gmx.syncGroups({
+          userId,
+          platform: p,
+          groups: chatNames.map((n: string) => ({ name: n })),
+        }).catch(console.error);
+        setLastListedAt((prev) => ({ ...prev, [p]: Date.now() }));
       }));
     } catch (e) {
       console.error(e);
+      setChatFetchError(e instanceof Error ? e.message : "Lỗi tải danh sách nhóm");
     } finally {
       setFetchingChats(false);
     }
@@ -1022,38 +1045,52 @@ ${resourceTicketsLinks}
   }, [activeTeamsGroups, selectedChatGroup]);
 
   const handleAddGroup = async () => {
-    if (!newGroupName.trim()) return;
-    // Prevent adding duplicate group names
-    if (activeTeamsGroups.some(g => g.name === newGroupName.trim())) {
-      setNewGroupName("");
-      setIsDropdownOpen(false);
+    const valid = pendingGroups.filter((g) => g.name.trim() !== "");
+    if (valid.length === 0) return;
+
+    // Chuyển URL deep link (Teams/Zalo) dán vào ô tên → thêm platform + tên/ID nhận diện.
+    // Không lưu URL làm tên nhóm (gây lỗi sync "Không tìm thấy chat").
+    const normalized = valid.map((g) => {
+      let name = g.name.trim();
+      let platform = g.platform;
+      if (/^https?:\/\//i.test(name)) {
+        const derived = deriveGroupFromUrl(name);
+        if (derived) {
+          platform = derived.platform;
+          name = derived.name;
+        }
+      }
+      return { ...g, name, platform };
+    });
+
+    const names = new Set(activeTeamsGroups.map((g) => g.name));
+    // Bỏ qua nhóm trùng tên với nhóm đã có
+    const newPending = normalized.filter((g) => !names.has(g.name));
+    const skipped = valid.length - newPending.length;
+    if (newPending.length === 0) {
+      setPendingGroups([]);
       setIsGroupManagerOpen(false);
       return;
     }
-    const newGroups = [...activeTeamsGroups, { name: newGroupName.trim(), type: newGroupType, platform: newGroupPlatform }];
+    const newGroups = [
+      ...activeTeamsGroups,
+      ...newPending.map((g) => ({ name: g.name, type: g.type, platform: g.platform })),
+    ];
     setActiveTeamsGroups(newGroups);
-    setNewGroupName("");
-    setIsDropdownOpen(false);
+    setPendingGroups([]);
+    setOpenDropdownId(null);
+    setDropdownAnchor(null);
     setIsGroupManagerOpen(false); // Close modal on success
-    
+
     await pm.updateProject({
       id: project._id,
       teamsGroups: newGroups,
     });
 
-    // Tự động đồng bộ chat cho nhóm vừa thêm
-    const newChatName = newGroupName.trim();
-    const headless = localStorage.getItem("headlessMode") !== "false";
-    fetch("/api/agents/sync-single-chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: project._id,
-        chatName: newChatName,
-        platform: newGroupPlatform,
-        headless,
-      }),
-    }).catch(console.error);
+    // Tự động đồng bộ chat cho từng nhóm vừa thêm (hiện animation trạng thái trên UI)
+    newPending.forEach((g) => {
+      syncChat(g.name, g.platform);
+    });
   };
 
   const handleRemoveGroup = async (idx: number) => {
@@ -1075,6 +1112,79 @@ ${resourceTicketsLinks}
     });
   };
 
+  // Thêm một dòng nhập nhóm mới vào dialog (Enter ở dòng cuối / nút "Thêm dòng")
+  const addPendingRow = (platform: "teams" | "zalo") => {
+    const newId = crypto.randomUUID();
+    setPendingGroups((prev) => [...prev, {
+      id: newId,
+      name: "",
+      type: "customer",
+      platform,
+    }]);
+    setOpenDropdownId(newId);
+    setDropdownAnchor(null);
+    // Đợi row render xong rồi mới đo vị trí input để gắn dropdown fixed
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => updateDropdownAnchor(newId));
+    });
+  };
+
+  // Thêm nhanh 1 nhóm đã sync (từ DB scrapedGroups) vào dự án
+  const quickAddGroup = async (name: string, platform: "teams" | "zalo") => {
+    if (!name.trim()) return;
+    if (activeTeamsGroups.some((g) => g.name === name.trim())) return; // trùng — bỏ qua
+    const newGroups = [
+      ...activeTeamsGroups,
+      { name: name.trim(), type: "customer" as const, platform },
+    ];
+    setActiveTeamsGroups(newGroups);
+    await pm.updateProject({
+      id: project._id,
+      teamsGroups: newGroups,
+    });
+    syncChat(name.trim(), platform);
+  };
+
+  // ─── Sync helper: gọi sync-single-chat cho 1 nhóm + hiển thị animation trạng thái ───
+  const invalidateRef = useRef<((patterns: string[]) => Promise<any>) | null>(null);
+  invalidateRef.current = useInvalidate();
+  const invalidateAfterSync = useCallback(() => {
+    invalidateRef.current?.(["chats:", "suggestions:", "logs:"]);
+  }, []);
+  const syncChat = useCallback(async (name: string, platform: string, mode?: "incremental" | "full") => {
+    if (!project?._id || syncingGroups.has(name)) return;
+    setSyncErrors((prev) => { const n = { ...prev }; delete n[name]; return n; });
+    setSyncingGroups((prev) => new Set(prev).add(name));
+    try {
+      const res = await fetch("/api/agents/sync-single-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project._id,
+          chatName: name,
+          platform,
+          syncMode: mode ?? "incremental",
+          headless: localStorage.getItem("headlessMode") !== "false",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        const errMsg = data.error || `HTTP ${res.status}`;
+        setSyncErrors((prev) => ({ ...prev, [name]: errMsg }));
+        console.error(`Sync "${name}" failed:`, errMsg);
+      }
+      invalidateAfterSync();
+    } catch (err) {
+      setSyncErrors((prev) => ({ ...prev, [name]: err instanceof Error ? err.message : "Lỗi không xác định" }));
+      console.error(`Sync "${name}" failed:`, err);
+    } finally {
+      setSyncingGroups((prev) => {
+        const n = new Set(prev);
+        n.delete(name);
+        return n;
+      });
+    }
+  }, [project?._id, syncingGroups, invalidateAfterSync]);
 
   const nmx = useNoteMutations();
 
@@ -1329,14 +1439,15 @@ ${resourceTicketsLinks}
     }
   }, [summaryText]);
 
-  const handleSendZalo = useCallback(async (chatName: string, message: string) => {
+  const handleSendChat = useCallback(async (chatName: string, platform: string, message: string) => {
     if (!chatName || !message.trim()) return;
     if (sending) return;
     setSending(true);
     setSendError(null);
     setLastSent(null);
     try {
-      const res = await fetch("/api/agents/zalo-send", {
+      const isZalo = platform === "zalo";
+      const res = await fetch(isZalo ? "/api/agents/zalo-send" : "/api/agents/teams-send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1351,10 +1462,10 @@ ${resourceTicketsLinks}
         setSendMessage("");
         setLastSent({ ok: true, chatName, dryRun: !!data.dryRun, at: Date.now() });
       } else {
-        setSendError(data.error || "Không gửi được tin nhắn.");
+        setSendError(data.error || `Không gửi được tin nhắn ${isZalo ? "Zalo" : "Teams"}.`);
       }
     } catch (err) {
-      console.error("Send Zalo failed:", err);
+      console.error("Send chat failed:", err);
       setSendError("Lỗi khi gửi tin nhắn: " + (err instanceof Error ? err.message : "unknown error"));
     } finally {
       setSending(false);
@@ -1403,30 +1514,6 @@ ${resourceTicketsLinks}
         </button>
         <button
           type="button"
-          onClick={() => handleTabChange("summary")}
-          className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-            tab === "summary"
-              ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
-          }`}
-        >
-          <BarChart3 className="w-3 h-3" />
-          Summary
-        </button>
-        <button
-          type="button"
-          onClick={() => handleTabChange("history")}
-          className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-            tab === "history"
-              ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
-          }`}
-        >
-          <ListTodo className="w-3 h-3" />
-          Lịch sử ({projectTasks.length})
-        </button>
-        <button
-          type="button"
           onClick={() => handleTabChange("notes")}
           className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
             tab === "notes"
@@ -1461,50 +1548,36 @@ ${resourceTicketsLinks}
           <Users className="w-3 h-3" />
           Members ({projectMembers?.length || 0})
         </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
+              ["summary", "history"].includes(tab)
+                ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+            }`}
+          >
+            <ListPlus className="w-3 h-3" />
+            Khác <ChevronDown className="w-3 h-3 opacity-50" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48 text-[11px]">
+            <DropdownMenuItem onClick={() => handleTabChange("summary")} className="cursor-pointer gap-2">
+              <BarChart3 className="w-3 h-3" />
+              Summary
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleTabChange("history")} className="cursor-pointer gap-2">
+              <ListTodo className="w-3 h-3" />
+              Lịch sử ({projectTasks.length})
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Tab Content */}
       <div className={`p-3 ${tab === "chats" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
         {tab === "info" ? (
           <div className="space-y-1.5">
-            {/* ISD Configuration — compact */}
-            <div className="flex items-center gap-1.5 px-1.5 py-1 rounded-lg bg-card/20">
-              <input
-                type="text"
-                placeholder="ISD Ticket ID"
-                defaultValue={(project as any).ticketId || ""}
-                onBlur={async (e) => {
-                  const val = e.target.value.trim() || undefined;
-                  if (val !== ((project as any).ticketId || undefined)) {
-                    await pm.updateProject({ id: project._id, ticketId: val });
-                  }
-                }}
-                onKeyDown={async (e) => {
-                  if (e.key === "Enter") {
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-                className="flex-1 h-6 text-[10px] bg-background/50 border border-border/50 rounded-md px-1.5 outline-none focus:border-primary/50 transition-colors placeholder:text-muted-foreground/40"
-              />
-              {(project as any).ticketId && (
-                <a
-                  href={`https://servicedesk.fci.vn/browse/${(project as any).ticketId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              )}
-              {(project as any).ticketId && (project as any).isdStatus && (
-                <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
-                  {(project as any).isdStatus}
-                </span>
-              )}
-            </div>
-
             {/* WYSIWYG Editor — compact */}
-            <div className="relative min-h-[180px] border border-border/50 rounded-lg overflow-hidden">
+            <div className="relative min-h-[120px] max-h-[250px] overflow-y-auto border border-border/50 rounded-lg">
               <WysiwygEditor
                 key={project._id}
                 content={editorContent}
@@ -1515,27 +1588,10 @@ ${resourceTicketsLinks}
                 onImageUpload={handleImageUpload}
               />
             </div>
-
-            {/* Quick actions */}
-            <div className="flex items-center gap-2">
-              <EmailComposeDialog
-                projectId={project._id as any}
-                defaultSubject={`[${project.name}] `}
-                trigger={
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium text-muted-foreground hover:text-primary hover:bg-primary/10 border border-border/40 hover:border-primary/30 transition-all cursor-pointer"
-                  >
-                    <Mail className="w-3 h-3" />
-                    Gửi Email
-                  </button>
-                }
-              />
-            </div>
           </div>
         ) : tab === "notes" ? (
           /* Notes Tab — project notes from notes table */
-          <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
             {/* Add Note Button */}
             {creatingNote ? (
               <div className="flex items-center gap-2 p-2 border border-primary/30 rounded-lg bg-primary/5">
@@ -1613,7 +1669,7 @@ ${resourceTicketsLinks}
           </div>
         ) : tab === "summary" ? (
           /* Summary Tab — JIRA-ready copy */
-          <div className="space-y-3 max-h-[440px] overflow-y-auto pr-1">
+          <div className="space-y-3 max-h-[250px] overflow-y-auto pr-1">
             {/* Copy header */}
             <div className="flex items-center justify-between bg-gradient-to-br from-primary/5 to-primary/[0.02] border border-primary/20 rounded-xl px-3 py-2.5">
               <div className="flex items-center gap-2">
@@ -1717,7 +1773,7 @@ ${resourceTicketsLinks}
           </div>
         ) : tab === "history" ? (
           /* History Tab — timeline view */
-          <div className="space-y-3 max-h-[440px] overflow-y-auto pr-1">
+          <div className="space-y-3 max-h-[250px] overflow-y-auto pr-1">
             {/* Stats card */}
             <div className="bg-gradient-to-br from-card to-muted/30 border border-border/50 rounded-xl p-3 shadow-sm">
               <div className="flex items-center justify-between mb-2.5">
@@ -1785,9 +1841,9 @@ ${resourceTicketsLinks}
             </div>
           </div>
         ) : tab === "chats" ? (
-          <div className="flex gap-3 h-full min-h-0">
+          <div className="flex gap-2 h-full min-h-0">
             {/* ── LEFT COLUMN: Chat List & Management ── */}
-            <div className="w-56 shrink-0 flex flex-col gap-2 overflow-y-auto custom-scrollbar pr-1">
+            <div className="w-56 shrink-0 flex flex-col gap-1.5 overflow-y-auto custom-scrollbar pr-1">
               {/* Header */}
               <div className="flex items-center justify-between shrink-0">
                 <span className="text-[12px] font-semibold text-foreground/90 flex items-center gap-1.5">
@@ -1801,7 +1857,7 @@ ${resourceTicketsLinks}
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </DialogTrigger>
-                  <DialogContent className="sm:max-w-md bg-card border-border">
+                  <DialogContent className="sm:max-w-xl bg-card border-border">
                     <DialogHeader>
                       <DialogTitle className="text-lg font-bold flex items-center gap-2">
                         <MessageSquare className="w-5 h-5 text-primary" />
@@ -1809,50 +1865,158 @@ ${resourceTicketsLinks}
                       </DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
-                      <div className="flex gap-3">
-                        <div className="flex-1 space-y-1.5">
-                          <label className="text-sm font-medium text-foreground/80">Nền tảng</label>
-                          <select
-                            value={newGroupPlatform}
-                            onChange={(e) => { setNewGroupPlatform(e.target.value as "teams" | "zalo"); setIsDropdownOpen(true); }}
-                            className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-primary/50"
-                          >
-                            <option value="teams">Microsoft Teams</option>
-                            <option value="zalo">Zalo Web</option>
-                          </select>
-                        </div>
-                        <div className="flex-1 space-y-1.5">
-                          <label className="text-sm font-medium text-foreground/80">Loại nhóm</label>
-                          <select
-                            value={newGroupType}
-                            onChange={(e) => setNewGroupType(e.target.value as "internal" | "customer")}
-                            className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-primary/50"
-                          >
-                            <option value="customer">Khách hàng</option>
-                            <option value="internal">Nội bộ</option>
-                          </select>
-                        </div>
+                      <p className="text-sm text-muted-foreground">
+                        Thêm nhiều nhóm cùng lúc — mỗi dòng chọn nền tảng (Teams/Zalo) và loại nhóm (Khách hàng/Nội bộ).
+                      </p>
+
+                      <div
+                        className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1"
+                        onScroll={() => openDropdownId && updateDropdownAnchor(openDropdownId)}
+                      >
+                        {pendingGroups.map((row) => {
+                          const chatList = row.platform === "zalo" ? availableZaloChats : availableTeamsChats;
+                          const matches = chatList.filter((c: any) =>
+                            c.name.toLowerCase().includes(row.name.toLowerCase())
+                          );
+                          return (
+                            <div key={row.id} className="flex gap-2 items-start">
+                              <div className="w-28 shrink-0 space-y-1">
+                                <label className="text-xs font-medium text-foreground/70">Nền tảng</label>
+                                <select
+                                  value={row.platform}
+                                  onChange={(e) => {
+                                    setPendingGroups((prev) =>
+                                      prev.map((r) =>
+                                        r.id === row.id ? { ...r, platform: e.target.value as "teams" | "zalo" } : r
+                                      )
+                                    );
+                                    setOpenDropdownId(row.id);
+                                    updateDropdownAnchor(row.id);
+                                  }}
+                                  className="w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary/50"
+                                >
+                                  <option value="teams">Teams</option>
+                                  <option value="zalo">Zalo</option>
+                                </select>
+                              </div>
+                              <div className="w-24 shrink-0 space-y-1">
+                                <label className="text-xs font-medium text-foreground/70">Loại nhóm</label>
+                                <select
+                                  value={row.type}
+                                  onChange={(e) => {
+                                    setPendingGroups((prev) =>
+                                      prev.map((r) =>
+                                        r.id === row.id ? { ...r, type: e.target.value as "internal" | "customer" } : r
+                                      )
+                                    );
+                                  }}
+                                  className="w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary/50"
+                                >
+                                  <option value="customer">Khách hàng</option>
+                                  <option value="internal">Nội bộ</option>
+                                </select>
+                              </div>
+                              <div className="flex-1 space-y-1">
+                                <label className="text-xs font-medium text-foreground/70">Tên nhóm chat</label>
+                                <input
+                                  type="text"
+                                  data-dropdown-row={row.id}
+                                  value={row.name}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setPendingGroups((prev) =>
+                                      prev.map((r) =>
+                                        r.id === row.id ? { ...r, name: v } : r
+                                      )
+                                    );
+                                    setOpenDropdownId(row.id);
+                                    updateDropdownAnchor(row.id);
+                                  }}
+                                  placeholder={`Tên nhóm ${row.platform === "zalo" ? "Zalo" : "Teams"}...`}
+                                  className="w-full px-2.5 py-1.5 rounded-md bg-background border border-border text-sm outline-none focus:border-primary/50"
+                                  onFocus={() => {
+                                    setOpenDropdownId(row.id);
+                                    updateDropdownAnchor(row.id);
+                                  }}
+                                  onBlur={() => setTimeout(() => {
+                                    setOpenDropdownId((cur) => (cur === row.id ? null : cur));
+                                    setDropdownAnchor(null);
+                                  }, 200)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      addPendingRow(row.platform);
+                                    }
+                                  }}
+                                />
+                                {/^https?:\/\//i.test(row.name.trim()) && (() => {
+                                  const derived = deriveGroupFromUrl(row.name.trim());
+                                  return (
+                                    <div className="text-[10px] leading-snug px-0.5">
+                                      {derived ? (
+                                        <span className="text-emerald-600 dark:text-emerald-400">
+                                          Tự nhận diện: nhóm {derived.platform === "zalo" ? "Zalo" : "Teams"} ({derived.name})
+                                        </span>
+                                      ) : (
+                                        <span className="text-amber-600 dark:text-amber-400">
+                                          Link này không nhận diện được — vui lòng gõ tên nhóm chính xác (không dùng link)
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingGroups((prev) => prev.filter((r) => r.id !== row.id));
+                                  setOpenDropdownId((cur) => (cur === row.id ? null : cur));
+                                  setDropdownAnchor(null);
+                                }}
+                                className="mt-5 p-1 text-muted-foreground/40 hover:text-rose-500 transition-colors shrink-0"
+                                title="Xoá dòng này"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
-                      
-                      <div className="space-y-1.5 relative">
-                        <label className="text-sm font-medium text-foreground/80">Tên nhóm chat</label>
-                        <input
-                          type="text"
-                          value={newGroupName}
-                          onChange={(e) => { setNewGroupName(e.target.value); setIsDropdownOpen(true); }}
-                          placeholder="Nhập tên chính xác của nhóm chat..."
-                          className="w-full px-3 py-2 rounded-md bg-background border border-border text-sm outline-none focus:border-primary/50"
-                          onFocus={() => setIsDropdownOpen(true)}
-                          onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
-                          onKeyDown={(e) => { if (e.key === "Enter") handleAddGroup(); }}
-                        />
-                        {isDropdownOpen && (
-                          <div className="absolute top-full left-0 w-full mt-1 bg-background border border-border rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
-                               onMouseDown={(e) => e.preventDefault() /* keep input focus while clicking list */}>
-                            {(newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats)
-                              .filter((c: any) => c.name.toLowerCase().includes(newGroupName.toLowerCase()))
-                              .map((chat: any, i: number) => (
-                                <div key={i} onClick={() => { setNewGroupName(chat.name); setIsDropdownOpen(false); }} className="px-3 py-2 text-sm hover:bg-muted cursor-pointer flex items-center justify-between gap-2">
+
+                      {openDropdownId && dropdownAnchor && (() => {
+                        const activeRow = pendingGroups.find((r) => r.id === openDropdownId);
+                        if (!activeRow) return null;
+                        const chatList = activeRow.platform === "zalo" ? availableZaloChats : availableTeamsChats;
+                        const matches = chatList.filter((c: any) =>
+                          c.name.toLowerCase().includes(activeRow.name.toLowerCase())
+                        );
+                        // Portal ra document.body để thoát khỏi containing block của Radix Dialog
+                        // (position:fixed bên trong dialog bị tính sai vị trí khi dialog có transform/zoom)
+                        return createPortal(
+                          <div
+                            className="fixed bg-background border border-border rounded-md shadow-lg max-h-40 overflow-y-auto z-[100] custom-scrollbar"
+                            style={{ top: dropdownAnchor.top, left: dropdownAnchor.left, width: dropdownAnchor.width }}
+                            onMouseDown={(e) => e.preventDefault() /* keep input focus while clicking list */}
+                            onScroll={() => updateDropdownAnchor(openDropdownId)}
+                          >
+                            <div className="sticky top-0 bg-background/95 backdrop-blur px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border/40">
+                              Nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"} ({chatList.length})
+                            </div>
+                            {matches.length > 0 ? (
+                              matches.map((chat: any, i: number) => (
+                                <div
+                                  key={i}
+                                  onClick={() => {
+                                    setPendingGroups((prev) =>
+                                      prev.map((r) =>
+                                        r.id === activeRow.id ? { ...r, name: chat.name } : r
+                                      )
+                                    );
+                                    setOpenDropdownId(null);
+                                    setDropdownAnchor(null);
+                                  }}
+                                  className="px-3 py-1.5 text-sm hover:bg-muted cursor-pointer flex items-center justify-between gap-2"
+                                >
                                   <span className="truncate">{chat.name}</span>
                                   {chat.scrapedAt && (
                                     <span className="text-[9px] text-muted-foreground/50 shrink-0">
@@ -1860,13 +2024,13 @@ ${resourceTicketsLinks}
                                     </span>
                                   )}
                                 </div>
-                              ))}
-                            {(newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats).length === 0 && (
+                              ))
+                            ) : chatList.length === 0 ? (
                               <div className="px-3 py-3 text-xs text-muted-foreground space-y-2">
-                                <div>Chưa có danh sách nhóm {newGroupPlatform === "zalo" ? "Zalo" : "Teams"}.</div>
+                                <div>Chưa có danh sách nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"}.</div>
                                 <button
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); fetchChats(newGroupPlatform); }}
+                                  onClick={(e) => { e.stopPropagation(); fetchChats(activeRow.platform); }}
                                   disabled={fetchingChats}
                                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                                 >
@@ -1874,23 +2038,49 @@ ${resourceTicketsLinks}
                                   Tải danh sách nhóm
                                 </button>
                               </div>
-                            )}
-                            {(newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats).length > 0 &&
-                              (newGroupPlatform === "zalo" ? availableZaloChats : availableTeamsChats)
-                                .filter((c: { name: string }) => c.name.toLowerCase().includes(newGroupName.toLowerCase())).length === 0 && (
-                              <div className="px-3 py-3 text-xs text-muted-foreground">
-                                Không tìm thấy nhóm nào khớp &quot;{newGroupName}&quot;. Bạn có thể gõ tên chính xác và thêm trực tiếp.
+                            ) : (
+                              <div className="px-3 py-3 text-xs text-muted-foreground space-y-1">
+                                <div>
+                                  Không tìm thấy nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"} nào khớp &quot;{activeRow.name}&quot;.
+                                </div>
+                                <div className="text-[10px] text-muted-foreground/70">
+                                  Đổi Nền tảng sang {activeRow.platform === "zalo" ? "Teams" : "Zalo"} nếu nhóm bạn cần thuộc kênh kia, hoặc gõ tên chính xác để thêm trực tiếp.
+                                </div>
                               </div>
                             )}
-                          </div>
-                        )}
-                        <p className="text-xs text-muted-foreground">Bạn có thể gõ một phần tên để tìm kiếm nếu đã lấy danh sách chat.</p>
-                      </div>
+                          </div>,
+                          document.body
+                        );
+                      })()}
 
-                      <div className="flex justify-end gap-2 pt-2">
+                      <div className="flex justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => setIsGroupManagerOpen(false)}
+                          onClick={() => addPendingRow("teams")}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors inline-flex items-center gap-1"
+                        >
+                          <Plus className="w-3 h-3" /> Thêm dòng
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => fetchChats()}
+                          disabled={fetchingChats}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md bg-purple-500/10 text-purple-700 dark:text-purple-300 hover:bg-purple-500/20 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                        >
+                          {fetchingChats ? <Loader2 className="w-3 h-3 animate-spin" /> : "🔄"}
+                          Tải danh sách nhóm (Teams + Zalo)
+                        </button>
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-2 border-t border-border/40">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPendingGroups([]);
+                            setOpenDropdownId(null);
+                            setDropdownAnchor(null);
+                            setIsGroupManagerOpen(false);
+                          }}
                           className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted transition-colors"
                         >
                           Hủy
@@ -1898,10 +2088,10 @@ ${resourceTicketsLinks}
                         <button
                           type="button"
                           onClick={handleAddGroup}
-                          disabled={!newGroupName.trim()}
+                          disabled={pendingGroups.every((g) => g.name.trim() === "")}
                           className="px-4 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
                         >
-                          Thêm nhóm
+                          Thêm {pendingGroups.filter((g) => g.name.trim() !== "").length} nhóm
                         </button>
                       </div>
                     </div>
@@ -1916,16 +2106,27 @@ ${resourceTicketsLinks}
                     <button
                       type="button"
                       onClick={() => setSelectedChatGroup(group.name)}
-                      className={`flex-1 text-left px-2.5 py-1.5 text-[11px] font-medium rounded-lg transition-all flex items-center gap-2 truncate ${
+                      className={`flex-1 text-left px-2 py-1 text-[10px] font-medium rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
                         selectedChatGroup === group.name
                           ? "bg-primary text-primary-foreground shadow-sm"
                           : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                       }`}
                     >
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      <span className={`w-1 h-1 rounded-full shrink-0 ${
                         group.type === "customer" ? "bg-orange-500" : "bg-blue-500"
                       }`} />
-                      <span className="truncate">{group.name}</span>
+                      <span className="truncate flex-1 min-w-0">{group.name}</span>
+                      {syncingGroups.has(group.name) && (
+                        <Loader2 className="w-2.5 h-2.5 animate-spin text-primary shrink-0" />
+                      )}
+                      {syncErrors[group.name] && (
+                        <span
+                          className="text-[7px] px-1 py-0.5 rounded font-medium shrink-0 bg-red-500/10 text-red-600 dark:text-red-400"
+                          title={syncErrors[group.name]}
+                        >
+                          Lỗi
+                        </span>
+                      )}
                       <span className={`text-[7px] px-1 py-0.5 rounded font-bold shrink-0 ${
                         (group.platform || "teams") === "zalo"
                           ? "bg-blue-600/10 text-blue-700 dark:text-blue-300"
@@ -1941,57 +2142,31 @@ ${resourceTicketsLinks}
                         {group.type === "customer" ? "KH" : "NB"}
                       </span>
                     </button>
-                    {group.url && (
-                      <a
-                        href={group.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="p-1 text-muted-foreground/30 hover:text-primary opacity-0 group-hover:opacity-100 transition-all shrink-0"
-                        title={`Mở "${group.name}" trong browser`}
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (isSyncing) return;
-                        setIsSyncing(true);
-                        try {
-                          // Clear old messages for this group only
-                          await cmx.clearProjectMessages(project._id, group.name);
-                          // Start sync for this specific group
-                          await fetch("/api/agents/sync-single-chat", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              projectId: project._id,
-                              chatName: group.name,
-                              platform: group.platform || "teams",
-                              headless: localStorage.getItem("headlessMode") !== "false",
-                            }),
-                          });
-                        } catch (err) {
-                          console.error("Sync failed:", err);
-                        } finally {
-                          setIsSyncing(false);
-                        }
-                      }}
-                      disabled={isSyncing}
-                      className="p-1 text-muted-foreground/30 hover:text-primary opacity-0 group-hover:opacity-100 transition-all shrink-0"
-                      title="Đồng bộ nhóm này (xóa cũ + lấy mới)"
-                    >
-                      {isSyncing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "🔄"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveGroup(idx)}
-                      className="p-1 text-muted-foreground/30 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all shrink-0"
-                      title="Xóa nhóm"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger className="p-1 text-muted-foreground/30 hover:text-primary opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                        <MoreHorizontal className="w-3.5 h-3.5" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-48 text-[11px]">
+                        {group.url && (
+                          <DropdownMenuItem onClick={() => window.open(group.url, '_blank')} className="cursor-pointer gap-2">
+                            <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
+                            Mở trong browser
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem onClick={() => syncChat(group.name, group.platform || "teams")} disabled={syncingGroups.has(group.name)} className="cursor-pointer gap-2">
+                          {syncingGroups.has(group.name) ? <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" /> : <RefreshCw className="w-3.5 h-3.5 text-muted-foreground" />}
+                          Đồng bộ mới nhất
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => syncChat(group.name, group.platform || "teams", "full")} disabled={syncingGroups.has(group.name)} className="cursor-pointer gap-2">
+                          <RefreshCcw className="w-3.5 h-3.5 text-muted-foreground" />
+                          Đồng bộ toàn bộ
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleRemoveGroup(idx)} className="cursor-pointer gap-2 text-red-500 focus:text-red-600 focus:bg-red-50 dark:focus:bg-red-950/50">
+                          <X className="w-3.5 h-3.5" />
+                          Xóa khỏi dự án
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 ))}
                 {activeTeamsGroups.length === 0 && (
@@ -2000,8 +2175,93 @@ ${resourceTicketsLinks}
                   </div>
                 )}
               </div>
-              
-              {/* Group Manager has been moved to a Dialog above */}
+
+              {/* Nhóm đã sync từ Teams/Zalo (lưu trong DB scrapedGroups) — chọn nhanh để thêm vào dự án */}
+              {(savedTeamsChats.length > 0 || savedZaloChats.length > 0) && (
+                <div className="pt-2 border-t border-border/30">
+                  <div className="flex items-center justify-between px-1 mb-1 mt-2">
+                    <span className="text-[11px] font-semibold text-foreground/80 flex items-center gap-1.5">
+                      <Download className="w-3 h-3 text-muted-foreground" />
+                      Nhóm đã sync ({savedTeamsChats.length + savedZaloChats.length})
+                    </span>
+                  </div>
+                  <div className="space-y-0.5 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                    {savedTeamsChats.map((g: any) => {
+                      const isAdded = activeTeamsGroups.some((ag) => ag.name === g.name);
+                      return (
+                        <div key={`t-${g._id ?? g.name}`} className="group flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={isAdded}
+                            onClick={() => quickAddGroup(g.name, "teams")}
+                            className={`flex-1 text-left px-2 py-1 text-[10px] rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
+                              isAdded
+                                ? "text-muted-foreground/40 cursor-default"
+                                : "text-muted-foreground hover:text-foreground hover:bg-muted/50 cursor-pointer"
+                            }`}
+                            title={isAdded ? "Đã có trong dự án" : `Thêm "${g.name}" vào dự án`}
+                          >
+                            <span className="w-1 h-1 rounded-full shrink-0 bg-muted-foreground/30" />
+                            <span className="truncate flex-1 min-w-0">{g.name}</span>
+                            <span className="text-[7px] px-1 py-0.5 rounded font-bold shrink-0 bg-violet-500/10 text-violet-600 dark:text-violet-400">Teams</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isAdded}
+                            onClick={() => quickAddGroup(g.name, "teams")}
+                            className={`shrink-0 p-0.5 rounded transition-all ${
+                              isAdded
+                                ? "text-emerald-500/60 cursor-default"
+                                : "text-muted-foreground/40 hover:text-primary hover:bg-muted/50 cursor-pointer"
+                            }`}
+                            title={isAdded ? "Đã thêm" : "Thêm vào dự án"}
+                          >
+                            {isAdded ? <Check className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {savedZaloChats.map((g: any) => {
+                      const isAdded = activeTeamsGroups.some((ag) => ag.name === g.name);
+                      return (
+                        <div key={`z-${g._id ?? g.name}`} className="group flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={isAdded}
+                            onClick={() => quickAddGroup(g.name, "zalo")}
+                            className={`flex-1 text-left px-2 py-1 text-[10px] rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
+                              isAdded
+                                ? "text-muted-foreground/40 cursor-default"
+                                : "text-muted-foreground hover:text-foreground hover:bg-muted/50 cursor-pointer"
+                            }`}
+                            title={isAdded ? "Đã có trong dự án" : `Thêm "${g.name}" vào dự án`}
+                          >
+                            <span className="w-1 h-1 rounded-full shrink-0 bg-muted-foreground/30" />
+                            <span className="truncate flex-1 min-w-0">{g.name}</span>
+                            <span className="text-[7px] px-1 py-0.5 rounded font-bold shrink-0 bg-blue-600/10 text-blue-700 dark:text-blue-300">Zalo</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isAdded}
+                            onClick={() => quickAddGroup(g.name, "zalo")}
+                            className={`shrink-0 p-0.5 rounded transition-all ${
+                              isAdded
+                                ? "text-emerald-500/60 cursor-default"
+                                : "text-muted-foreground/40 hover:text-primary hover:bg-muted/50 cursor-pointer"
+                            }`}
+                            title={isAdded ? "Đã thêm" : "Thêm vào dự án"}
+                          >
+                            {isAdded ? <Check className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[8px] text-muted-foreground/40 px-1 pt-1">
+                    Nhóm đã lưu trong DB sau khi tải danh sách. Click + để thêm vào dự án.
+                  </div>
+                </div>
+              )}
               
               {/* Sync buttons — each group has its own sync on hover */}
               <div className="flex items-center gap-1.5 pt-2 border-t border-border/30">
@@ -2019,6 +2279,16 @@ ${resourceTicketsLinks}
                   <span>Tải nhóm</span>
                 </button>
               </div>
+              {chatFetchError && (
+                <div className="mt-1 px-1">
+                  <div className="text-[9px] text-red-600 dark:text-red-400 bg-red-500/5 border border-red-500/20 rounded-md px-2 py-1.5 leading-snug">
+                    {chatFetchError}
+                    <div className="mt-0.5 text-red-500/80">
+                      Mẹo: mở Chrome thật CDP (port 9222) trước khi tải — xem PROJECT_STATUS.md mục CDP mode.
+                    </div>
+                  </div>
+                </div>
+              )}
               {(lastListedAt.teams || lastListedAt.zalo) && (
                 <div className="text-[8px] text-muted-foreground/50 px-1 flex items-center gap-2">
                   {lastListedAt.teams && (
@@ -2095,6 +2365,21 @@ ${resourceTicketsLinks}
                   {projectChats?.filter((m: any) => m.chatName === selectedChatGroup)?.length || 0
                   } tin nhắn
                 </span>
+                {selectedChatGroup && syncingGroups.has(selectedChatGroup) && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded-full animate-pulse">
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    Đang đồng bộ...
+                  </span>
+                )}
+                {selectedChatGroup && syncErrors[selectedChatGroup] && !syncingGroups.has(selectedChatGroup) && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full"
+                    title={syncErrors[selectedChatGroup]}
+                  >
+                    <AlertTriangle className="w-2.5 h-2.5" />
+                    Lỗi đồng bộ
+                  </span>
+                )}
                 <div className="relative ml-auto w-40">
                   <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/60 pointer-events-none" />
                   <input
@@ -2143,23 +2428,14 @@ ${resourceTicketsLinks}
                       try {
                         await cmx.clearProjectMessages(project._id, selectedChatGroup);
                         // Trigger a re-sync for this specific group
-                        fetch("/api/agents/sync-single-chat", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            projectId: project._id,
-                            chatName: selectedChatGroup,
-                            platform: activeTeamsGroups.find(g => g.name === selectedChatGroup)?.platform || "teams",
-                            headless: localStorage.getItem("headlessMode") !== "false",
-                          }),
-                        }).catch(console.error);
+                        syncChat(selectedChatGroup, activeTeamsGroups.find(g => g.name === selectedChatGroup)?.platform || "teams");
                       } catch (err) {
                         console.error("Failed to clear messages:", err);
                       } finally {
                         setIsClearing(false);
                       }
                     }}
-                    disabled={isClearing || !selectedChatGroup}
+                    disabled={isClearing || !selectedChatGroup || syncingGroups.has(selectedChatGroup)}
                     className="text-[9px] px-1.5 py-1 rounded border transition-all flex items-center gap-1 cursor-pointer bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/30 hover:bg-red-500/20 disabled:opacity-50"
                     title={selectedChatGroup ? `Xóa dữ liệu chat của "${selectedChatGroup}" và đồng bộ lại` : "Chọn nhóm chat trước"}
                   >
@@ -2171,10 +2447,27 @@ ${resourceTicketsLinks}
               
               {/* Messages Area */}
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col pb-4 pr-2">
-              {projectChats?.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
-                  <span className="text-[12px]">Chưa có tin nhắn nào.</span>
+              {selectedChatGroup && syncingGroups.has(selectedChatGroup) && (
+                <div className="shrink-0 mb-2 px-3 py-2 rounded-lg border border-primary/20 bg-primary/5 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+                  <span className="text-[11px] font-medium text-primary">
+                    Đang đồng bộ chat "{selectedChatGroup}" — đang mở Teams/Zalo để lấy tin nhắn mới...
+                  </span>
                 </div>
+              )}
+              {(!projectChats || projectChats.length === 0) ? (
+                selectedChatGroup && syncingGroups.has(selectedChatGroup) ? (
+                  <div className="flex flex-col gap-3 pt-2 px-1">
+                    <div className="flex justify-start"><div className="w-48 h-10 rounded-xl rounded-bl-none bg-muted/40 animate-pulse" /></div>
+                    <div className="flex justify-end"><div className="w-56 h-14 rounded-xl rounded-br-none bg-primary/10 animate-pulse" /></div>
+                    <div className="flex justify-start"><div className="w-32 h-10 rounded-xl rounded-bl-none bg-muted/40 animate-pulse" /></div>
+                    <div className="flex justify-start"><div className="w-64 h-16 rounded-xl rounded-bl-none bg-muted/40 animate-pulse" /></div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
+                    <span className="text-[12px]">Chưa có tin nhắn nào.</span>
+                  </div>
+                )
               ) : (
                 (() => {
                   const q = chatSearch.trim().toLowerCase();
@@ -2187,6 +2480,16 @@ ${resourceTicketsLinks}
                     );
                   }
                   if (chatMessages.length === 0) {
+                    if (syncingGroups.has(selectedChatGroup)) {
+                      return (
+                        <div className="flex flex-col gap-3 pt-2 px-1">
+                          <div className="flex justify-start"><div className="w-48 h-10 rounded-xl rounded-bl-none bg-muted/40 animate-pulse" /></div>
+                          <div className="flex justify-end"><div className="w-56 h-14 rounded-xl rounded-br-none bg-primary/10 animate-pulse" /></div>
+                          <div className="flex justify-start"><div className="w-32 h-10 rounded-xl rounded-bl-none bg-muted/40 animate-pulse" /></div>
+                          <div className="flex justify-start"><div className="w-64 h-16 rounded-xl rounded-bl-none bg-muted/40 animate-pulse" /></div>
+                        </div>
+                      );
+                    }
                     return (
                       <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
                         <Search className="w-5 h-5 mb-2 opacity-30" />
@@ -2196,7 +2499,9 @@ ${resourceTicketsLinks}
                       </div>
                     );
                   }
-                  return chatMessages.map((msg: any, idx: number) => {
+                  return (
+                    <>
+                      {chatMessages.map((msg: any, idx: number) => {
                     const prev = idx > 0 ? chatMessages[idx - 1] : undefined;
                     const next = idx < chatMessages.length - 1 ? chatMessages[idx + 1] : undefined;
                     
@@ -2399,11 +2704,21 @@ ${resourceTicketsLinks}
                         </div>
                       </div>
                     );
-                  });
+                  })}
+                  {syncingGroups.has(selectedChatGroup) && (
+                    <div className="flex justify-start mt-4 px-2 pb-4">
+                      <div className="bg-muted/40 text-muted-foreground rounded-xl rounded-bl-none px-4 py-2.5 flex items-center gap-2 w-fit">
+                        <span className="text-[11px] font-medium">Đang tải thêm...</span>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                      </div>
+                    </div>
+                  )}
+                  </>
+                  );
                 })()
               )}
             </div>
-            {/* ── Zalo Send Composer ── */}
+            {/* ── Chat Send Composer (Zalo + Teams) ── */}
             {(() => {
               const sendGroup = activeTeamsGroups.find(g => g.name === selectedChatGroup);
               const isZaloChat = sendGroup?.platform === "zalo";
@@ -2416,27 +2731,25 @@ ${resourceTicketsLinks}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
-                          if (selectedChatGroup && sendMessage.trim()) handleSendZalo(selectedChatGroup, sendMessage);
+                          if (selectedChatGroup && sendMessage.trim() && sendGroup) handleSendChat(sendGroup.name, sendGroup.platform || "teams", sendMessage);
                         }
                       }}
                       placeholder={
                         !selectedChatGroup
                           ? "Chọn một nhóm chat để gửi tin nhắn..."
-                          : isZaloChat
-                            ? "Soạn tin nhắn, nhấn Enter để gửi tới Zalo..."
-                            : "Chỉ nhóm Zalo mới có thể gửi tin từ đây..."
+                          : `Soạn tin nhắn, nhấn Enter để gửi tới ${isZaloChat ? "Zalo" : "Teams"}...`
                       }
-                      disabled={!selectedChatGroup || !isZaloChat || sending}
+                      disabled={!selectedChatGroup || !sendGroup || sending}
                       rows={2}
                       maxLength={2000}
                       className="w-full text-[12px] resize-none rounded-lg bg-muted/50 border border-border/50 outline-none focus:border-primary/40 placeholder:text-muted-foreground/40 px-3 py-2 disabled:opacity-50"
                     />
                     <button
                       type="button"
-                      onClick={() => { const g = sendGroup; if (g && sendMessage) handleSendZalo(g.name, sendMessage); }}
-                      disabled={!selectedChatGroup || !sendMessage.trim() || sending || !isZaloChat}
+                      onClick={() => { if (sendGroup && sendMessage) handleSendChat(sendGroup.name, sendGroup.platform || "teams", sendMessage); }}
+                      disabled={!selectedChatGroup || !sendMessage.trim() || sending || !sendGroup}
                       className="self-end p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-                      title={isZaloChat ? "Gửi tin nhắn Zalo" : "Chỉ hỗ trợ gửi trên nhóm Zalo"}
+                      title={`Gửi tin nhắn ${isZaloChat ? "Zalo" : "Teams"}`}
                     >
                       {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                     </button>
@@ -2705,101 +3018,59 @@ ${resourceTicketsLinks}
                               <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
                             )}
                           </button>
-                          {/* Gửi thẳng qua email sale (gợi ý kickoff) */}
-                          {(() => {
-                            let saleEmail: string | undefined;
-                            let emailSubject: string | undefined;
-                            let emailBody: string | undefined;
-                            try {
-                              if (s.suggestionData) {
-                                const parsed = JSON.parse(s.suggestionData);
-                                saleEmail = parsed?.saleEmail;
-                                emailSubject = parsed?.emailSubject;
-                                emailBody = parsed?.emailBody;
-                              }
-                            } catch { /* ignore malformed data */ }
-                            if (!saleEmail) return null;
-                            return (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEmailTarget({
-                                    s,
-                                    to: [saleEmail as string],
-                                    subject: emailSubject || `[Kickoff] ${s.title}`,
-                                    body: emailBody || s.description,
-                                  });
-                                }}
-                                className="text-[9px] px-2 py-1 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-500/30 hover:bg-teal-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
-                                title={`Gửi tin nhắn qua email: ${saleEmail}`}
-                              >
-                                <Mail className="w-2.5 h-2.5" /> Gửi Email
-                              </button>
-                            );
-                          })()}
-                          {/* Nhắn tới kênh (Teams/Zalo) */}
-                          <div className="relative inline-flex">
+                          {/* Thêm nhóm nội bộ & khách hàng — chuyển tới panel quản lý nhóm của dự án */}
+                          {getGroupAction(s) === "add_groups" && (
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setChannelMenuId(channelMenuId === s._id ? null : s._id);
+                                handleTabChange("chats");
+                                setIsGroupManagerOpen(true);
                               }}
-                              disabled={sendingChannelId !== null}
-                              className="text-[9px] px-2 py-1 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-500/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                              title="Gửi tin nhắn tới kênh nội bộ Teams/Zalo liên quan"
+                              className="text-[9px] px-2 py-1 rounded-md bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-500/30 hover:bg-orange-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                              title="Mở panel quản lý nhóm của dự án để thêm nhóm nội bộ và nhóm khách hàng"
                             >
-                              {sendingChannelId === s._id ? (
-                                <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang gửi...</>
-                              ) : (
-                                <><MessagesSquare className="w-2.5 h-2.5" /> Nhắn kênh</>
-                              )}
+                              <><Users className="w-2.5 h-2.5" /> Thêm nhóm vào dự án</>
                             </button>
-                            {channelMenuId === s._id && (
-                              <div
-                                className="absolute bottom-full right-0 mb-1 w-56 rounded-xl border border-border/60 bg-background dark:bg-zinc-900 shadow-xl z-50 p-1 text-left"
+                          )}
+                          {/* Gửi tin nhắn qua Teams — mở deep link chat 1:1 với Sale, tin nhắn điền sẵn */}
+                          {(() => {
+                            let teamsDeepLink: string | undefined;
+                            let saleEmail: string | undefined;
+                            try {
+                              if (s.suggestionData) {
+                                const parsed = JSON.parse(s.suggestionData);
+                                teamsDeepLink = parsed?.teamsDeepLink;
+                                saleEmail = parsed?.saleEmail;
+                              }
+                            } catch { /* ignore malformed data */ }
+                            if (!teamsDeepLink) return null;
+                            const deepLink = (() => {
+                              try {
+                                const base = new URL(teamsDeepLink);
+                                base.searchParams.set("message", s.description);
+                                return base.toString();
+                              } catch {
+                                return teamsDeepLink;
+                              }
+                            })();
+                            return (
+                              <a
+                                href={deepLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 onClick={(e) => e.stopPropagation()}
+                                className="text-[9px] px-2 py-1 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 hover:bg-sky-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                                title={`Mở chat Teams với Sale: ${saleEmail || ""} — tin nhắn được điền sẵn`}
                               >
-                                <p className="px-2 py-1 text-[9px] font-semibold text-muted-foreground/60 uppercase">
-                                  Chọn kênh gửi
-                                </p>
-                                {getSuggestionChannels(s).length === 0 && (
-                                  <p className="px-2 py-1.5 text-[10px] text-muted-foreground/50">
-                                    Không có kênh liên quan
-                                  </p>
-                                )}
-                                {getSuggestionChannels(s).map((ch) => (
-                                  <button
-                                    key={ch.name + ch.platform}
-                                    type="button"
-                                    onClick={() => handleSendSuggestionToChannel(s, ch)}
-                                    disabled={sendingChannelId !== null}
-                                    className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-muted/60 transition-colors cursor-pointer text-[11px] text-foreground disabled:opacity-50"
-                                  >
-                                    <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-semibold ${
-                                      ch.platform === "zalo"
-                                        ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30"
-                                        : "bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30"
-                                    }`}>
-                                      {ch.platform === "zalo" ? "Zalo" : "Teams"}
-                                    </span>
-                                    <span className="flex-1 truncate">{ch.name}</span>
-                                    <span className="text-[8px] text-muted-foreground/50 shrink-0">{ch.tag}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          {/* Kết quả gửi / lỗi */}
-                          {(sendChannelError || sendChannelOk || taskError) && (
-                            <span className={`text-[9px] ml-1 flex items-center gap-1 ${
-                              (sendChannelError || taskError) ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"
-                            }`}>
-                              {sendChannelError || taskError
-                                ? <AlertTriangle className="w-2.5 h-2.5" />
-                                : <CheckCircle2 className="w-2.5 h-2.5" />}
-                              {sendChannelError || taskError || `Đã gửi tới "${sendChannelOk}"`}
+                                <><MessagesSquare className="w-2.5 h-2.5" /> Gửi tin nhắn qua Teams</>
+                              </a>
+                            );
+                          })()}
+                          {taskError && (
+                            <span className={`text-[9px] ml-1 flex items-center gap-1 text-red-600 dark:text-red-400`}>
+                              <AlertTriangle className="w-2.5 h-2.5" />
+                              {taskError}
                             </span>
                           )}
                         </div>
@@ -3065,19 +3336,6 @@ ${resourceTicketsLinks}
           </div>
         ) : null}
       </div>
-
-      {/* Email dialog cho gợi ý kickoff — controlled, render bất kể tab nào */}
-      {emailTarget && (
-        <EmailComposeDialog
-          key={emailTarget.s._id}
-          projectId={project._id as any}
-          defaultTo={emailTarget.to}
-          defaultSubject={emailTarget.subject}
-          defaultBody={emailTarget.body}
-          open={true}
-          onOpenChange={(open) => { if (!open) setEmailTarget(null); }}
-        />
-      )}
     </div>
   );
 }

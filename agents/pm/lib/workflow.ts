@@ -81,6 +81,8 @@ Chào anh/chị,
 
 Tôi là PM vừa được assign ticket **#${ticketId}** - **${projectName}**.
 
+Vì đây là dự án mới nên tôi cần sync thông tin từ anh/chị về yêu cầu và phạm vi dự án để chuẩn bị triển khai cho đúng.
+
 Nhờ anh/chị add tôi vào:
 1. **Nhóm nội bộ (Internal)** - để trao đổi với team kỹ thuật
 2. **Nhóm khách hàng (External)** - để cập nhật thông tin cho KH

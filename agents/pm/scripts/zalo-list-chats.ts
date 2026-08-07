@@ -18,7 +18,12 @@ async function main() {
   };
 
   const { browser, context } = await createZaloStealthContext(config);
-  const page = context.pages()[0] || await context.newPage();
+  // CDP mode: dùng tab Zalo có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+  let page = context.pages()[0];
+  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+    const zaloPage = context.pages().find((p) => p.url().includes("zalo.me"));
+    page = zaloPage || await context.newPage();
+  }
   await applyStealthPatches(page);
 
   try {
@@ -147,4 +152,8 @@ async function main() {
 
 main().catch((err) => {
   console.log(JSON.stringify({ ok: false, error: String(err) }));
+}).finally(() => {
+  // CDP connection keeps the event loop alive — force-exit so the UI
+  // doesn't wait forever on this child process.
+  process.exit(0);
 });

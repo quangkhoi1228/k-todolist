@@ -15,6 +15,25 @@ function mapMessage(m: any): any {
 // After migration, files are stored as data URLs or /api/files/{id} URLs — no resolution needed.
 
 // ─── Queries ───────────────────────────────────────────────
+/**
+ * Latest timestampMs of a chat group in DB — used as the "already synced up to"
+ * watermark for incremental sync. Returns null when the group has no messages
+ * (never synced before → caller should do a full sync).
+ */
+export async function getLatestTimestampMs(projectId: number | string, chatName: string, platform?: string) {
+  const db = getDb();
+  const pid = Number(projectId);
+  const conditions = [eq(projectChats.projectId, pid), eq(projectChats.chatName, chatName)];
+  if (platform) conditions.push(eq(projectChats.platform, platform));
+
+  const rows = await db
+    .select({ ts: sql<number>`max(${projectChats.timestampMs})` })
+    .from(projectChats)
+    .where(and(...conditions));
+  const ts = rows[0]?.ts;
+  return ts !== undefined && ts !== null ? Number(ts) : null;
+}
+
 export async function getMessagesByProject(projectId: number | string, chatNames?: string[]) {
   const db = getDb();
   const pid = Number(projectId);

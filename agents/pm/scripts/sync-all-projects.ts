@@ -4,10 +4,11 @@ import * as path from "path";
 import * as fs from "fs";
 import dotenv from "dotenv";
 import { getActiveProjectsWithTeamsGroups, getProject, updateProjectTeamsGroups } from "../../../src/lib/repo/projects";
-import { saveMessages, uploadChatImage } from "../../../src/lib/repo/projectChats";
+import { saveMessages, uploadChatImage, getLatestTimestampMs } from "../../../src/lib/repo/projectChats";
 import { runMonitor, type MonitorMessage } from "../lib/monitor";
 import { addLog } from "../../../src/lib/repo/syncLogs";
 import { syncGroups } from "../../../src/lib/repo/groups";
+import { getUserPreferences } from "../../../src/lib/repo/userPreferences";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
@@ -89,6 +90,7 @@ async function log(projectId: string | undefined, chatName: string | undefined, 
   try {
     await addLog({
       projectId: projectId,
+      userId,
       chatName,
       type,
       message,
@@ -156,25 +158,29 @@ async function main() {
       ? p.teamsGroups
       : [];
 
-    // Fallback to old schema fields if needed
-    if (groups.length === 0) {
-      // Legacy fields hold chat NAMES in most cases, but some projects
-      // stored full URLs here. URLs can't be matched in the sidebar, so
-      // skip them (they spam sync_error logs every run).
-      if (p.customerGroupUrl && !p.customerGroupUrl.startsWith("http")) groups.push({ name: p.customerGroupUrl, type: "customer" });
-      if (p.internalGroupUrl && !p.internalGroupUrl.startsWith("http")) groups.push({ name: p.internalGroupUrl, type: "internal" });
-    }
+    // KHÔNG fallback sang `internalGroupUrl`/`customerGroupUrl` nữa — 2 field này đã
+    // deprecated và chứa dữ liệu rác từ ticket ISD (tên nhóm thường như "Team"/"fptchat",
+    // không phải deep link). Fallback cũ khiến sync tự động chạy các nhóm user chưa bao giờ
+    // thêm, gây messages/gợi ý ma. Nhóm muốn sync phải được thêm qua UI (teamsGroups).
 
     for (const group of groups) {
-      if (group.name) {
-        const platform = ((group as any).platform || "teams") as "teams" | "zalo";
-        allGroupTasks.push({
-          projectId: p._id,
-          chatName: group.name,
-          platform,
-          type: group.type,
-        });
+      if (!group.name) continue;
+
+      // Nhóm có name là URL (dán nhầm deep link vào ô tên nhóm) — không thể match
+      // trong sidebar nên SKIP, tránh spam sync_error mỗi lần chạy.
+      const name = String(group.name).trim();
+      if (/^https?:\/\//i.test(name)) {
+        console.warn(`[Sync] Skip group with URL as name in project ${p._id}: ${name.slice(0, 80)}`);
+        continue;
       }
+
+      const platform = ((group as any).platform || "teams") as "teams" | "zalo";
+      allGroupTasks.push({
+        projectId: p._id,
+        chatName: name,
+        platform,
+        type: group.type,
+      });
     }
   }
 
@@ -193,6 +199,18 @@ async function main() {
 
   const headlessMode = process.env.HEADLESS !== "false"; // default headless
 
+  // ─── Sync mode ────────────────────────────────────────────
+  // Incremental by default (per-user preference, overridable with
+  // FULL_SYNC=true / SYNC_MODE=full). Incremental scrolls are capped low and
+  // stop early once each chat's DB watermark is reached.
+  const prefs = await getUserPreferences(userId!).catch(() => null);
+  const chatSyncMode = (prefs?.chatSyncMode || process.env.SYNC_MODE || "incremental") as "incremental" | "full";
+  const incrementalMode = chatSyncMode !== "full" && process.env.FULL_SYNC !== "true";
+  console.log(`[Sync] Chat sync mode: ${incrementalMode ? "incremental" : "full"}`);
+
+  const teamsScrollCount = process.env.FULL_SYNC === "true" ? 80 : (process.env.SCROLL_COUNT ? parseInt(process.env.SCROLL_COUNT) : (incrementalMode ? 10 : 30));
+  const zaloScrollCount = process.env.FULL_SYNC === "true" ? 200 : (incrementalMode ? 20 : 40);
+
   // ─── Sync Teams groups ────────────────────────────────────
   if (teamsGroups.length > 0) {
     const teamsConfig = {
@@ -202,11 +220,17 @@ async function main() {
       // Mặc định scroll 30 lần để lấy nhiều message cũ.
       // Set FULL_SYNC=true để scroll nhiều hơn (80 lần).
       // Set SCROLL_COUNT=0 để chỉ lấy message mới nhất.
-      scrollCount: process.env.FULL_SYNC === "true" ? 80 : (process.env.SCROLL_COUNT ? parseInt(process.env.SCROLL_COUNT) : 30),
+      // Incremental: scroll tối đa 10 lần, dừng sớm khi gặp mốc đã sync.
+      scrollCount: teamsScrollCount,
     };
 
     const { browser: teamsBrowser, context: teamsContext } = await createStealthContext(teamsConfig);
-    const teamsPage = teamsContext.pages()[0] || await teamsContext.newPage();
+    // CDP mode: dùng tab Teams có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+    let teamsPage = teamsContext.pages()[0];
+    if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+      const teamsPg = teamsContext.pages().find((p) => p.url().includes("teams.microsoft.com"));
+      teamsPage = teamsPg || await teamsContext.newPage();
+    }
     await applyStealthPatches(teamsPage);
 
     try {
@@ -220,7 +244,7 @@ async function main() {
       for (let idx = 0; idx < teamsGroups.length; idx++) {
         const task = teamsGroups[idx];
         writeProgress({ total: allGroupTasks.length, done: totalChats, currentChat: task.chatName, platform: "teams", type: "syncing", message: `Teams: ${task.chatName}` });
-        const result = await syncTeamsChat(teamsPage, teamsContext, teamsConfig, task.projectId, task.chatName, freshByProject);
+        const result = await syncTeamsChat(teamsPage, teamsContext, teamsConfig, task.projectId, task.chatName, freshByProject, incrementalMode);
         totalChats++;
         totalExtracted += result.extracted;
         totalSaved += result.saved;
@@ -239,16 +263,21 @@ async function main() {
   if (zaloGroups.length > 0) {
     // Init mode: fetch up to ~200 old messages
     // Regular mode: fetch only newest messages (~40 scrolls)
-    const zaloInit = process.env.FULL_SYNC === "true";
+    // Incremental mode: scroll tối đa 20 lần, dừng sớm khi gặp mốc đã sync.
     const zaloConfig = {
       ...DEFAULT_ZALO_CONFIG,
       headless: headlessMode,
       useRealChrome: true,
-      scrollCount: zaloInit ? 200 : 40,
+      scrollCount: zaloScrollCount,
     };
 
     const { browser: zaloBrowser, context: zaloContext } = await createZaloStealthContext(zaloConfig);
-    const zaloPage = zaloContext.pages()[0] || await zaloContext.newPage();
+    // CDP mode: dùng tab Zalo có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+    let zaloPage = zaloContext.pages()[0];
+    if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+      const zaloPg = zaloContext.pages().find((p) => p.url().includes("zalo.me"));
+      zaloPage = zaloPg || await zaloContext.newPage();
+    }
     await applyZaloStealthPatches(zaloPage);
 
     try {
@@ -264,7 +293,7 @@ async function main() {
       for (let idx = 0; idx < zaloGroups.length; idx++) {
         const task = zaloGroups[idx];
         writeProgress({ total: allGroupTasks.length, done: totalChats, currentChat: task.chatName, platform: "zalo", type: "syncing", message: `Zalo: ${task.chatName}` });
-        const result = await syncZaloChat(zaloPage, zaloConfig, task.projectId, task.chatName, freshByProject);
+        const result = await syncZaloChat(zaloPage, zaloConfig, task.projectId, task.chatName, freshByProject, incrementalMode);
         totalChats++;
         totalExtracted += result.extracted;
         totalSaved += result.saved;
@@ -293,7 +322,7 @@ async function main() {
 
 // ─── Teams Chat Sync ────────────────────────────────────────
 
-async function syncTeamsChat(page: any, context: any, config: any, projectId: string, chatName: string, freshByProject: Map<string, MonitorMessage[]>): Promise<{ extracted: number; saved: number }> {
+async function syncTeamsChat(page: any, context: any, config: any, projectId: string, chatName: string, freshByProject: Map<string, MonitorMessage[]>, incrementalMode: boolean): Promise<{ extracted: number; saved: number }> {
   console.log(`\n[Sync-Teams] --- Syncing chat: "${chatName}" ---`);
   await log(projectId, chatName, "sync_start", `Bắt đầu đồng bộ Teams: "${chatName}"`);
 
@@ -350,7 +379,17 @@ async function syncTeamsChat(page: any, context: any, config: any, projectId: st
   // Uses incrementalScrollAndExtract which captures messages periodically
   // during scroll-up to work around Teams virtual DOM (which only keeps
   // ~100-200 messages rendered at a time).
-  const result = await incrementalScrollAndExtract(page, { ...config, chatName });
+  const chatConfig = { ...config, chatName };
+  if (incrementalMode) {
+    const since = await getLatestTimestampMs(projectId, chatName, "teams");
+    if (since !== null) {
+      chatConfig.incrementalSince = since;
+      console.log(`[Sync-Teams] Incremental: watermark=${since}`);
+    } else {
+      console.log(`[Sync-Teams] No watermark — full sync for "${chatName}"`);
+    }
+  }
+  const result = await incrementalScrollAndExtract(page, chatConfig);
   console.log(`[Sync-Teams] Extracted ${result.totalMessages} messages total, ${result.messages.filter(m => m.images?.length).length} with images.`);
 
   // Save the deep link to this chat group (Teams v2 hash URL)
@@ -393,7 +432,7 @@ async function syncTeamsChat(page: any, context: any, config: any, projectId: st
 
 // ─── Zalo Chat Sync ─────────────────────────────────────────
 
-async function syncZaloChat(page: any, config: any, projectId: string, chatName: string, freshByProject: Map<string, MonitorMessage[]>): Promise<{ extracted: number; saved: number }> {
+async function syncZaloChat(page: any, config: any, projectId: string, chatName: string, freshByProject: Map<string, MonitorMessage[]>, incrementalMode: boolean): Promise<{ extracted: number; saved: number }> {
   console.log(`\n[Sync-Zalo] --- Syncing chat: "${chatName}" ---`);
   await log(projectId, chatName, "sync_start", `Bắt đầu đồng bộ Zalo: "${chatName}"`);
 
@@ -405,8 +444,18 @@ async function syncZaloChat(page: any, config: any, projectId: string, chatName:
   }
 
   console.log(`[Sync-Zalo] Navigated to "${chatName}". Extracting...`);
-  await scrollZaloChatContainer(page, config);
-  const result = await extractZaloMessages(page, { ...config, groupName: chatName });
+  const chatConfig = { ...config, groupName: chatName };
+  if (incrementalMode) {
+    const since = await getLatestTimestampMs(projectId, chatName, "zalo");
+    if (since !== null) {
+      chatConfig.incrementalSince = since;
+      console.log(`[Sync-Zalo] Incremental: watermark=${since}`);
+    } else {
+      console.log(`[Sync-Zalo] No watermark — full sync for "${chatName}"`);
+    }
+  }
+  await scrollZaloChatContainer(page, chatConfig);
+  const result = await extractZaloMessages(page, chatConfig);
 
   console.log(`[Sync-Zalo] Extracted ${result.totalMessages} messages from "${chatName}".`);
   await log(projectId, chatName, "sync_progress", `Trích xuất ${result.totalMessages} tin nhắn Zalo từ "${chatName}"`);

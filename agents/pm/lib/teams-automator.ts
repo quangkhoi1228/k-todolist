@@ -25,6 +25,8 @@ import { chromium } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
 
+const DEFAULT_CDP_PORT = 9222;
+
 // ─── Config ─────────────────────────────────────────────────
 
 export interface AutomatorConfig {
@@ -52,6 +54,9 @@ export interface AutomatorConfig {
   keepOpen?: boolean;
   /** Use real Chrome (with persistent profile) instead of bundled Chromium */
   useRealChrome?: boolean;
+  /** Incremental sync watermark: stop scrolling once messages at/below this
+   *  timestampMs are seen (they are already in the DB). Omit for full sync. */
+  incrementalSince?: number;
 }
 
 export const DEFAULT_CONFIG: AutomatorConfig = {
@@ -204,6 +209,34 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
 }> {
   ensureDir(config.sessionDir);
   ensureDir(config.screenshotDir);
+
+    // ── CDP mode: connect to a REAL Chrome already running (opened manually) ──
+    // Teams blocks Playwright-launched profiles (navigator.webdriver=true).
+    // Real Chrome started with `open -a "Google Chrome" --args --user-data-dir=<profile> --remote-debugging-port=9222`
+    // keeps a genuine session + cookies, so Teams doesn't flag it as automation.
+    // NOTE: KHÔNG intercept route ở đây — mỗi route.continue() qua CDP roundtrip
+    // làm chậm cực lớn trên Teams (hàng trăm requests). Chrome thật đã disable
+    // protocol dialog qua Preferences (msteams excluded), nên không cần block.
+    if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+    const port = Number(process.env.CDP_PORT || DEFAULT_CDP_PORT);
+    const cdpUrl = `http://127.0.0.1:${port}`;
+    log(`CDP mode: connecting to real Chrome at ${cdpUrl}`);
+    const browser = await chromium.connectOverCDP(cdpUrl);
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("CDP browser has no default context.");
+
+    context.on("page", (newPage) => {
+      newPage.on("dialog", async (dialog) => {
+        log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
+        await dialog.dismiss().catch(() => {});
+      });
+    });
+
+    // Do NOT close the user's Chrome when the automation finishes.
+    const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
+
+    return { browser: fakeBrowser, context };
+  }
 
   if (config.useRealChrome) {
     const profileDir = path.join(config.sessionDir, "chrome-profile");
@@ -421,6 +454,14 @@ export async function navigateToTeams(
   page: Page,
   _config: AutomatorConfig
 ): Promise<void> {
+  const current = page.url();
+  // CDP mode (real Chrome): page may already be on Teams — don't re-navigate,
+  // otherwise we lose the current sidebar state and force a full app reload.
+  if (current.includes("teams.microsoft.com") || current.includes("teams.live.com")) {
+    log(`Da o Teams (${current.slice(0, 60)}), khong navigate lai.`);
+    await page.waitForTimeout(2_000);
+    return;
+  }
   // Always go to homepage — v2 SPA loads reliably from there
   log("Dang mo Teams homepage...");
   await page.goto("https://teams.microsoft.com", { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -508,7 +549,38 @@ export async function navigateToChatInSidebar(
         const targetFirstWord = targetLower.split(/[\s,]+/)[0] || "";
         const startsWithBracket = targetLower.startsWith("[");
 
-        // Priority 1: Group chat (aria starts with "Group chat" or tid has @thread.v2)
+        // Priority 1: an explicit Person suggestion (has "Person" in aria-label or orgid tid)
+        // NOTE: person search must come BEFORE group search — a person (1:1 chat like
+        // "An Mai Thuan") would otherwise be shadowed by a group whose member list
+        // happens to contain the same first word (e.g. "Anh").
+        const personItem = items.find((el) => {
+          const aria = (el as HTMLElement).getAttribute?.("aria-label") || "";
+          if (!aria.toLowerCase().includes("person")) return false;
+          const text = (el.textContent || "").trim();
+          const norm = text.toLowerCase();
+          if (startsWithBracket) {
+            return text.toLowerCase().startsWith(targetLower.slice(0, 12)) ||
+              norm.includes(targetLower) ||
+              norm.startsWith(targetLower.slice(0, 12));
+          }
+          // Prefer a solid name-part overlap: every word of the target should appear
+          // in the candidate name (in order), OR the candidate name fully contains
+          // the target, OR the reverse. This keeps "An Mai Thuan" from matching a
+          // group member substring like "Anh".
+          const targetWords = targetLower.split(/[\s,]+/).filter(Boolean);
+          const allWordsMatch = targetWords.length > 0 &&
+            targetWords.every((w) => norm.includes(w)) &&
+            targetWords.length >= 2;
+          return allWordsMatch ||
+            norm.includes(targetLower) ||
+            targetLower.includes(norm.split(" ")[0] || "");
+        });
+        if (personItem) {
+          (personItem as HTMLElement).click();
+          return `Person: ${(personItem.textContent || "").trim().slice(0, 100)}`;
+        }
+
+        // Priority 2: Group chat (aria starts with "Group chat" or tid has @thread.v2)
         const groupItem = items.find((el) => {
           const tid = el.getAttribute("data-tid") || "";
           const aria = (el as HTMLElement).getAttribute?.("aria-label") || "";
@@ -528,27 +600,6 @@ export async function navigateToChatInSidebar(
         if (groupItem) {
           (groupItem as HTMLElement).click();
           return `Group: ${(groupItem.textContent || "").trim().slice(0, 100)}`;
-        }
-
-        // Priority 2: an explicit Person suggestion (has "Person" in aria-label or orgid tid)
-        const personItem = items.find((el) => {
-          const aria = (el as HTMLElement).getAttribute?.("aria-label") || "";
-          if (!aria.toLowerCase().includes("person")) return false;
-          const text = (el.textContent || "").trim();
-          const norm = text.toLowerCase();
-          if (startsWithBracket) {
-            return text.toLowerCase().startsWith(targetLower.slice(0, 12)) ||
-              norm.includes(targetLower) ||
-              norm.startsWith(targetLower.slice(0, 12));
-          }
-          return norm.includes(targetLower) ||
-            targetLower.includes(norm.split(" ")[0] || "") ||
-            norm.includes(targetFirstWord) ||
-            targetFirstWord.includes(norm.split(" ")[0] || "");
-        });
-        if (personItem) {
-          (personItem as HTMLElement).click();
-          return `Person: ${(personItem.textContent || "").trim().slice(0, 100)}`;
         }
 
         // Priority 3: any result row whose text STARTS WITH the target
@@ -861,15 +912,17 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
   }
 
   // Extract messages via Teams v2 DOM selectors
-  await page.addScriptTag({ content: `
-    window.blobToBase64 = async function(url) {
+  // NOTE: addScriptTag() is blocked by Teams CSP (TrustedScript) — inject the
+  // helper via page.evaluate instead (define it directly on window).
+  await page.evaluate(() => {
+    (window as any).blobToBase64 = async function (url: string) {
       // Strategy: canvas FIRST (more reliable for already-rendered <img> elements
       // even after blob URLs are revoked). Only fall back to fetch() if canvas fails.
       try {
-        const imgEl = Array.from(document.querySelectorAll('img')).find(img => img.src === url);
+        const imgEl = Array.from(document.querySelectorAll('img')).find((img) => img.src === url);
         if (imgEl && imgEl.complete && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
           // Set crossOrigin to anonymous to avoid tainted canvas errors
-          try { imgEl.crossOrigin = 'anonymous'; } catch (e) { /* ignore */ }
+          try { (imgEl as any).crossOrigin = 'anonymous'; } catch (e) { /* ignore */ }
           const canvas = document.createElement('canvas');
           canvas.width = imgEl.naturalWidth;
           canvas.height = imgEl.naturalHeight;
@@ -896,8 +949,8 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
       } catch (e) {
         return null;
       }
-    }
-  ` });
+    };
+  });
   const extractedMessages: ExtractedMessage[] = 
   await page.evaluate(async (args: { kwList: string[]; groupName: string; imgBlocklist: string[] }) => {
     const results: ExtractedMessage[] = [];
@@ -995,35 +1048,73 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
       const parsedDatetime = rawDatetime ? new Date(rawDatetime).getTime() : NaN;
       const timestampMs = isNaN(parsedDatetime) ? undefined : parsedDatetime;
 
-      // === Extract quoted/reply message (Skype Reply schema blockquote) ===
-      // Teams renders inline replies as:
-      //   <blockquote itemtype="http://schema.skype.com/Reply" itemid="...">
-      //     <strong itemprop="mri">Sender Name</strong>
-      //     <p itemprop="preview">quoted text</p>
-      //   </blockquote>
-      // The <strong> (sender) and <p> (content) must be pulled out BEFORE
-      // computing the raw body text — otherwise they get squished together
-      // with the reply text ("SenderTimestampquotedReply") with no separators.
+      // === Extract quoted/reply message ===
+      // Teams v2 (2026) renders quoted replies with a "quote pill":
+      //   <div class="fui-Flex" aria-label="Begin quote, Sender, date, content, End quote">
+      //     <div data-tid="quoted-reply-card">
+      //       <span class="fui-StyledText">Sender Name</span>
+      //       <span data-tid="quoted-reply-timestamp">8/4/2026 9:20 AM</span>
+      //       <span data-tid="quoted-reply-preview-content">quoted text</span>
+      //     </div>
+      //   </div>
+      // Older Teams rendered <blockquote itemprop="quote"> — keep as fallback.
       let quoteSender = "";
       let quoteContent = "";
-      const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
-      if (quoteBq) {
-        const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
-        const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
-          quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
-        quoteSender = qNameEl?.textContent?.trim() || "";
-        quoteContent = qCopyEl?.textContent?.trim() || "";
+      const quotePill = el.querySelector<HTMLElement>('[data-tid="quoted-reply-card"]');
+      if (quotePill) {
+        // Sender = the span immediately before the timestamp span
+        const qTimeEl = quotePill.querySelector<HTMLElement>('[data-tid="quoted-reply-timestamp"]');
+        const qSenderEl = qTimeEl?.previousElementSibling as HTMLElement | null;
+        quoteSender = qSenderEl?.textContent?.trim() || "";
+        // Content = the dedicated preview element
+        quoteContent = quotePill.querySelector<HTMLElement>('[data-tid="quoted-reply-preview-content"]')?.textContent?.trim() || "";
+        // Fallback: parse the pill container aria-label
+        if (!quoteSender || !quoteContent) {
+          const pillContainer = quotePill.closest<HTMLElement>('[aria-label^="Begin quote"]');
+          const label = pillContainer?.getAttribute("aria-label") || "";
+          const body = label.replace(/^Begin quote,\s*/, "").replace(/,\s*End quote\s*$/, "");
+          const parts = body.split(",");
+          if (parts.length >= 3) {
+            if (!quoteSender) quoteSender = parts[0].trim();
+            const rest = parts.slice(2).join(",").trim();
+            if (!quoteContent) quoteContent = rest;
+          }
+        }
+      } else {
+        // Some messages expose the quote only in the container aria-label
+        const labelEl = el.querySelector<HTMLElement>('[aria-label*="Begin quote"]');
+        const label = labelEl?.getAttribute("aria-label") || "";
+        const body = label.replace(/^Begin quote,\s*/, "").replace(/,\s*End quote\s*$/, "");
+        const parts = body.split(",");
+        if (parts.length >= 3) {
+          quoteSender = parts[0].trim();
+          quoteContent = parts.slice(2).join(",").trim();
+        }
+      }
+      // Legacy blockquote fallback
+      if (!quoteSender && !quoteContent) {
+        const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
+        if (quoteBq) {
+          const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
+          const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
+            quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
+          quoteSender = qNameEl?.textContent?.trim() || "";
+          quoteContent = qCopyEl?.textContent?.trim() || "";
+        }
       }
 
       let content = "";
       const bodyEl = el.querySelector<HTMLElement>(
-        '[data-tid="message-body-content"], [data-tid="chat-pane-message"], .fui-ChatMessage__body'
+        '[data-tid="message-body-content"], [data-tid="chat-pane-message"], .fui-ChatMessage__body, .fui-ChatMyMessage__body'
       );
       if (bodyEl) {
         const bodyClone = bodyEl.cloneNode(true) as HTMLElement;
-        // Remove the quote blockquote from the body so it isn't duplicated
-        // into the main text (it is rendered separately below).
+        // Remove the quote (pill or blockquote) from the body so it isn't duplicated
+        bodyClone.querySelectorAll('[data-tid="quoted-reply-card"]').forEach(e => e.remove());
         bodyClone.querySelectorAll('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]').forEach(e => e.remove());
+        // Remove the reaction summary ("1 Heart reaction." pills) — rendered
+        // separately, not part of the message body.
+        bodyClone.querySelectorAll('.fui-ChatMessage__reactions, .fui-ChatMyMessage__reactions, [data-tid="diverse-reaction-summary"]').forEach(e => e.remove());
         content = bodyClone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
       }
 
@@ -1212,18 +1303,24 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
         });
         
         clone.querySelectorAll('blockquote').forEach(bq => {
-          bq.innerHTML = `
-> ${bq.innerText.trim()}
-
-`;
+          // CSP (TrustedHTML) blocks innerHTML assignment on Teams — use textContent.
+          bq.textContent = `\n> ${bq.innerText.trim()}\n`;
         });
         
         clone.querySelectorAll('div').forEach(div => {
-          div.innerHTML = div.innerHTML + ' ';
+          div.textContent = (div.textContent || "") + ' ';
         });
 
         content = clone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
       }
+
+      // Strip any residual "Begin quote ... End quote" placeholder text that
+      // Teams v2 embeds in the body when the quote pill is not removed.
+      if (content.includes("Begin quote") || content.includes("End quote")) {
+        content = content.replace(/Begin quote[\s\S]*?End quote/g, " ").replace(/\s{2,}/g, " ").trim();
+      }
+      // Strip the " image " marker Teams v2 inserts between attachments.
+      content = content.replace(/\s+image\s+/gi, " ").replace(/\s{2,}/g, " ").trim();
 
       // Compose final content: prefix the quoted message (if any) in the
       // same "> Sender: quoted" format used by Zalo, so the UI can render
@@ -1407,24 +1504,62 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
       // === Extract quoted/reply message (same logic as extractMessages) ===
       let quoteSender = "";
       let quoteContent = "";
-      const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
-      if (quoteBq) {
-        const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
-        const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
-          quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
-        quoteSender = qNameEl?.textContent?.trim() || "";
-        quoteContent = qCopyEl?.textContent?.trim() || "";
+      const quotePill = el.querySelector<HTMLElement>('[data-tid="quoted-reply-card"]');
+      if (quotePill) {
+        const qTimeEl = quotePill.querySelector<HTMLElement>('[data-tid="quoted-reply-timestamp"]');
+        const qSenderEl = qTimeEl?.previousElementSibling as HTMLElement | null;
+        quoteSender = qSenderEl?.textContent?.trim() || "";
+        quoteContent = quotePill.querySelector<HTMLElement>('[data-tid="quoted-reply-preview-content"]')?.textContent?.trim() || "";
+        if (!quoteSender || !quoteContent) {
+          const pillContainer = quotePill.closest<HTMLElement>('[aria-label^="Begin quote"]');
+          const label = pillContainer?.getAttribute("aria-label") || "";
+          const body = label.replace(/^Begin quote,\s*/, "").replace(/,\s*End quote\s*$/, "");
+          const parts = body.split(",");
+          if (parts.length >= 3) {
+            if (!quoteSender) quoteSender = parts[0].trim();
+            const rest = parts.slice(2).join(",").trim();
+            if (!quoteContent) quoteContent = rest;
+          }
+        }
+      } else {
+        const labelEl = el.querySelector<HTMLElement>('[aria-label*="Begin quote"]');
+        const label = labelEl?.getAttribute("aria-label") || "";
+        const body = label.replace(/^Begin quote,\s*/, "").replace(/,\s*End quote\s*$/, "");
+        const parts = body.split(",");
+        if (parts.length >= 3) {
+          quoteSender = parts[0].trim();
+          quoteContent = parts.slice(2).join(",").trim();
+        }
+      }
+      if (!quoteSender && !quoteContent) {
+        const quoteBq = el.querySelector<HTMLElement>('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]');
+        if (quoteBq) {
+          const qNameEl = quoteBq.querySelector<HTMLElement>('strong[itemprop="mri"], [itemprop="mri"]');
+          const qCopyEl = quoteBq.querySelector<HTMLElement>('[itemprop="copy"]') ||
+            quoteBq.querySelector<HTMLElement>('[itemprop="preview"]');
+          quoteSender = qNameEl?.textContent?.trim() || "";
+          quoteContent = qCopyEl?.textContent?.trim() || "";
+        }
       }
 
       let content = "";
       const bodyEl = el.querySelector<HTMLElement>(
-        '[data-tid="message-body-content"], [data-tid="chat-pane-message"], .fui-ChatMessage__body'
+        '[data-tid="message-body-content"], [data-tid="chat-pane-message"], .fui-ChatMessage__body, .fui-ChatMyMessage__body'
       );
       if (bodyEl) {
         const bodyClone = bodyEl.cloneNode(true) as HTMLElement;
+        bodyClone.querySelectorAll('[data-tid="quoted-reply-card"]').forEach(e => e.remove());
         bodyClone.querySelectorAll('blockquote[itemtype*="schema.skype.com/Reply"], blockquote[itemprop*="quote"]').forEach(e => e.remove());
+        bodyClone.querySelectorAll('.fui-ChatMessage__reactions, .fui-ChatMyMessage__reactions, [data-tid="diverse-reaction-summary"]').forEach(e => e.remove());
         content = bodyClone.textContent?.trim().replace(/\s{2,}/g, " ") || "";
       }
+
+      // Strip any residual "Begin quote ... End quote" placeholder text.
+      if (content.includes("Begin quote") || content.includes("End quote")) {
+        content = content.replace(/Begin quote[\s\S]*?End quote/g, " ").replace(/\s{2,}/g, " ").trim();
+      }
+      // Strip the " image " marker Teams v2 inserts between attachments.
+      content = content.replace(/\s+image\s+/gi, " ").replace(/\s{2,}/g, " ").trim();
 
       if (quoteSender && quoteContent) {
         content = `> ${quoteSender}: ${quoteContent}\n${content}`;
@@ -1495,6 +1630,17 @@ export async function incrementalScrollAndExtract(
 
   const nonEmoji = (urls: string[]) =>
     urls.filter(i => !i.includes('evergreen') && !i.includes('emoticon') && !i.includes('personal-expressions') && !i.startsWith('blob:'));
+
+  // Incremental sync: once we've collected a message at/below the DB watermark
+  // (timestampMs), everything older is already stored — stop scrolling early.
+  const seenIncrementalSince = (): boolean => {
+    if (config.incrementalSince === undefined || config.incrementalSince <= 0) return false;
+    for (const m of allMessages.values()) {
+      const ts = (m as any).timestampMs;
+      if (typeof ts === "number" && ts > 0 && ts <= (config.incrementalSince as number)) return true;
+    }
+    return false;
+  };
 
   const addToCollection = (msgs: ExtractedMessage[], hasImages: boolean) => {
     for (const m of msgs) {
@@ -1579,13 +1725,19 @@ export async function incrementalScrollAndExtract(
       const batchResult = await extractTextOnly(page, config);
       addToCollection(batchResult.messages, false);
       log(`[Incremental] Batch ${batch + 1}/${totalBatches}: ${batchResult.messages.length} text msgs, ${allMessages.size} unique`);
+
+      // Incremental early-stop: watermark reached → skip remaining batches + top pass
+      if (seenIncrementalSince()) {
+        log(`[Incremental] EARLY-STOP at batch ${batch + 1}: found message <= incrementalSince=${config.incrementalSince}`);
+        break;
+      }
     }
   } else {
     log("[Incremental] Step 2: Skipped (quick update mode, scrollCount=0)");
   }
 
   // ── Step 3: Final extraction at TOP with images (oldest messages) ──
-  if (fullSync) {
+  if (fullSync && !seenIncrementalSince()) {
     log("[Incremental] Step 3: Final extraction at top (oldest messages + images)...");
     // Scroll to top progressively so Teams' virtual DOM loads the oldest messages
     await page.evaluate(() => {
@@ -1608,6 +1760,8 @@ export async function incrementalScrollAndExtract(
     const topResult = await extractMessages(page, config, true);
     addToCollection(topResult.messages, true);
     log(`[Incremental] Top done: ${topResult.messages.length} msgs, ${topResult.messages.filter(m => m.images?.length).length} with images. Unique: ${allMessages.size}`);
+  } else if (seenIncrementalSince()) {
+    log("[Incremental] Step 3: Skipped (early-stop reached incremental watermark)");
   } else {
     log("[Incremental] Step 3: Skipped (quick update mode)");
   }

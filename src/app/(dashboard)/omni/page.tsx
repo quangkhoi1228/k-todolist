@@ -12,7 +12,7 @@ export default function OmniPage() {
   // Data hooks
   const { data: prefs } = useUserPreferences(userId);
   const pm2 = usePreferenceMutations();
-  const { results: logs, status: logsStatus, loadMore: loadMoreLogs } = usePaginatedLogs(20);
+  const { results: logs, status: logsStatus, loadMore: loadMoreLogs } = usePaginatedLogs(userId, 20);
   
   // Local state — start with defaults, restore from localStorage on client
   const [teamsStatus, setTeamsStatus] = useState<{ running: boolean; pid?: number; health?: string }>({ running: false });
@@ -471,10 +471,26 @@ export default function OmniPage() {
                       className="bg-muted border-none rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground"
                     >
                       <option value={0}>Tắt tự động</option>
+                      <option value={1}>Mỗi 1 phút</option>
+                      <option value={5}>Mỗi 5 phút</option>
                       <option value={15}>Mỗi 15 phút</option>
                       <option value={30}>Mỗi 30 phút</option>
                       <option value={60}>Mỗi 1 tiếng</option>
                       <option value={120}>Mỗi 2 tiếng</option>
+                    </select>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Chế độ sync</span>
+                    <select
+                      value={prefs?.chatSyncMode || "incremental"}
+                      onChange={(e) => {
+                        if (userId) void pm2.updateUserPreferences({ userId, chatSyncMode: e.target.value });
+                      }}
+                      className="bg-muted border-none rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground"
+                      title="Incremental: chỉ lấy tin mới từ mốc đã sync (nhanh). Full: quét toàn bộ lịch sử chat."
+                    >
+                      <option value="incremental">Incremental (nhanh)</option>
+                      <option value="full">Full (đầy đủ)</option>
                     </select>
                   </div>
                 </div>
