@@ -103,6 +103,11 @@ export async function POST(req: NextRequest) {
       ...process.env,
       USER_ID: userId,
       HEADLESS: headless ? "true" : "false",
+      // Mặc định dùng CDP (Chrome thật user mở thủ công) giống mọi route khác.
+      // Nếu không set, script chạy chế độ launch Chrome riêng trên cùng profile
+      // — vừa xung đột profile vừa gây cleanup orphan giết nhầm Chrome CDP.
+      USE_CDP: process.env.USE_CDP ?? "1",
+      CDP_PORT: process.env.CDP_PORT ?? "9222",
     };
 
     const child = spawn("npx", ["tsx", scriptPath], {

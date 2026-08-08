@@ -24,6 +24,60 @@ import {
   log,
   type AutomatorConfig,
 } from "../lib/teams-automator";
+import * as fs from "fs";
+import * as path from "path";
+
+/**
+ * Auto-sync (sync-all-projects spawned by next-server) and teams-send share
+ * the SAME Chrome profile (.teams-session/chrome-profile) — they must never
+ * run at the same time, otherwise each side's browser kills the other's
+ * ("Target page, context or browser has been closed"). Wait for the sync to
+ * finish before launching our own browser.
+ */
+const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+const SEND_RUNNING_FILE = path.join(process.cwd(), ".teams-send-running");
+
+async function waitForSyncToFinish(timeoutMs = 20 * 60 * 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let syncRunning = false;
+    try {
+      if (fs.existsSync(SYNC_RUNNING_FILE)) {
+        const pid = parseInt(fs.readFileSync(SYNC_RUNNING_FILE, "utf-8").trim(), 10);
+        if (!isNaN(pid)) {
+          process.kill(pid, 0); // throws if not running
+          syncRunning = true;
+        }
+      }
+    } catch {
+      // stale lock file — ignore
+    }
+    if (!syncRunning) {
+      log("Khong co sync nao dang chay — bat dau gui tin.");
+      return;
+    }
+    log("Dang co sync chay nen — cho sync xong roi gui...");
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
+  log("Timeout cho sync — van tiep tuc gui (co the dung chung profile!).");
+}
+
+/** Claim the send lock so auto-sync skips while we send. */
+function claimSendLock(): void {
+  try {
+    fs.writeFileSync(SEND_RUNNING_FILE, `${process.pid}`, "utf-8");
+  } catch {
+    /* */
+  }
+}
+
+function releaseSendLock(): void {
+  try {
+    if (fs.existsSync(SEND_RUNNING_FILE)) fs.unlinkSync(SEND_RUNNING_FILE);
+  } catch {
+    /* */
+  }
+}
 
 function parseArgs(): {
   chatName: string;
@@ -85,6 +139,10 @@ async function main() {
     useRealChrome: true,
   };
 
+  // Never launch Chrome while a background sync holds the shared profile.
+  await waitForSyncToFinish();
+  claimSendLock();
+
   const { browser, context } = await createStealthContext(config);
   const page = context.pages()[0] || (await context.newPage());
   await applyStealthPatches(page);
@@ -104,7 +162,8 @@ async function main() {
     });
 
     console.log("\n--- Ket qua ---");
-    console.log(JSON.stringify(result, null, 2));
+    // JSON 1 dòng để route API parse được bằng regex /\{"ok":.*\}/
+    console.log(JSON.stringify(result));
 
     if (!result.ok) {
       process.exit(1);
@@ -115,6 +174,7 @@ async function main() {
       log("Tin nhan da gui thanh cong.");
     }
   } finally {
+    releaseSendLock();
     try {
       await context.storageState({ path: config.sessionDir + "/state.json" });
     } catch { /* */ }
@@ -123,7 +183,15 @@ async function main() {
       log("Giu browser mo.");
       await new Promise(() => {});
     }
+    // browser.close() can hang forever when the Chrome child refuses to die
+    // (kill EPERM on macOS), leaving the profile locked and blocking every
+    // later send. Cap the wait, then force-exit so the script never leaks.
+    const closeTimeout = setTimeout(() => {
+      console.error("[TeamsSend] browser.close() timed out — forcing exit.");
+      process.exit(0);
+    }, 30_000);
     await browser.close().catch(() => {});
+    clearTimeout(closeTimeout);
   }
 }
 

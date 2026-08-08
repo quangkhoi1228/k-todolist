@@ -1,4 +1,4 @@
-import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl } from "../lib/teams-automator";
+import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
 import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, getGroupUrl, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import * as path from "path";
 import * as fs from "fs";
@@ -21,6 +21,25 @@ if (!userId) {
 // ─── Progress file ──────────────────────────────────────────
 const PROGRESS_FILE = path.join(process.cwd(), ".teams-sync-progress.json");
 const RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+// Lock file written by teams-send.ts while a send is in flight. Sync and
+// send share the SAME Chrome profile — running both at once kills each
+// other's browser, so the sync must wait/skip while a send is happening.
+const SEND_RUNNING_FILE = path.join(process.cwd(), ".teams-send-running");
+
+function isSendRunning(): boolean {
+  try {
+    if (fs.existsSync(SEND_RUNNING_FILE)) {
+      const pid = parseInt(fs.readFileSync(SEND_RUNNING_FILE, "utf-8").trim(), 10);
+      if (!isNaN(pid)) {
+        process.kill(pid, 0); // throws if not running
+        return true;
+      }
+    }
+  } catch {
+    // stale lock file — ignore
+  }
+  return false;
+}
 
 function writeProgress(data: { total: number; done: number; currentChat?: string; platform?: string; type?: string; message?: string }) {
   try {
@@ -130,6 +149,22 @@ async function saveGroupUrlToDb(projectId: string, chatName: string, platform: "
 async function main() {
   const syncStartTime = Date.now();
   console.log(`[Sync] Fetching projects for user: ${userId}`);
+
+  // A Teams send is in flight on the shared Chrome profile — don't launch a
+  // second browser on the same profile. Skip this round entirely (the next
+  // auto-sync tick will pick up anything missed). Wait up to 3 minutes in
+  // case the send finishes soon, then proceed anyway.
+  const sendDeadline = Date.now() + 3 * 60 * 1000;
+  while (isSendRunning() && Date.now() < sendDeadline) {
+    console.log("[Sync] Dang co teams-send chay — cho send xong roi sync...");
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
+  if (isSendRunning()) {
+    console.log("[Sync] teams-send van chay sau 3 phut — skip vong sync nay (tranh dung chung profile).");
+    await log(undefined, undefined, "sync_end", "Bỏ qua đồng bộ: đang có tin nhắn Teams được gửi", JSON.stringify({ duration: 0, reason: "teams-send running" }));
+    return;
+  }
+
   await log(undefined, undefined, "sync_start", `Bắt đầu đồng bộ toàn bộ chat cho user ${userId}`);
 
   const projects = await getActiveProjectsWithTeamsGroups(userId!);
@@ -391,6 +426,9 @@ async function syncTeamsChat(page: any, context: any, config: any, projectId: st
   }
   const result = await incrementalScrollAndExtract(page, chatConfig);
   console.log(`[Sync-Teams] Extracted ${result.totalMessages} messages total, ${result.messages.filter(m => m.images?.length).length} with images.`);
+
+  // Gán sender="Me" cho tin của mình (Teams không luôn gắn class .fui-ChatMyMessage)
+  cleanTeamMessages(result.messages);
 
   // Save the deep link to this chat group (Teams v2 hash URL)
   const chatUrl = (result as any).chatUrl || await getChatUrl(page);

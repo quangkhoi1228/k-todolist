@@ -56,3 +56,4 @@ teams-messages.json
 .sync-running
 .teams-sync-running
 teams-monitor-config.json
+.health-session

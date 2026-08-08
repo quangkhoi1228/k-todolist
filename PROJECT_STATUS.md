@@ -1,9 +1,15 @@
+---
+noteId: "b23fc800930511f19112294d6cf59d6f"
+tags: []
+
+---
+
 # Hiện trạng dự án K-Todolist
 
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-07
+- **Cập nhật lần cuối:** 2026-08-08
 - **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
@@ -249,6 +255,40 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
      - **UI browser thật** (CDP profile copy đã login Clerk — xem mục "Verify UI app đã đăng nhập sẵn"): project 45 → tab Chats → chọn "An Mai Thuan | Teams" → composer hiển thị placeholder *"...gửi tới Teams..."*, nút title **"Gửi tin nhắn Teams"** disabled khi trống → gõ chữ → nút active. `tsc --noEmit` exit 0.
    - **Script verify reusable**: `scripts/verify-teams-send-ui.ts` (cần Chrome CDP port 9222 + profile copy đã login, xem rule `verify-app-login.mdc`).
    - **Lưu ý**: tên chat đúng trong DB là **"An Mai Thuan"** (teams, KH) — project 45; alias hiển thị là ANMT3.
+19. **Fix Zalo chat 1:1 gán nhầm "Me" + fix tranh chấp Chrome profile healthcheck** (08/08, verify browser thật):
+   - **Vấn đề**: user báo chat đơn Zalo nhận hết tin là "me nhắn". Điều tra sâu với probe DOM thật (dump class từng wrapper) xác nhận: **logic `isMine`/`sender` trong `zalo-automator.ts` đã ĐÚNG từ trước** — tin partner (vd "00:11nhà mới nó nè babii", "Nay hello nữa babii") có `me` token class chính xác (`chat-message... -send-time` không có `me`, `chat-item` không `me`), DB cũng lưu đúng sau khi upsert (messageId không chứa sender + ON CONFLICT DO UPDATE SET isMine).
+   - **Gốc rễ thật sự của "browser has been closed" / dữ liệu lẫn lộn khi sync**: launchd agent `~/Library/LaunchAgents/com.kflow.healthcheck.plist` (chạy mỗi giờ, `RunAtLoad`) spawn `hourly-healthcheck.ts` → `teams-health.ts` + `zalo-health.ts` dùng **cùng profile Chrome** `.teams-session`/`.zalo-session` với sync/send → 2 Chrome cùng profile đè nhau, xoá SingletonLock của nhau, giết Chrome của nhau giữa chừng → sync bị "Target page, context or browser has been closed", lưu dữ liệu dở dang.
+   - **Fix** (`agents/pm/scripts/teams-health.ts`, `zalo-health.ts`): healthcheck giờ dùng **profile riêng** `.health-session/teams-profile` + `.health-session/zalo-profile` (copy 1 lần từ profile chính để kế thừa session login; đã xoá cache — chỉ ~280MB + 45MB). Không còn đụng profile chính của sync/send.
+   - **Verify (08/08)**: chạy `sync-single-chat.ts` Zalo (HEADLESS, scroll 25) **song song** với `hourly-healthcheck.ts` → sync `Finished` không lỗi, healthcheck `Teams=connected Zalo=connected` khi chạy riêng. DB chat "Thảo Nguyên BB" (p35+p45): 15 tin `Me` (đều là tin Khôi Trần gửi thật, probe xác nhận `me=true`) + 7 tin `Thảo Nguyên BB` (partner, `me=false`) — **khớp 100% với DOM thật**.
+   - **Lưu ý**: `.health-session/` đã thêm vào `.gitignore`.
+20. **Auto-sync 1 phút cho project đang mở** (08/08, đã verify browser thật + DB):
+   - **Yêu cầu**: user mở project để xem → sync tin nhắn mỗi phút 1 lần với **các nhóm đã add** (không phải sync toàn bộ dự án).
+   - **Cơ chế**: `GlobalSyncManager` (dashboard layout, mọi trang) giờ **đọc URL `/projects/:id`** qua `usePathname`:
+     - Đang mở project → gọi **route mới `/api/agents/sync-project-chats`** mỗi 60s → spawn script mới **`agents/pm/scripts/sync-project-chats.ts`**: sync tuần tự tất cả group trong `teamsGroups` của ĐÚNG project đó (Teams + Zalo), **incremental theo watermark** (`SYNC_MODE=full` để full), scroll giới hạn (Teams 6, Zalo 15) → mỗi vòng vài chục giây thay vì sync toàn bộ dự án.
+     - Không mở project → giữ hành vi cũ: sync tất cả dự án theo `autoSyncInterval` (setting `/omni`).
+   - **An toàn đồng thời**: script dùng chung lock `.teams-sync-running` (2 sync không đè Chrome profile); nếu đang có `teams-send` thì skip vòng này; client check `status` trước khi start, đợi tối đa 60s nếu sync khác đang chạy (không xếp chồng).
+   - **Cơ chế**: `GlobalSyncManager` (dashboard layout, mọi trang) giờ **đọc URL `/projects/:id`** qua `usePathname`:
+     - Đang mở project → gọi **route mới `/api/agents/sync-project-chats`** mỗi 60s → spawn script mới **`agents/pm/scripts/sync-project-chats.ts`**: sync tuần tự tất cả group trong `teamsGroups` của ĐÚNG project đó (Teams + Zalo), **incremental theo watermark** (`SYNC_MODE=full` để full), scroll giới hạn (Teams 6, Zalo 15) → mỗi vòng vài chục giây thay vì sync toàn bộ dự án.
+     - Không mở project → giữ hành vi cũ: sync tất cả dự án theo `autoSyncInterval` (setting `/omni`).
+   - **An toàn đồng thời**: script dùng chung lock `.teams-sync-running` (2 sync không đè Chrome profile); nếu đang có `teams-send` thì skip vòng này; client check `status` trước khi start, đợi tối đa 60s nếu sync khác đang chạy (không xếp chồng).
+   - **Fix race lock (08/08, rà soát lại)**: route `/api/agents/sync-project-chats` ban đầu spawn + ghi đè `.teams-sync-running` **không check lock trước** (khiến `child.on("exit")` xoá lock file của sync đang chạy khác → 2 sync chạy chồng lên nhau, đè Chrome profile). Đã fix: route check `isRunning` CHUNG với `/api/agents/sync-projects` (cùng lock file) trước khi spawn, trả lỗi nếu đang chạy. `GlobalSyncManager` dùng 1 nguồn `checkIfRunning()` duy nhất (dựa trên lock chung) cho cả 2 nhánh sync — project đang mở lẫn sync-all — không còn cơ hội xếp chồng ở client.
+   - **Verify (08/08, Chrome thật + session thật)**: chạy `USER_ID=user_3H33tqEKNl3DVKINbhrQcvckqF4 PROJECT_ID=45 HEADLESS=true npx tsx agents/pm/scripts/sync-project-chats.ts` → Teams "An Mai Thuan" incremental EARLY-STOP đúng watermark, Zalo "Thảo Nguyên BB" early-stop scroll 1 → **Done: 2 chats, 5 tin mới trong ~3.2 phút**; DB xác nhận tin mới nhất "oi7" (4:00 PM) là `Me`, tin "anhhhhh ơiiiiii" là `Thảo Nguyên BB` (`isMine=false`) — đúng. Lock file tự dọn sau khi xong.
+   - **Lưu ý**: route mới ghi đè `.teams-sync-running` giống route sync-projects cũ — không nên bật đồng thời auto-sync project + sync-all interval cao (các lock chờ nhau).
+21. **Fix nút "Tải nhóm" bị lỗi — Chrome CDP bị cleanup giết nhầm + fallback persistent profile** (08/08, đã verify browser thật):
+   - **Triệu chứng**: bấm "Tải danh sách nhóm" (tab Chats) → lỗi `connect ECONNREFUSED 127.0.0.1:9222` — không lấy được danh sách Teams/Zalo.
+   - **Root cause — cleanup "Chrome orphan" tự giết Chrome CDP của user**: `teams-automator.ts` + `zalo-automator.ts` có đoạn cleanup kill Chrome có `ppid=1` (mồ côi) + cmdline chứa profile path. Chrome CDP user mở tay bằng `open -n ... --user-data-dir=<profile> --remote-debugging-port=9222` có **đúng signature đó** (`open -n` tách khỏi shell → ppid=1; cmdline chứa profile path) → mỗi lần script non-CDP chạy cùng profile (vd `sync-all-projects` trước khi route set `USE_CDP`) là Chrome CDP của user bị SIGKILL → nút "Tải nhóm" (các route default `USE_CDP=1`) fail.
+   - **Fix**:
+     1. Cleanup orphan giờ **chỉ kill Chrome do Playwright spawn** — cmdline chứa `--remote-debugging-pipe` (luôn có ở Playwright persistent launch); Chrome CDP của user có `--remote-debugging-port=9222` → **không bao giờ bị đụng**.
+     2. Watcher reap sau `launchPersistentContext` bỏ `pkill -P 1 -f <profile>` (cùng vấn đề), thay bằng **kill đúng pid Chrome Playwright** tìm được lúc khởi động (watcher vẫn chỉ fire khi cha chết → ppid=1).
+     3. **Fallback CDP**: khi `USE_CDP=1` mà connect thất bại (Chrome CDP chưa mở/crash/bị kill) → **không fail cứng** — tự chuyển xuống `launchPersistentContext` với `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` (cùng cookies/session, Chrome thật) → list-chats/sync vẫn chạy được.
+     4. `teams/zalo-list-chats.ts` + `sync-project-chats.ts`: khi fallback (không CDP), `context.pages()[0]` là page Teams/Zalo sẵn của persistent context — không bắt buộc tìm tab `teams.microsoft.com`/`zalo.me` như CDP.
+     5. Route `sync-projects` thêm `USE_CDP: process.env.USE_CDP ?? "1"` (trước đây thiếu → auto-sync-all chạy chế độ launch profile riêng).
+   - **Verify (08/08, HEADLESS thật, không cần CDP port 9222)**:
+     - Script trực tiếp: `USE_CDP=1 npx tsx agents/pm/scripts/teams-list-chats.ts` → log `CDP connect that bai (...) Fallback...` → mở Chrome persistent → `{"ok":true,"chats":[...~100 chats...]}`; `zalo-list-chats.ts` → `{"ok":true,"chats":[...59 chats...]}`.
+     - **API end-to-end đúng luồng nút bấm** (dev server `localhost:3000`, Chrome CDP tắt hẳn): `POST /api/agents/teams-automator {action:"list_chats",headless:true}` → `ok:true, 97 chats` (~47s); `POST /api/agents/zalo-automator {action:"list_chats",headless:true}` → `ok:true, 59 chats` (~18s). Sau khi chạy: không còn Chrome orphan, lock files sạch, watcher reap đã dọn Playwright Chrome đúng pid (không đụng gì khác).
+   - **Hướng dẫn**: user vẫn có thể mở Chrome CDP như cũ (nếu muốn) — giờ không còn bị kill; không mở cũng OK (fallback tự chạy).
+   - **Dọn dead code (08/08)**: bỏ `queuedRef` trong `GlobalSyncManager` — chỉ set `true` rồi reset `false` mà không dùng (gây hiểu nhầm là có queue). Cơ chế chống xếp chồng là `isSyncingRef` + chờ `checkIfRunning()` — vòng 60s (project) / 10s (sync-all) tự chạy lại sau khi vòng trước xong.
+   - **Lưu ý**: route mới ghi đè `.teams-sync-running` giống route sync-projects cũ — không nên bật đồng thời auto-sync project + sync-all interval cao (các lock chờ nhau).
 
 **Còn biết tới (chưa confirm làm / tồn đọng):**
 - `src/proxy.ts` + `proxy-image` — proxy image (cần xác nhận role hiện tại).
@@ -259,7 +299,7 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 
 ## 4. Next actions trước mắt
 
-0. **Verify auto-sync 5 phút + queue** (07/08, cần user login + Chrome CDP) — bật hẹn giờ 5 phút trong `/omni`: check 10s/lần, đủ interval mới sync; nếu sync đang chạy thì đợi xong rồi chạy tiếp (không xếp chồng, không spam lỗi "already running").
+0. **Verify auto-sync 5 phút + queue** (07/08, cần user login + Chrome CDP) — bật hẹn giờ 5 phút trong `/omni`: check 10s/lần, đủ interval mới sync; nếu sync đang chạy thì đợi xong rồi chạy tiếp (không xếp chồng, không spam lỗi "already running"). *(08/08: project đang mở giờ tự sync mỗi phút qua `sync-project-chats` — xem mục 20.)* *(08/08: DB xác nhận user chính `user_3H33...` đang set `autoSyncInterval=30` phút, `lastSyncTime` 21:50 — auto-sync sync-all ĐANG hoạt động bình thường; chỉ user phụ `user_3GR4...` có 0 = tắt.)*
 0a. **Gửi tin thật tới "An Mai Thuan" (ANMT3)** (07/08, optional) — dry-run + UI verify đã OK; khi user muốn gửi thật: bấm gửi trong composer Teams (tab Chats project 45) → Chrome thật mở + verify header rồi mới Enter gửi; kiểm tra tin hiển thị sau khi sync.
 
 1. **Verify reload UI project 45** (06/08, cần user login) — mở `http://localhost:3000/projects/45` → tab Chats: **93 tin Teams** hiển thị đủ, **34 tin có block quote `> Sender: quoted`**, **13 tin có ảnh** (8 ảnh base64 hiển thị trực tiếp, 5 ảnh sharepoint qua proxy-image có thể 401 nếu cookie hết hạn), tin mới nhất 10:42 06/08. Không còn tin nào dính `1 Heart reaction.`/`Sender8/6/2026...`.
@@ -272,6 +312,7 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 8. **Xác nhận luồng suggestions end-to-end** — từ message → `analyse-suggestions` → hiển thị + action thành công (add task / nhắn kênh / gửi email).
 9. **Sau khi ổn định** — đánh giá: tự động hóa theo dõi ISD status (scheduled), gắn `team` field check, tối ưu luồng kickoff (đã có `docs/fmon-project-action-logic.md` làm mẫu).
 10. **Verify Import SOW trên project thật có dữ liệu** — đã verify trên project 45 (user đang login): dialog + preview + tạo task + reload đều OK (test data đã dọn). Có thể test thêm với file SOW khác (WAF/NGFW sheet) để xác nhận auto-detect "security"/"waf" qua đường upload file.
+11. **Verify nút "Tải nhóm" trên UI thật** (08/08, cần user login) — mở project → tab Chats → bấm "Tải danh sách nhóm (Teams + Zalo)": giờ không cần mở Chrome CDP tay — fallback persistent profile tự chạy. **Đã verify API end-to-end** (route `teams-automator` + `zalo-automator` `list_chats` trả 97 + 59 chats khi CDP tắt) — chỉ còn chờ user bấm nút trên UI để xác nhận hiển thị.
 
 ### Lưu ý về run check
 - **Agent tự chạy check ở bước cuối** (sau khi sửa xong hết) theo rule `.cursor/rules/final-build-check.mdc`: `node_modules/.bin/tsc --noEmit`, fix lỗi đến khi exit 0, trước khi báo hoàn thành.

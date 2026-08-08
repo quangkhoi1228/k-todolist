@@ -1,4 +1,4 @@
-import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl } from "../lib/teams-automator";
+import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
 import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, getGroupUrl, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import dotenv from "dotenv";
 import * as path from "path";
@@ -343,6 +343,9 @@ async function syncTeams(syncName: string) {
     if (chatUrl) {
       await saveGroupUrlToDb("teams", chatUrl);
     }
+
+    // Gán sender="Me" cho tin của mình (Teams không luôn gắn class .fui-ChatMyMessage)
+    cleanTeamMessages(result.messages);
 
     const finalMessages = result.messages.filter(m => m.content || m.images?.length);
     console.log(`[SyncOne] Final: ${finalMessages.length} msgs, ${finalMessages.filter(m => m.images?.length).length} with images.`);

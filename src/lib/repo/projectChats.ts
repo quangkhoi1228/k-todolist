@@ -1,6 +1,17 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { files, projectChats } from "../db";
+import { files, projectChats, projects } from "../db";
+
+/** Nguồn danh xưng "Me" cho Teams (xem teams-automator.ts — giữ đồng bộ). */
+function normalizeName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function mapMessage(m: any): any {
   return {
@@ -115,9 +126,14 @@ export async function saveMessages(args: {
     // Zalo now provides a stable per-message id (bb_msg_id epoch ms); use it
     // as the dedup key so image-only messages and caption-only messages
     // (which have no reliable text/timestamp) never collide.
+    //
+    // IMPORTANT: sender is NOT part of the dedup key. A message previously
+    // mislabeled as "Me" (e.g. Zalo 1:1 chats before the isMine fix) gets the
+    // same key once its sender is corrected, so the upsert UPDATES the
+    // existing row instead of inserting a duplicate.
     const messageId = msg.platformMsgId
-      ? `${pid}_${platform}_${msg.platformMsgId}_${msg.sender}_${contentPrefix}`
-      : `${pid}_${platform}_${msg.timestampMs !== undefined ? String(msg.timestampMs) : msg.timestamp}_${msg.sender}_${contentPrefix}`;
+      ? `${pid}_${platform}_${msg.platformMsgId}_${contentPrefix}`
+      : `${pid}_${platform}_${msg.timestampMs !== undefined ? String(msg.timestampMs) : msg.timestamp}_${contentPrefix}`;
     const clean = cleanImages(msg.images);
 
     // Self-heal legacy rows: a message previously stored with empty content
@@ -200,6 +216,7 @@ export async function saveMessages(args: {
       )
       ON CONFLICT ("projectId", "messageId") DO UPDATE SET
         "content" = EXCLUDED."content",
+        "sender" = EXCLUDED."sender",
         "senderAvatar" = EXCLUDED."senderAvatar",
         "images" = EXCLUDED."images",
         "timestampMs" = EXCLUDED."timestampMs",
@@ -253,6 +270,50 @@ export async function clearProjectMessages(projectId: number | string, chatName?
     }
   }
   return { deleted: rows.length };
+}
+
+/**
+ * Backfill isMine cho tin Teams lịch sử: xác định tin do người dùng hiện tại
+ * gửi (sender đầy đủ tên thật "Khoi Tran Quang", "Khoi Quang"…) hoặc dựa vào
+ * class fui-ChatMyMessage đã lưu — set sender="Me" + isMine=true cho các tin
+ * đó. Chỉ xử lý bản ghi chưa có isMine (null) — không đè dữ liệu đã đúng.
+ * Projects filter theo userId để không sửa nhầm dữ liệu user khác.
+ */
+export async function backfillTeamsIsMine(args: { userId?: string }): Promise<{ updated: number; scanned: number }> {
+  const db = getDb();
+  const meNames = ["Khoi Tran Quang", "Khoi Quang", "Khoi Tran"];
+  const whereClauses: any[] = [
+    eq(projectChats.platform, "teams"),
+    or(eq(projectChats.isMine, null as any), eq(projectChats.isMine, false)),
+  ];
+  if (args.userId) {
+    const pidRows = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.userId, args.userId));
+    const pids = pidRows.map((r) => r.id);
+    if (pids.length > 0) whereClauses.push(sql`${projectChats.projectId} IN (${sql.join(pids, sql`, `)})`);
+  }
+  const rows = await db
+    .select({ id: projectChats.id, sender: projectChats.sender })
+    .from(projectChats)
+    .where(and(...whereClauses))
+    .limit(2000);
+  let updated = 0;
+  for (const r of rows) {
+    const s = (r.sender || "").trim();
+    const isMe =
+      meNames.some((n) => normalizeName(s) === normalizeName(n)) ||
+      // Vd "Khoi Tran Quang (khoitq3)" — so khớp phần tên sau dấu ngoặc
+      /\(?\s*(khoitq3|khoi quang|khoi tran quang)\s*\)?/i.test(s);
+    if (!isMe) continue;
+    await db
+      .update(projectChats)
+      .set({ isMine: true, sender: "Me" })
+      .where(eq(projectChats.id, r.id));
+    updated++;
+  }
+  return { updated, scanned: rows.length };
 }
 
 // ─── File upload (replaces Convex uploadChatImage action) ──

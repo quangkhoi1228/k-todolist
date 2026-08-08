@@ -21,6 +21,7 @@ import type { Page, BrowserContext, Browser } from "playwright";
 import { chromium } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
+import { execSync, spawn } from "child_process";
 
 // ─── Config ─────────────────────────────────────────────────
 
@@ -182,26 +183,115 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
     const port = Number(process.env.CDP_PORT || 9222);
     const cdpUrl = `http://127.0.0.1:${port}`;
     log(`CDP mode: connecting to real Chrome at ${cdpUrl}`);
-    const browser = await chromium.connectOverCDP(cdpUrl);
-    const context = browser.contexts()[0];
-    if (!context) throw new Error("CDP browser has no default context.");
+    try {
+      const browser = await chromium.connectOverCDP(cdpUrl);
+      const context = browser.contexts()[0];
+      if (!context) throw new Error("CDP browser has no default context.");
 
-    context.on("page", (newPage) => {
-      newPage.on("dialog", async (dialog) => {
-        log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
-        await dialog.dismiss().catch(() => {});
+      context.on("page", (newPage) => {
+        newPage.on("dialog", async (dialog) => {
+          log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
+          await dialog.dismiss().catch(() => {});
+        });
       });
-    });
 
-    // Do NOT close the user's Chrome when the automation finishes.
-    const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
+      // Do NOT close the user's Chrome when the automation finishes.
+      const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
 
-    return { browser: fakeBrowser, context };
+      return { browser: fakeBrowser, context };
+    } catch (cdpErr) {
+      // Chrome CDP khong chay (crash, chua mo, hoac bi kill nham). Khong fail
+      // cung — fallback xuong mo Chrome rieng voi persistent profile (cung
+      // session/cookies) de "Tai nhom"/sync van chay duoc.
+      log(`CDP connect that bai (${String(cdpErr).slice(0, 120)}). Fallback: mo Chrome rieng voi persistent profile.`);
+    }
   }
 
   if (config.useRealChrome) {
     const profileDir = path.join(config.sessionDir, "chrome-profile");
     ensureDir(profileDir);
+
+    // ── Cleanup orphan Chrome + stale locks ─────────────
+    // Playwright sometimes leaves the browser process running (kill EPERM on
+    // macOS) while holding the profile lock; a later run then aborts with
+    // "Aborting now to avoid profile corruption" or "Opening in existing
+    // browser session" (stale SingletonLock pointing at a dead pid).
+    //
+    // IMPORTANT: only kill Chrome processes whose parent pid is 1 (orphaned
+    // by a CRASHED/closed previous script). Never kill a live Chrome owned by
+    // ANOTHER running script using the same profile — the auto-sync
+    // (sync-all-projects spawned by next-server) and zalo-send share
+    // `.zalo-session/chrome-profile`, and a blanket kill here was killing
+    // the other script's browser mid-flight, producing "Target page, context
+    // or browser has been closed".
+    //
+    // CRITICAL (08/08): the USER's manually opened CDP Chrome
+    // (`open -n ... --user-data-dir=<profile> --remote-debugging-port=9222`)
+    // looks like an "orphan": `open -n` detaches it so its ppid is 1
+    // (launchd) and its cmdline contains the profile path. Killing it broke
+    // the "Tải nhóm" button (connect ECONNREFUSED 127.0.0.1:9222). We only
+    // SIGKILL Chrome whose cmdline has `--remote-debugging-pipe` (Playwright
+    // launches with it); a CDP browser keeps `--remote-debugging-port=9222`
+    // and is NEVER killed here.
+    try {
+      const chromePaths = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+      for (const line of chromePaths) {
+        if (!line.includes(profileDir)) continue;
+        if (!line.includes("--remote-debugging-pipe")) continue; // Playwright-spawned only
+        const m = line.match(/^(\d+)\s/);
+        if (!m) continue;
+        const pid = Number(m[1]);
+        // Skip processes that are NOT orphans (still owned by a live parent —
+        // i.e. a browser another script is actively using).
+        try {
+          const ppidStr = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8" }).trim();
+          const ppid = Number(ppidStr);
+          if (ppid > 1) continue;
+        } catch {
+          continue; // process already gone
+        }
+        try {
+          process.kill(pid, "SIGKILL");
+          log(`Da kill Chrome orphan (pid=${pid}, ppid=1) giu lock profile.`);
+        } catch {
+          // process may have exited already — ignore
+        }
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    } catch {
+      // pgrep not available / no matches — ignore
+    }
+
+    // ── Remove stale SingletonLock/Socket/Cookie ────────
+    // Chrome writes SingletonLock containing "<hostname>-<pid>". If that pid
+    // is dead but the file survived (kill EPERM on macOS), Chrome refuses to
+    // start with "Opening in existing browser session". Remove the lock only
+    // when its pid is no longer alive — never while another script's Chrome
+    // is still running on this profile.
+    for (const lockName of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+      const lockPath = path.join(profileDir, lockName);
+      try {
+        if (!fs.existsSync(lockPath)) continue;
+        const lockContent = fs.readFileSync(lockPath, "utf-8").trim();
+        const pidMatch = lockContent.match(/(\d+)$/);
+        let pidAlive = false;
+        if (pidMatch) {
+          const lockPid = Number(pidMatch[1]);
+          try {
+            process.kill(lockPid, 0);
+            pidAlive = true;
+          } catch {
+            pidAlive = false;
+          }
+        }
+        if (!pidAlive) {
+          fs.unlinkSync(lockPath);
+          log(`Da xoa stale lock ${lockName} (pid trong lock khong con song).`);
+        }
+      } catch (e) {
+        log(`Khong the xu ly lock ${lockName}: ${String(e).slice(0, 80)}`);
+      }
+    }
 
     // Suppress "Restore pages?" crash bubble
     const prefsPath = path.join(profileDir, "Preferences");
@@ -266,6 +356,48 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
 
     // Wrap so runAutomation's browser.close() calls context.close()
     const fakeBrowser = { close: () => persistentContext.close() } as Browser;
+
+    // ── Best-effort child-process reaping ────────────────
+    // Playwright's close() can leave the Chrome child running (kill EPERM on
+    // macOS). Spawn a short-lived watcher that SIGKILLs it once this script
+    // exits (when our parent dies we are reparented to pid 1 — ppid check is
+    // robust against pid reuse), so the profile lock never outlives the run.
+    //
+    // IMPORTANT: the watcher only SIGKILLs Chrome processes whose parent pid
+    // is 1 (orphaned by THIS script) — NOT a blanket `pkill -f <profileDir>`.
+    // The blanket pkill was killing the Chrome instance of a *different*
+    // automation process using the same profile (e.g. a running
+    // sync-single-chat killed the teams-send browser mid-flight, producing
+    // "Target page, context or browser has been closed").
+    //
+    // (08/08) Scope further still: `pkill -P 1 -f <profileDir>` ALSO matched
+    // the user's manually-opened CDP Chrome (`open -n` detaches it → ppid=1,
+    // cmdline contains the profile path) and killed it, breaking "Tải nhóm"
+    // (ECONNREFUSED 127.0.0.1:9222). Since Playwright's persistent Chrome is
+    // the only process we need to reap and we know its pid (from the pgrep
+    // cleanup above, which now only selects `--remote-debugging-pipe`
+    // processes), the watcher reaps only that exact pid.
+    let chromePid = 0;
+    try {
+      const chromePaths = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+      for (const line of chromePaths) {
+        if (!line.includes(profileDir)) continue;
+        if (!line.includes("--remote-debugging-pipe")) continue;
+        const m = line.match(/^(\d+)\s/);
+        if (m) { chromePid = Number(m[1]); break; }
+      }
+    } catch { /* no chrome */ }
+
+    const detached = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const int=setInterval(()=>{if(process.ppid===1){clearInterval(int);try{process.kill(${chromePid},'SIGKILL')}catch{};process.exit(0)}},1000);setTimeout(()=>{clearInterval(int);process.exit(0)},60000);`,
+      ],
+      { detached: true, stdio: "ignore" }
+    );
+    detached.unref();
+    log(`Watcher reap Chrome orphan (pid=${chromePid}) — chi kill Playwright Chrome, khong pkill rong.`);
 
     return { browser: fakeBrowser, context: persistentContext };
   }
@@ -804,6 +936,18 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
     let lastSenderAvatar = "";
     const htmlDump = wrappers.length > 0 ? wrappers[0].outerHTML : "";
     
+    // Detect 1:1 chat: Zalo shows NO sender-name element on received messages
+    // in direct chats (only an avatar), while group chats always render one.
+    // If no received message carries a real sender name, treat this chat as
+    // 1:1 and attribute received messages to the partner (config.groupName is
+    // the partner's display name), instead of leaking "Me" via lastSender.
+    const anyRealSenderName = wrappers.some((w) => {
+      const s = w.querySelector<HTMLElement>('.message-sender-name-content .truncate')?.innerText?.trim();
+      return !!s && s !== "Me";
+    });
+    const singleChat = !anyRealSenderName;
+    const partnerName = singleChat ? (args.groupName || "") : "";
+    
     for (const el of wrappers) {
       // Zalo sender: .message-sender-name-content > div.truncate
       // IMPORTANT: never fall back to .message-sender-name-wrapper — its
@@ -816,42 +960,58 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
         el.querySelector<HTMLElement>('.sender-name')?.innerText?.trim() ||
         el.querySelector<HTMLElement>('.chat-message__sender')?.innerText?.trim() ||
         el.querySelector<HTMLElement>('[data-translate-inner="STR_SENDER_NAME"]')?.innerText?.trim() || "";
+      // Zalo marks own messages with an independent "me" class token on the
+      // wrapper (e.g. "chat-message chat-message-v2 wrap-message rotate-container me -send-time"),
+      // on the .message-wrapper child ("message-wrapper message-wrapper--me")
+      // and on the parent .chat-item ("chat-item ... me"). These are 100%
+      // reliable — verified against live DOM: a 1:1 chat's received messages
+      // never carry the token.
+      //
+      // IMPORTANT: only match whole tokens — "chat-message" contains "-me" as
+      // a substring but is NOT a sent message, so `includes("-me")` would
+      // mislabel every message as mine.
+      //
+      // DO NOT rely on [data-id="btn_SentMsg_React"] / "div_SentMsg_Text": in
+      // 1:1 chats Zalo renders a reaction button on EVERY message, and the
+      // sent/received data-id does not exist on older bubbles — that selector
+      // mislabeled every received message as "Me".
       const wrapperClass = el.className || "";
-      // Zalo marks own messages with an independent "me" class token on the wrapper
-      // (e.g. "chat-message chat-message-v2 wrap-message rotate-container me -send-time").
-      // IMPORTANT: only match whole tokens — "chat-message" contains "-me" as a substring
-      // but is NOT a sent message, so `includes("-me")` would mislabel every message as mine.
       const isMine = /(^|\s)(me|mine|my|owner|self)($|\s)/i.test(wrapperClass) ||
         wrapperClass.toLowerCase().includes("-right") ||
         /(^|\s)(me|mine|my|owner|self)($|\s)/i.test(el.querySelector('.message-wrapper')?.className || "") ||
-        !!el.querySelector('[data-id="btn_SentMsg_React"], [data-id="div_SentMsg_Text"]');
+        /(^|\s)(me|mine|my|owner|self)($|\s)/i.test(el.closest('.chat-item')?.className || "");
       
       if (isMine) {
         sender = "Me";
       }
       
-      if (!sender && !lastSender) {
+      // Sender fallback logic. Order matters:
+      // - In a 1:1 chat, received messages carry no sender-name element at
+      //   all, so `lastSender` (often "Me" from an earlier message) must NOT
+      //   leak into received messages — use the partner name instead.
+      // - In a group chat, a received message without its own name belongs to
+      //   the previous sender (Zalo only renders the name on the first bubble
+      //   of a contiguous run) — `lastSender` is correct there.
+      if (!sender && !isMine && singleChat) {
+        sender = partnerName || "Unknown";
+      } else if (!sender && !lastSender) {
         sender = "Unknown";
       }
-      // Zalo renders sender avatars inside the *chat-item* parent of the
-      // message wrapper, NOT inside the wrapper itself:
-      //   <div class="chat-item ..."><div class="rel zavatar-container avatar--overlay absolute">
-      //     <div class="zavatar ..."><img class="a-child" src="https://s*-ava-talk.zadn.vn/..."></div>
-      //   </div><div class="chat-content ...">...message...</div></div>
-      // So we walk up to the nearest .chat-item and look for the avatar there.
-      let senderAvatar = "";
       const chatItem = el.closest<HTMLElement>('.chat-item');
       const avatarScope = chatItem || el;
       const avatarImg = avatarScope.querySelector<HTMLImageElement>(
         '.zavatar-container img, [class*="zavatar-container"] img, .avatar--overlay img, [class*="zavatar"] img'
       );
+      let senderAvatar = "";
       if (avatarImg) {
         senderAvatar = avatarImg.getAttribute('src') || avatarImg.getAttribute('data-src') || "";
       }
 
-      if (!sender && lastSender) {
-        sender = lastSender;
-      } else if (sender) {
+      // Track the previous real sender for the group-chat fallback, but NEVER
+      // let "Me" leak into a partner's message in a 1:1 chat (the received
+      // bubbles have no sender-name element, so lastSender would otherwise
+      // attribute them to the wrong person).
+      if (sender && !(singleChat && !isMine)) {
         lastSender = sender;
       }
 
@@ -859,6 +1019,13 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
         senderAvatar = lastSenderAvatar;
       } else if (senderAvatar) {
         lastSenderAvatar = senderAvatar;
+      }
+
+      // If a received message still has no sender (neither an explicit name
+      // nor a recorded previous sender), and we are in a 1:1 chat, attribute
+      // it to the partner instead of leaking "Me".
+      if (!sender && singleChat && !isMine) {
+        sender = partnerName || "Unknown";
       }
 
       // Zalo timestamp: .card-send-time__sendTime inside .card-send-time

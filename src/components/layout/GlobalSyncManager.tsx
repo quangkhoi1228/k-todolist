@@ -1,17 +1,28 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { useUserPreferences, usePreferenceMutations } from "@/hooks/useDomain";
 
+/**
+ * Auto-sync chat messages:
+ * - Khi đang mở trang `/projects/[id]`: sync NHANH chỉ project đó mỗi 1 phút
+ *   (chỉ các nhóm đã add qua UI — script sync-project-chats.ts).
+ * - Khi không mở project nào: sync tất cả project theo autoSyncInterval
+ *   (setting trong /omni, mặc định 0 = tắt).
+ */
 export function GlobalSyncManager() {
   const { userId } = useAuth();
+  const pathname = usePathname();
   const { data: prefs } = useUserPreferences(userId);
   const prefx = usePreferenceMutations();
   const isSyncingRef = useRef(false);
-  const queuedRef = useRef(false);
 
-  // Check sync-projects status. Returns true if a background sync is running.
+  // Trích projectId từ URL `/projects/123?tab=chats`
+  const projectMatch = pathname?.match(/\/projects\/(\d+)/);
+  const activeProjectId = projectMatch ? projectMatch[1] : null;
+
   const checkIfRunning = async (): Promise<boolean> => {
     try {
       const res = await fetch("/api/agents/sync-projects", {
@@ -26,7 +37,19 @@ export function GlobalSyncManager() {
     }
   };
 
-  const startSync = async (): Promise<boolean> => {
+  const startSyncProject = async (projectId: string): Promise<boolean> => {
+    const headless = localStorage.getItem("headlessMode") !== "false";
+    // Server-side route tự chặn khi sync khác đang chạy (lock file chung).
+    const res = await fetch("/api/agents/sync-project-chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, headless }),
+    });
+    const data = await res.json();
+    return !!(res.ok && data.ok);
+  };
+
+  const startSyncAll = async (): Promise<boolean> => {
     const headless = localStorage.getItem("headlessMode") !== "false";
     const res = await fetch("/api/agents/sync-projects", {
       method: "POST",
@@ -38,16 +61,42 @@ export function GlobalSyncManager() {
   };
 
   useEffect(() => {
-    if (!userId || !prefs || !prefs.autoSyncInterval || prefs.autoSyncInterval <= 0) return;
+    if (!userId) return;
+
+    // ─── Trường hợp 1: đang mở 1 project → sync project đó mỗi phút ───
+    if (activeProjectId) {
+      const runProjectSync = async () => {
+        if (isSyncingRef.current) return; // vòng lặp trước chưa xong — bỏ qua, vòng 60s sau sẽ chạy
+        isSyncingRef.current = true;
+        try {
+          // Chờ sync khác xong rồi mới bắt đầu (không xếp chồng, chung Chrome profile)
+          let waited = 0;
+          while (await checkIfRunning() && waited < 60_000) {
+            await new Promise((r) => setTimeout(r, 10_000));
+            waited += 10_000;
+          }
+          const ok = await startSyncProject(activeProjectId);
+          if (!ok) console.warn("[GlobalSyncManager] Project sync start rejected (sync khác đang chạy?)");
+        } catch (err) {
+          console.error("[GlobalSyncManager] Project auto-sync failed:", err);
+        } finally {
+          isSyncingRef.current = false;
+        }
+      };
+
+      // Chạy ngay khi mở project, sau đó mỗi 60s
+      runProjectSync();
+      const intervalId = setInterval(runProjectSync, 60_000);
+      return () => clearInterval(intervalId);
+    }
+
+    // ─── Trường hợp 2: không mở project → sync all theo autoSyncInterval ───
+    if (!prefs || !prefs.autoSyncInterval || prefs.autoSyncInterval <= 0) return;
 
     const intervalMs = prefs.autoSyncInterval! * 60 * 1000;
 
     const runSync = async () => {
-      if (isSyncingRef.current) {
-        // A sync is still running — remember we need one more after it finishes.
-        queuedRef.current = true;
-        return;
-      }
+      if (isSyncingRef.current) return; // vòng lặp trước chưa xong — bỏ qua, check 10s sau sẽ chạy lại
 
       const lastSync = prefs.lastSyncTime || 0;
       const now = Date.now();
@@ -55,25 +104,19 @@ export function GlobalSyncManager() {
 
       isSyncingRef.current = true;
       try {
-        // Queue semantics: if the previous run is still going, wait for it to
-        // finish before starting the queued one (do not stack parallel syncs —
-        // the API lock file rejects them anyway).
         let waited = 0;
         while (await checkIfRunning() && waited < intervalMs) {
           await new Promise((r) => setTimeout(r, 15000));
           waited += 15000;
         }
 
-        const ok = await startSync();
+        const ok = await startSyncAll();
         if (ok) {
           await prefx.updateUserPreferences({
             userId,
             lastSyncTime: Date.now(),
           });
         } else {
-          // Rejected (another sync already running or server error). Without
-          // updating lastSyncTime we'd retry every 10s forever — treat this
-          // attempt as done and let the next interval check trigger a new one.
           console.warn("[GlobalSyncManager] Sync start rejected — will retry at next interval");
           await prefx.updateUserPreferences({
             userId,
@@ -84,7 +127,6 @@ export function GlobalSyncManager() {
         console.error("[GlobalSyncManager] Auto-sync failed:", err);
       } finally {
         isSyncingRef.current = false;
-        queuedRef.current = false;
       }
     };
 
@@ -92,7 +134,7 @@ export function GlobalSyncManager() {
     runSync();
     const intervalId = setInterval(runSync, 10000);
     return () => clearInterval(intervalId);
-  }, [userId, prefs, prefx]);
+  }, [userId, activeProjectId, prefs, prefx]);
 
   return null; // Hidden component
 }

@@ -13,11 +13,17 @@ async function main() {
   };
 
   const { browser, context } = await createStealthContext(config);
+  const isCdp = process.env.USE_CDP === "1" || process.env.USE_CDP === "true";
   // CDP mode: dùng tab Teams có sẵn (đã load) nếu có — tránh tích tụ tab heavy
+  // Lưu ý: `isCdp` == false → fallback đã chuyển sang launchPersistentContext,
+  // lúc đó context.pages()[0] là page của TEAMS (persistent), còn page Teams
+  // CDP không tồn tại. Dùng page đầu tiên có sẵn (newPage chỉ dùng khi thật cần).
   let page = context.pages()[0];
-  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+  if (isCdp) {
     const teamsPage = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
-    page = teamsPage || await context.newPage();
+    page = teamsPage || (context.pages()[0] || await context.newPage());
+  } else {
+    page = context.pages()[0] || await context.newPage();
   }
   await applyStealthPatches(page);
 

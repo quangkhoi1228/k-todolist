@@ -2,10 +2,26 @@ import { chromium } from "playwright";
 import path from "path";
 import fs from "fs";
 
-const SESSION_DIR = path.join(process.cwd(), ".zalo-session", "chrome-profile");
+// Health check dùng profile RIÊNG (.health-session/zalo-profile) — KHÔNG dùng
+// profile chính .zalo-session/chrome-profile (sync/send đang dùng). Nếu dùng
+// chung, healthcheck (launchd chạy mỗi giờ) sẽ xoá SingletonLock của Chrome
+// đang chạy và bị giết ngược lại → "Target page, context or browser has been
+// closed" ngẫu nhiên khi sync/send. Profile riêng được copy từ profile chính
+// để vẫn kế thừa session đăng nhập.
+const MAIN_PROFILE = path.join(process.cwd(), ".zalo-session", "chrome-profile");
+const SESSION_DIR = path.join(process.cwd(), ".health-session", "zalo-profile");
+
+function prepareProfile() {
+  if (!fs.existsSync(MAIN_PROFILE)) return false;
+  if (!fs.existsSync(SESSION_DIR)) {
+    fs.mkdirSync(path.dirname(SESSION_DIR), { recursive: true });
+    fs.cpSync(MAIN_PROFILE, SESSION_DIR, { recursive: true, force: true });
+  }
+  return true;
+}
 
 async function checkHealth() {
-  if (!fs.existsSync(SESSION_DIR)) {
+  if (!prepareProfile()) {
     console.log(JSON.stringify({ ok: true, status: "unauthorized", message: "No session found" }));
     return;
   }

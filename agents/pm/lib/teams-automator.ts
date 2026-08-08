@@ -24,6 +24,7 @@ import type { Page, BrowserContext, Browser } from "playwright";
 import { chromium } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
+import { execSync, spawn } from "child_process";
 
 const DEFAULT_CDP_PORT = 9222;
 
@@ -93,6 +94,56 @@ export interface ExtractedMessage {
   matchedKeywords: string[];
   /** True if this message was sent by the logged-in user */
   isMine?: boolean;
+}
+
+// ─── Người dùng hiện tại (danh xưng "Me" trên Teams) ────────
+// Teams hiển thị tên mình trên chính tin mình gửi ("Khoi Tran Quang"),
+// nhưng class `.fui-ChatMyMessage` (dùng để nhận diện tin của mình) không
+// phải lúc nào cũng có trên DOM. Khi thiếu class đó, tin gửi bởi chính mình
+// bị lưu với sender đầy đủ tên thật thay vì "Me". Giải pháp: gộp cả 2 nguồn —
+// class `fui-ChatMyMessage` HOẶC sender khớp danh xưng mình (tên đầy đủ /
+// alias, so khớp không dấu) → đổi sender thành "Me".
+const TEAMS_ME_NAMES = ["khoi tran quang", "khoitq3"];
+
+/** Bỏ dấu + hạ thường để so khớp tên (chịu được tên có dấu tiếng Việt). */
+export function normalizeName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Đọc danh xưng "Me" từ env (mặc định "Khoi Tran Quang" / "khoitq3"). */
+export function getTeamsMeNames(): string[] {
+  const raw = process.env.TEAMS_ME_NAME;
+  if (raw && raw.trim()) {
+    return raw.split(",").map((s) => normalizeName(s)).filter(Boolean);
+  }
+  return TEAMS_ME_NAMES.map(normalizeName);
+}
+
+/** So khớp sender với danh xưng "Me": khớp chuỗi đầy đủ hoặc tên (không dấu). */
+export function isTeamsMeSender(sender: string): boolean {
+  const s = normalizeName(sender);
+  if (!s) return false;
+  const meNames = getTeamsMeNames();
+  // Alias dạng khoitq3 thường được Teams gán sau tên ("Khoi Tran Quang (khoitq3)")
+  if (meNames.some((n) => n === s || s === n || s.includes(n) || n.includes(s))) return true;
+  // Chỉ khớp theo từ khoá có độ dài ≥ 4 chữ cái — tránh nhầm tên ngắn
+  const sTokens = s.split(" ").filter((t) => t.length >= 4);
+  return sTokens.length > 0 && sTokens.some((t) => meNames.some((n) => n.split(" ").includes(t)));
+}
+
+/** Chuẩn hoá dữ liệu tin nhắn sau khi trích xuất: gán sender="Me" nếu isMine. */
+export function cleanTeamMessages<T extends { sender: string; isMine?: boolean }>(messages: T[]): T[] {
+  for (const m of messages) {
+    if (m.isMine) m.sender = "Me";
+    else if (isTeamsMeSender(m.sender)) m.sender = "Me";
+  }
+  return messages;
 }
 
 // ─── Logging ────────────────────────────────────────────────
@@ -221,26 +272,115 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
     const port = Number(process.env.CDP_PORT || DEFAULT_CDP_PORT);
     const cdpUrl = `http://127.0.0.1:${port}`;
     log(`CDP mode: connecting to real Chrome at ${cdpUrl}`);
-    const browser = await chromium.connectOverCDP(cdpUrl);
-    const context = browser.contexts()[0];
-    if (!context) throw new Error("CDP browser has no default context.");
+    try {
+      const browser = await chromium.connectOverCDP(cdpUrl);
+      const context = browser.contexts()[0];
+      if (!context) throw new Error("CDP browser has no default context.");
 
-    context.on("page", (newPage) => {
-      newPage.on("dialog", async (dialog) => {
-        log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
-        await dialog.dismiss().catch(() => {});
+      context.on("page", (newPage) => {
+        newPage.on("dialog", async (dialog) => {
+          log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
+          await dialog.dismiss().catch(() => {});
+        });
       });
-    });
 
-    // Do NOT close the user's Chrome when the automation finishes.
-    const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
+      // Do NOT close the user's Chrome when the automation finishes.
+      const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
 
-    return { browser: fakeBrowser, context };
+      return { browser: fakeBrowser, context };
+    } catch (cdpErr) {
+      // Chrome CDP khong chay (crash, chua mo, hoac bi kill nham). Khong fail
+      // cung — fallback xuong mo Chrome rieng voi persistent profile (cung
+      // session/cookies) de "Tai nhom"/sync van chay duoc.
+      log(`CDP connect that bai (${String(cdpErr).slice(0, 120)}). Fallback: mo Chrome rieng voi persistent profile.`);
+    }
   }
 
   if (config.useRealChrome) {
     const profileDir = path.join(config.sessionDir, "chrome-profile");
     ensureDir(profileDir);
+
+    // ── Cleanup orphan Chrome + stale locks ─────────────
+    // Playwright sometimes leaves the browser process running (kill EPERM on
+    // macOS) while holding the profile lock; a later run then aborts with
+    // "Aborting now to avoid profile corruption" or "Opening in existing
+    // browser session" (stale SingletonLock pointing at a dead pid).
+    //
+    // IMPORTANT: only kill Chrome processes whose parent pid is 1 (orphaned
+    // by a CRASHED/closed previous script). Never kill a live Chrome owned by
+    // ANOTHER running script using the same profile — the auto-sync
+    // (sync-all-projects spawned by next-server) and teams-send share
+    // `.teams-session/chrome-profile`, and a blanket kill here was killing
+    // the other script's browser mid-flight, producing "Target page, context
+    // or browser has been closed".
+    //
+    // CRITICAL (08/08): the USER's manually opened CDP Chrome
+    // (`open -n ... --user-data-dir=<profile> --remote-debugging-port=9222`)
+    // looks like an "orphan": `open -n` detaches it so its ppid is 1
+    // (launchd) and its cmdline contains the profile path. Killing it broke
+    // the "Tải nhóm" button (connect ECONNREFUSED 127.0.0.1:9222). We only
+    // SIGKILL Chrome whose cmdline has `--remote-debugging-pipe` (Playwright
+    // launches with it); a CDP browser keeps `--remote-debugging-port=9222`
+    // and is NEVER killed here.
+    try {
+      const chromePaths = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+      for (const line of chromePaths) {
+        if (!line.includes(profileDir)) continue;
+        if (!line.includes("--remote-debugging-pipe")) continue; // Playwright-spawned only
+        const m = line.match(/^(\d+)\s/);
+        if (!m) continue;
+        const pid = Number(m[1]);
+        // Skip processes that are NOT orphans (still owned by a live parent —
+        // i.e. a browser another script is actively using).
+        try {
+          const ppidStr = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8" }).trim();
+          const ppid = Number(ppidStr);
+          if (ppid > 1) continue;
+        } catch {
+          continue; // process already gone
+        }
+        try {
+          process.kill(pid, "SIGKILL");
+          log(`Da kill Chrome orphan (pid=${pid}, ppid=1) giu lock profile.`);
+        } catch {
+          // process may have exited already — ignore
+        }
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    } catch {
+      // pgrep not available / no matches — ignore
+    }
+
+    // ── Remove stale SingletonLock/Socket/Cookie ────────
+    // Chrome writes SingletonLock containing "<hostname>-<pid>". If that pid
+    // is dead but the file survived (kill EPERM on macOS), Chrome refuses to
+    // start with "Opening in existing browser session". Remove the lock only
+    // when its pid is no longer alive — never while another script's Chrome
+    // is still running on this profile.
+    for (const lockName of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+      const lockPath = path.join(profileDir, lockName);
+      try {
+        if (!fs.existsSync(lockPath)) continue;
+        const lockContent = fs.readFileSync(lockPath, "utf-8").trim();
+        const pidMatch = lockContent.match(/(\d+)$/);
+        let pidAlive = false;
+        if (pidMatch) {
+          const lockPid = Number(pidMatch[1]);
+          try {
+            process.kill(lockPid, 0);
+            pidAlive = true;
+          } catch {
+            pidAlive = false;
+          }
+        }
+        if (!pidAlive) {
+          fs.unlinkSync(lockPath);
+          log(`Da xoa stale lock ${lockName} (pid trong lock khong con song).`);
+        }
+      } catch (e) {
+        log(`Khong the xu ly lock ${lockName}: ${String(e).slice(0, 80)}`);
+      }
+    }
 
     // ── Suppress "Restore pages?" crash bubble ─────────
     // Write Preferences before Chrome starts so it thinks it was shut down cleanly
@@ -330,6 +470,48 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
 
     // Wrap so runAutomation's browser.close() calls context.close()
     const fakeBrowser = { close: () => persistentContext.close() } as Browser;
+
+    // ── Best-effort child-process reaping ────────────────
+    // Playwright's close() can leave the Chrome child running (kill EPERM on
+    // macOS). Spawn a short-lived watcher that SIGKILLs it once this script
+    // exits (when our parent dies we are reparented to pid 1 — ppid check is
+    // robust against pid reuse), so the profile lock never outlives the run.
+    //
+    // IMPORTANT: the watcher only SIGKILLs Chrome processes whose parent pid
+    // is 1 (orphaned by THIS script) — NOT a blanket `pkill -f <profileDir>`.
+    // The blanket pkill was killing the Chrome instance of a *different*
+    // automation process using the same profile (e.g. a running
+    // sync-single-chat killed the teams-send browser mid-flight, producing
+    // "Target page, context or browser has been closed").
+    //
+    // (08/08) Scope further still: `pkill -P 1 -f <profileDir>` ALSO matched
+    // the user's manually-opened CDP Chrome (`open -n` detaches it → ppid=1,
+    // cmdline contains the profile path) and killed it, breaking "Tải nhóm"
+    // (ECONNREFUSED 127.0.0.1:9222). Since Playwright's persistent Chrome is
+    // the only process we need to reap and we know its pid (from the pgrep
+    // cleanup above, which now only selects `--remote-debugging-pipe`
+    // processes), the watcher reaps only that exact pid.
+    let chromePid = 0;
+    try {
+      const chromePaths = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+      for (const line of chromePaths) {
+        if (!line.includes(profileDir)) continue;
+        if (!line.includes("--remote-debugging-pipe")) continue;
+        const m = line.match(/^(\d+)\s/);
+        if (m) { chromePid = Number(m[1]); break; }
+      }
+    } catch { /* no chrome */ }
+
+    const detached = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const int=setInterval(()=>{if(process.ppid===1){clearInterval(int);try{process.kill(${chromePid},'SIGKILL')}catch{};process.exit(0)}},1000);setTimeout(()=>{clearInterval(int);process.exit(0)},60000);`,
+      ],
+      { detached: true, stdio: "ignore" }
+    );
+    detached.unref();
+    log(`Watcher reap Chrome orphan (pid=${chromePid}) — chi kill Playwright Chrome, khong pkill rong.`);
 
     return { browser: fakeBrowser, context: persistentContext };
   }
@@ -1429,6 +1611,10 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
 
   log(`Trich xuat duoc ${extractedMessages.length} tin nhan.`);
 
+  // Gán sender="Me" cho tin do chính mình gửi (class fui-ChatMyMessage hoặc
+  // tên hiển thị khớp danh xưng "Me" — Teams không luôn gắn class own-message).
+  cleanTeamMessages(extractedMessages);
+
   extractedMessages.sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
 
   const result: TeamsExtractResult = {
@@ -1590,6 +1776,10 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
   }, { groupName: pageInfo.channelName });
 
   log(`Trich xuat text: ${extractedMessages.length} messages`);
+
+  // Gán sender="Me" cho tin do chính mình gửi (xem cleanTeamMessages).
+  cleanTeamMessages(extractedMessages);
+
   extractedMessages.sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
 
   return {
@@ -2095,13 +2285,25 @@ export async function sendTeamsMessage(
   });
   const inputCleared = inputNow.trim() === "";
 
-  // Check last message in chat contains our text
-  const sentTextVisible = await page.evaluate((msg: string) => {
-    const wrappers = Array.from(document.querySelectorAll('[data-tid="message-list-item"], [data-tid="message-container"]'));
-    const last = wrappers[wrappers.length - 1];
-    if (!last) return false;
-    return (last.textContent || "").includes(msg.slice(0, 80));
-  }, message);
+  // Check the LAST message wrapper in the pane contains our text. Teams v2
+  // message wrappers are `.fui-ChatMessage` / `.fui-ChatMyMessage` /
+  // `[data-testid="comfy-message-wrapper"]` / `[data-tid="chat-pane-message"]`
+  // — the old `[data-tid="message-list-item"]` selector no longer exists.
+  // Poll a few times: the new bubble needs a moment to render after Enter.
+  let sentTextVisible = false;
+  for (let attempt = 0; attempt < 6 && !sentTextVisible; attempt++) {
+    sentTextVisible = await page.evaluate((msg: string) => {
+      const wrappers = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="comfy-message-wrapper"], .fui-ChatMessage, .fui-ChatMyMessage, [data-tid="chat-pane-message"]'
+        )
+      );
+      const last = wrappers[wrappers.length - 1];
+      if (!last) return false;
+      return (last.textContent || "").includes(msg.slice(0, 80));
+    }, message);
+    if (!sentTextVisible) await page.waitForTimeout(1_500);
+  }
 
   if (screenshots) {
     await page.screenshot({ path: path.join(shotDir, `send-result-${stamp}.png`) }).catch(() => {});

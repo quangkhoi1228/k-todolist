@@ -1,8 +1,6 @@
-/**
- * Verify UI Teams send composer qua CDP (browser thật đã login Clerk).
- * Chạy với Chrome CDP port 9222 mở bằng profile copy /tmp/kflow-login-profile
- * (xem .cursor/rules/verify-app-login.mdc để biết cách mở profile đã login).
- * Run: npx tsx scripts/verify-teams-send-ui.ts
+/* Chạy: npx tsx scripts/verify-teams-send-ui.ts
+ * Verify UI gửi tin nhắn Teams (project 45, chat "An Mai Thuan").
+ * Yêu cầu: Chrome CDP port 9222 + profile copy đã login Clerk.
  */
 import { chromium } from "playwright";
 
@@ -16,39 +14,39 @@ async function main() {
   const result: Record<string, unknown> = {};
   result.url = page.url();
 
-  // Vào project 45 (PM-FRT FinOPS có chat An Mai Thuan)
-  await page.goto("http://localhost:3000/projects/45", { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForTimeout(4000);
+  if (!page.url().includes("/projects")) {
+    await page.goto("http://localhost:3000/projects", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(3000);
+    result.urlAfterNav = page.url();
+  }
+
+  // Open project 45
+  await page.goto("http://localhost:3000/projects/45", { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(3500);
   result.projectUrl = page.url();
-  await page.screenshot({ path: "/tmp/teams-send-ui-verify/01-project45.png" });
 
-  // Mở tab Chats (text bắt đầu bằng "Chats")
-  const chatsTab = page.getByRole("button", { name: /^Chats/i }).first();
-  const chatsTabCount = await chatsTab.count().catch(() => 0);
-  result.chatsTabCount = chatsTabCount;
-  if (chatsTabCount > 0) {
-    await chatsTab.click();
-    await page.waitForTimeout(4000);
-  }
-  await page.screenshot({ path: "/tmp/teams-send-ui-verify/02-chats-tab.png" });
+  // Chats tab
+  await page.getByRole("button", { name: /^Chats/i }).click().catch(() => {});
+  await page.waitForTimeout(2500);
 
-  // Chọn group "An Mai Thuan"
-  const anGroup = page.getByText("An Mai Thuan", { exact: true }).first();
-  const anGroupCount = await anGroup.count().catch(() => 0);
-  result.anGroupCount = anGroupCount;
-  if (anGroupCount > 0) {
-    await anGroup.click();
-    await page.waitForTimeout(4000);
-  }
-  await page.screenshot({ path: "/tmp/teams-send-ui-verify/03-an-selected.png" });
+  const chatNames = await page.locator("text=An Mai Thuan").count();
+  result.anGroupCount = chatNames;
 
-  // Verify composer
+  // Select chat row "An Mai Thuan"
+  const row = page.locator("div", { hasText: "An Mai Thuan" }).filter({ has: page.locator("text=/Teams/i") }).first();
+  await row.click({ timeout: 5000 }).catch((e) => { result.rowClickError = String(e).slice(0, 120); });
+  await page.waitForTimeout(2000);
+
+  // Composer
   const textareas = await page.locator("textarea").count();
   result.textareas = textareas;
   result.placeholder = await page.locator("textarea").first().getAttribute("placeholder").catch(() => null);
-  const btnDisabled = await page
-    .locator("textarea")
-    .first()
+
+  // Type + verify send button active
+  const ta = page.locator("textarea").first();
+  await ta.fill("Test UI send Teams " + Date.now());
+  await page.waitForTimeout(500);
+  const btnDisabled = await ta
     .evaluate((el: any) => {
       const wrap = el.closest("div")?.parentElement;
       const btn = wrap?.querySelector("button");
@@ -56,14 +54,14 @@ async function main() {
     })
     .catch(() => null);
   result.sendButtonDisabled = btnDisabled;
+  result.composerText = await ta.inputValue().catch(() => null);
 
-  await page.screenshot({ path: "/tmp/teams-send-ui-verify/04-composer-final.png" });
-  console.log("RESULT:" + JSON.stringify(result, null, 2));
+  await page.screenshot({ path: "/tmp/verify-teams-ui.png", fullPage: false });
+  console.log(JSON.stringify(result, null, 2));
   await browser.close();
-  process.exit(0);
 }
 
-main().catch((e) => {
-  console.error("FATAL", e);
+main().catch((err) => {
+  console.error("FAIL:", err);
   process.exit(1);
 });
