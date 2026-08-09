@@ -1,5 +1,5 @@
 import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, getGroupUrl, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import * as path from "path";
 import * as fs from "fs";
 import dotenv from "dotenv";
@@ -27,18 +27,46 @@ const RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
 const SEND_RUNNING_FILE = path.join(process.cwd(), ".teams-send-running");
 
 function isSendRunning(): boolean {
-  try {
-    if (fs.existsSync(SEND_RUNNING_FILE)) {
-      const pid = parseInt(fs.readFileSync(SEND_RUNNING_FILE, "utf-8").trim(), 10);
-      if (!isNaN(pid)) {
-        process.kill(pid, 0); // throws if not running
-        return true;
+  // Check cả teams-send và zalo-send lock — mỗi cái 1 PID, pid chết là stale
+  for (const file of [SEND_RUNNING_FILE, path.join(process.cwd(), ".zalo-send-running")]) {
+    try {
+      if (fs.existsSync(file)) {
+        const pid = parseInt(fs.readFileSync(file, "utf-8").trim(), 10);
+        if (!isNaN(pid)) {
+          process.kill(pid, 0); // throws if not running
+          return true;
+        }
       }
+    } catch {
+      // stale lock file — ignore
     }
-  } catch {
-    // stale lock file — ignore
   }
   return false;
+}
+
+/**
+ * CDP mode: script mở TAB RIÊNG trên Chrome thật — khi xong phải huỷ ĐÚNG
+ * tab đó (page.close()), không đóng browser (Chrome thật + tab khác sống).
+ * Xét page có phải tab do script mở không (không phải tab có sẵn như
+ * pages()[0] / tab zalo.me): nếu có → chỉ đóng page.
+ */
+function shouldCloseOnlyPage(page: import("playwright").Page, context: import("playwright").BrowserContext): boolean {
+  if (process.env.SYNC_CDP_CONNECTED !== "1") return false;
+  try {
+    return context.pages().length > 1 || !context.pages().includes(page) || page.url() === "about:blank";
+  } catch {
+    return false;
+  }
+}
+
+/** Đóng đúng tài nguyên: tab riêng (CDP) hoặc cả browser (persistent fallback). */
+async function closeOwnPageOrBrowser(page: import("playwright").Page, browser: import("playwright").Browser, context: import("playwright").BrowserContext): Promise<void> {
+  if (shouldCloseOnlyPage(page, context)) {
+    await page.close().catch(() => {});
+    console.log("[Sync] Đã huỷ tab riêng (CDP).");
+  } else {
+    await browser.close().catch(() => {});
+  }
 }
 
 function writeProgress(data: { total: number; done: number; currentChat?: string; platform?: string; type?: string; message?: string }) {
@@ -244,7 +272,7 @@ async function main() {
   console.log(`[Sync] Chat sync mode: ${incrementalMode ? "incremental" : "full"}`);
 
   const teamsScrollCount = process.env.FULL_SYNC === "true" ? 80 : (process.env.SCROLL_COUNT ? parseInt(process.env.SCROLL_COUNT) : (incrementalMode ? 10 : 30));
-  const zaloScrollCount = process.env.FULL_SYNC === "true" ? 200 : (incrementalMode ? 20 : 40);
+  const zaloScrollCount = process.env.FULL_SYNC === "true" ? 200 : (incrementalMode ? 5 : 40);
 
   // ─── Sync Teams groups ────────────────────────────────────
   if (teamsGroups.length > 0) {
@@ -290,7 +318,7 @@ async function main() {
       console.error("[Sync-Teams] Error:", err);
       await log(undefined, undefined, "sync_error", `Lỗi Teams: ${errMsg}`);
     } finally {
-      await teamsBrowser.close().catch(() => {});
+      await closeOwnPageOrBrowser(teamsPage, teamsBrowser, teamsContext);
     }
   }
 
@@ -339,7 +367,7 @@ async function main() {
       console.error("[Sync-Zalo] Error:", err);
       await log(undefined, undefined, "sync_error", `Lỗi Zalo: ${errMsg}`);
     } finally {
-      await zaloBrowser.close().catch(() => {});
+      await closeOwnPageOrBrowser(zaloPage, zaloBrowser, zaloContext);
     }
   }
 
@@ -481,6 +509,24 @@ async function syncZaloChat(page: any, config: any, projectId: string, chatName:
     return { extracted: 0, saved: 0 };
   }
 
+  // Zalo chỉ cho 1 tab active — xử lý overlay "Kích hoạt" trước khi sync
+  await ensureZaloTabActive(page, config);
+  const foundAfterActivate = await navigateToZaloGroup(page, chatName);
+  if (!foundAfterActivate) {
+    console.log(`[Sync-Zalo] Could not find chat "${chatName}" (after activation).`);
+    await log(projectId, chatName, "sync_error", `Không tìm thấy nhóm Zalo "${chatName}" (sau kích hoạt tab)`);
+    return { extracted: 0, saved: 0 };
+  }
+
+  // Verify the chat view is actually showing the target group — abort if a
+  // click landed on a different chat instead of extracting its messages.
+  const openCheck = await verifyZaloOpenChat(page, chatName);
+  if (!openCheck.verified) {
+    console.log(`[Sync-Zalo] WRONG CHAT OPEN: "${openCheck.openName}" (${openCheck.reason}). Aborting "${chatName}".`);
+    await log(projectId, chatName, "sync_error", `Sai nhóm khi sync "${chatName}": đang mở "${openCheck.openName}"`, JSON.stringify({ expected: chatName, open: openCheck.openName, reason: openCheck.reason }));
+    return { extracted: 0, saved: 0 };
+  }
+
   console.log(`[Sync-Zalo] Navigated to "${chatName}". Extracting...`);
   const chatConfig = { ...config, groupName: chatName };
   if (incrementalMode) {
@@ -492,8 +538,8 @@ async function syncZaloChat(page: any, config: any, projectId: string, chatName:
       console.log(`[Sync-Zalo] No watermark — full sync for "${chatName}"`);
     }
   }
-  await scrollZaloChatContainer(page, chatConfig);
-  const result = await extractZaloMessages(page, chatConfig);
+  const collected = await scrollZaloChatContainer(page, chatConfig);
+  const result = await finalizeZaloMessages(page, chatConfig, chatName, collected);
 
   console.log(`[Sync-Zalo] Extracted ${result.totalMessages} messages from "${chatName}".`);
   await log(projectId, chatName, "sync_progress", `Trích xuất ${result.totalMessages} tin nhắn Zalo từ "${chatName}"`);

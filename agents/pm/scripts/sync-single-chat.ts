@@ -1,7 +1,8 @@
 import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, getGroupUrl, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import dotenv from "dotenv";
 import * as path from "path";
+import * as fs from "fs";
 import { getProject, updateProjectTeamsGroups } from "../../../src/lib/repo/projects";
 import { saveMessages, uploadChatImage, getLatestTimestampMs } from "../../../src/lib/repo/projectChats";
 import { runMonitor } from "../lib/monitor";
@@ -114,6 +115,46 @@ async function log(type: string, message: string, details?: string) {
     });
   } catch (e) {
     console.error("[SyncLog] Failed to write log:", e);
+  }
+}
+
+// ─── Parallel-sync tab handling ─────────────────────────────
+// Với queue song song (CDP mode), mỗi script con phải dùng TAB RIÊNG của nó
+// trên Chrome thật — không dùng tab có sẵn (2 script dùng chung tab sẽ giẫm
+// chân nhau: click chat này làm mất state chat kia). Tab được đóng khi xong
+// (page.close()), KHÔNG đóng browser (CDP browser là Chrome thật của user).
+function shouldUseOwnTab(): boolean {
+  // Chỉ khi CDP connect THÀNH CÔNG (marker do createStealthContext đặt khi
+  // connectOverCDP ok). Nếu CDP connect fail và fallback sang persistent
+  // profile thì KHÔNG được dùng tab riêng — phải đóng cả browser như cũ.
+  return process.env.SYNC_CDP_CONNECTED === "1" &&
+    ((process.env.SYNC_QUEUE_MANAGED === "1" && process.env.USE_CDP === "1") ||
+      (process.env.USE_CDP === "1" && (process.env.OWN_TAB === "1" || process.env.OWN_TAB === "true")));
+}
+
+/**
+ * CDP mode: script dùng TAB RIÊNG (mở bằng context.newPage()) trên Chrome
+ * thật của user — khi xong phải huỷ ĐÚNG tab đó (page.close()), không đóng
+ * browser (Chrome thật + tab của script khác phải sống). Xét page được tạo
+ * có phải do chính script này mở không: nếu page không phải tab đã có sẵn
+ * (pages()[0] / tab zalo.me có sẵn) → là tab riêng cần huỷ.
+ */
+function shouldCloseOnlyPage(page: import("playwright").Page, context: import("playwright").BrowserContext): boolean {
+  if (process.env.SYNC_CDP_CONNECTED !== "1") return false;
+  try {
+    return context.pages().length > 1 || !context.pages().includes(page) || page.url() === "about:blank";
+  } catch {
+    return false;
+  }
+}
+
+/** Đóng đúng tài nguyên: tab riêng (CDP) hoặc cả browser (persistent fallback). */
+async function closeOwnPageOrBrowser(page: import("playwright").Page, browser: import("playwright").Browser, context: import("playwright").BrowserContext): Promise<void> {
+  if (shouldCloseOnlyPage(page, context)) {
+    await page.close().catch(() => {});
+    console.log("[SyncOne] Đã huỷ tab riêng (CDP).");
+  } else {
+    await browser.close().catch(() => {});
   }
 }
 
@@ -256,13 +297,11 @@ async function syncTeams(syncName: string) {
   };
 
   const { browser, context } = await createStealthContext(config);
-  // CDP mode: dùng tab Teams có sẵn (đã load) nếu có — tránh tích tụ tab heavy
-  let page = context.pages()[0];
-  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
-    const teamsPage = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
-    page = teamsPage || await context.newPage();
-  }
-  await applyStealthPatches(page);
+  // Mỗi script con giữ 1 TAB RIÊNG trong CDP mode (queue song song):
+  // 2 script dùng chung 1 tab sẽ giẫm chân nhau. Không CDP → dùng tab có sẵn.
+  let page = shouldUseOwnTab()
+    ? await context.newPage()
+    : (context.pages()[0] || await context.newPage());
 
   try {
     await navigateToTeams(page, config);
@@ -373,7 +412,9 @@ async function syncTeams(syncName: string) {
     console.error("[SyncOne] Fatal error:", err);
     await log("sync_error", `Lỗi: ${errMsg}`, JSON.stringify({ error: errMsg }));
   } finally {
-    await browser.close().catch(() => {});
+    // CDP: đóng TAB riêng của mình thôi — Chrome thật + tab khác (script
+    // khác đang sync song song) phải sống. Không CDP: đóng cả browser.
+    await closeOwnPageOrBrowser(page, browser, context);
   }
 }
 
@@ -387,16 +428,18 @@ async function syncZalo(syncName: string) {
     ...DEFAULT_ZALO_CONFIG,
     headless: process.env.HEADLESS !== "false",
     useRealChrome: true,
-    scrollCount: zaloInit ? 200 : (syncMode.incremental ? 20 : 40),
+    scrollCount: zaloInit ? 200 : (syncMode.incremental ? 5 : 40),
     ...(syncMode.incrementalSince !== undefined ? { incrementalSince: syncMode.incrementalSince } : {}),
   };
 
   const { browser, context } = await createZaloStealthContext(config);
-  // CDP mode: dùng tab Zalo có sẵn (đã load) nếu có — tránh tích tụ tab heavy
-  let page = context.pages()[0];
-  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+  // Mỗi script con giữ 1 TAB RIÊNG trong CDP mode (queue song song).
+  let page = shouldUseOwnTab()
+    ? await context.newPage()
+    : (context.pages()[0] || await context.newPage());
+  if (!shouldUseOwnTab() && (process.env.USE_CDP === "1" || process.env.USE_CDP === "true")) {
     const zaloPage = context.pages().find((p) => p.url().includes("zalo.me"));
-    page = zaloPage || await context.newPage();
+    page = zaloPage || page;
   }
   await applyZaloStealthPatches(page);
 
@@ -417,9 +460,33 @@ async function syncZalo(syncName: string) {
       return;
     }
 
+    // Zalo chỉ cho 1 tab active — tab của script có thể bị overlay "Kích
+    // hoạt" (nhất là khi sync song song / user đang mở Zalo). Reload tới
+    // khi tab active, rồi mới navigate + scroll/extract.
+    await ensureZaloTabActive(page, config);
+    const foundAfterActivate = await navigateToZaloGroup(page, syncName);
+    if (!foundAfterActivate) {
+      console.log(`[SyncOne] Could not find Zalo chat "${syncName}" after tab activation.`);
+      await log("sync_error", `Không tìm thấy nhóm Zalo "${syncName}" (sau kích hoạt tab)`);
+      return;
+    }
+
+    // Last line of defense: verify the chat view is showing the target group.
+    // If the click landed on the wrong chat (or nothing), abort instead of
+    // scrolling/extracting messages from a DIFFERENT conversation.
+    const openCheck = await verifyZaloOpenChat(page, syncName);
+    if (!openCheck.verified) {
+      console.log(`[SyncOne] WRONG CHAT OPEN after navigation: "${openCheck.openName}" (${openCheck.reason}). Aborting "${syncName}".`);
+      await log("sync_error", `Sai nhóm khi sync "${syncName}": đang mở "${openCheck.openName}"`, JSON.stringify({ expected: syncName, open: openCheck.openName, reason: openCheck.reason }));
+      return;
+    }
+
     console.log(`[SyncOne] Navigated to Zalo "${syncName}". Extracting...`);
-    await scrollZaloChatContainer(page, config);
-    const result = await extractZaloMessages(page, { ...config, groupName: syncName });
+    const collected = await scrollZaloChatContainer(page, config);
+    const displayGroupName = collected.length > 0
+      ? (collected[0] as any).groupName || syncName
+      : syncName;
+    const result = await finalizeZaloMessages(page, { ...config, groupName: syncName }, displayGroupName, collected);
 
     console.log(`[SyncOne] Extracted ${result.totalMessages} messages from Zalo "${syncName}".`);
     await log("sync_progress", `Trích xuất ${result.totalMessages} tin nhắn Zalo từ "${syncName}"`);
@@ -463,7 +530,8 @@ async function syncZalo(syncName: string) {
     console.error("[SyncOne] Fatal Zalo error:", err);
     await log("sync_error", `Lỗi Zalo: ${errMsg}`, JSON.stringify({ error: errMsg }));
   } finally {
-    await browser.close().catch(() => {});
+    // CDP: đóng TAB riêng của mình thôi — Chrome thật + tab khác phải sống.
+    await closeOwnPageOrBrowser(page, browser, context);
   }
 }
 
@@ -482,13 +550,64 @@ async function main() {
     console.log(`[SyncOne] chatName is a URL — extracted display id "${extracted}"`);
   }
 
+  // ── Sync lock ─────────────────────────────────────────────
+  // Script này dùng CHUNG Chrome profile với sync khác và teams-send —
+  // không bao giờ được chạy 2 script cùng lúc. Queue tập trung
+  // (SYNC_QUEUE_MANAGED=1) đã serialize; chạy tay / qua route thì claim lock.
+  const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+  const SEND_RUNNING_FILE = path.join(process.cwd(), ".teams-send-running");
+
+  function isPidAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  async function waitForFree(): Promise<boolean> {
+    // Chờ teams-send hoặc sync khác xong (tối đa 3 phút)
+    const deadline = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < deadline) {
+      let busy = false;
+      try {
+        if (fs.existsSync(SYNC_RUNNING_FILE)) {
+          // Lock có thể chứa nhiều PID (queue song song) — dòng nào còn sống
+          // (khác mình) là đang bận
+          const content = fs.readFileSync(SYNC_RUNNING_FILE, "utf-8");
+          const pids = content.split("\n").map(l => l.trim()).filter(Boolean).map(l => parseInt(l, 10)).filter(p => !isNaN(p));
+          busy = pids.some(pid => pid !== process.pid && isPidAlive(pid));
+        }
+        if (fs.existsSync(SEND_RUNNING_FILE)) {
+          const pid = parseInt(fs.readFileSync(SEND_RUNNING_FILE, "utf-8").trim(), 10);
+          if (!isNaN(pid) && isPidAlive(pid)) busy = true;
+        }
+      } catch { /* ignore */ }
+      if (!busy) return true;
+      console.log("[SyncOne] Đang có sync/teams-send khác giữ Chrome — chờ 10s...");
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+    console.warn("[SyncOne] Timeout chờ lock — vẫn tiếp tục (có thể đụng profile).");
+    return true;
+  }
+
+  if (process.env.SYNC_QUEUE_MANAGED !== "1") {
+    const canProceed = await waitForFree();
+    if (!canProceed) process.exit(0);
+    try {
+      fs.writeFileSync(SYNC_RUNNING_FILE, `${process.pid}`, "utf-8");
+    } catch { /* ignore */ }
+  }
+
   console.log(`[SyncOne] Syncing ${platform} chat "${extracted}" for project ${projectId}`);
   await log("sync_start", `Bắt đầu đồng bộ ${platform} chat: "${extracted}"`);
 
-  if (platform === "zalo") {
-    await syncZalo(extracted);
-  } else {
-    await syncTeams(extracted);
+  try {
+    if (platform === "zalo") {
+      await syncZalo(extracted);
+    } else {
+      await syncTeams(extracted);
+    }
+  } finally {
+    if (process.env.SYNC_QUEUE_MANAGED !== "1") {
+      try { if (fs.existsSync(SYNC_RUNNING_FILE)) fs.unlinkSync(SYNC_RUNNING_FILE); } catch { /* ignore */ }
+    }
   }
 }
 

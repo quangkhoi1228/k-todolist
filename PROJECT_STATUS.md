@@ -9,7 +9,7 @@ tags: []
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-08
+- **Cập nhật lần cuối:** 2026-08-09
 - **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
@@ -289,6 +289,56 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
    - **Hướng dẫn**: user vẫn có thể mở Chrome CDP như cũ (nếu muốn) — giờ không còn bị kill; không mở cũng OK (fallback tự chạy).
    - **Dọn dead code (08/08)**: bỏ `queuedRef` trong `GlobalSyncManager` — chỉ set `true` rồi reset `false` mà không dùng (gây hiểu nhầm là có queue). Cơ chế chống xếp chồng là `isSyncingRef` + chờ `checkIfRunning()` — vòng 60s (project) / 10s (sync-all) tự chạy lại sau khi vòng trước xong.
    - **Lưu ý**: route mới ghi đè `.teams-sync-running` giống route sync-projects cũ — không nên bật đồng thời auto-sync project + sync-all interval cao (các lock chờ nhau).
+22. **Queue sync tập trung + ưu tiên project đang xem + sync-all incremental 30 phút** (08/08, code xong — chưa verify browser):
+   - **Vấn đề cũ**: mọi sync (project auto 1 phút, sync-all, sync 1 chat UI, teams-send) có lock riêng/spawn riêng → nối đuôi nhau chờ, project mở vẫn bị sync-all chen ngang.
+   - **Giải pháp — `src/lib/sync-queue.ts` (queue tập trung trong next-server)**:
+     - Mọi job đi qua 1 hàng đợi: `project` (project đang xem), `all` (sync-all định kỳ/manual), `single` (nút sync 1 nhóm trên UI). Worker chạy tuần tự, mỗi task = 1 nhóm chat → spawn `sync-single-chat.ts` (incremental theo watermark).
+     - **Ưu tiên**: job project đang xem chạy trước mọi job khác; khi mở project trong lúc sync-all đang chạy → hủy job sync-all để nhường Chrome (`setActiveProjectId`).
+     - Worker ghi `.teams-sync-running` = PID script con (teams-send/chrome ngoài thấy queue đang bận); check cả `.teams-send-running` trước mỗi task (chờ tối đa 90s rồi skip).
+     - Cross-process: lock `.sync-queue-worker.lock` (atomic `wx`) chỉ 1 next-server được làm worker.
+     - Scheduler `src/lib/sync-queue-runner.ts`: check mỗi 15s, sync-all chỉ chạy khi `autoSyncInterval` phút đã trôi qua (đọc từ `userPreferences`, mặc định 30 phút, 0 = tắt), không mở project, queue rỗng. Khi enqueue thành công → cập nhật `lastSyncTime` cho UI Omni.
+   - **Routes**:
+     - `/api/agents/sync-project-chats`: `status` (queue state + progress), `setActiveProject`/`clearActiveProject`, `syncAllNow`, hoặc POST `{projectId}` → enqueue job project.
+     - `/api/agents/sync-projects`: `status` trả `running` + progress (tương thích UI Omni), `start` → enqueue job all.
+     - `/api/agents/sync-single-chat`: giờ enqueue job `single` thay vì spawn — nút sync 1 nhóm trên UI cũng đi qua queue.
+   - **`GlobalSyncManager`**: mount Dashboard, gọi `setActiveProject`/`clearActiveProject` khi mở/rời project; sync project mỗi 2 phút (thay vì 60s); KHÔNG tự sync-all nữa (server scheduler lo).
+   - **Omni**: dropdown hẹn giờ giữ nguyên (30 phút là mặc định); `lastSyncAt` hiển thị mốc sync-all server.
+   - **Omni — theo dõi queue (09/08)**: section "Queue đồng bộ" mới — hiển thị job đang chạy (label + badge loại `project`/`all`/`single` + progress bar + chat đang sync), danh sách job chờ (label + badge + số chats), trạng thái "Project đang xem được ưu tiên". Data từ `getSyncQueueStatus()` mở rộng: `queuedJobs[].chatTasks` (chatName/platform/syncMode) + `taskIndexInJob`. Poll 5s sẵn có.
+   - **Omni — tiến độ từng task nhỏ + log rõ (09/08)**: `getSyncQueueStatus()` thêm `currentJobTasks[]` (mỗi task của job đang chạy có `status: pending/running/done/skipped` + projectId + syncMode); `progress.message` ghi `[Project X] "chat" (i/total)`; `queuedJobs[].chatTasks[].projectId`. UI Omni hiển thị từng task (icon trạng thái + tên + platform + mode + project), job chờ xổ danh sách chat con kèm project (cho job `all`). Log enqueue/runJob/runTask/spawnTask rõ hơn: liệt kê từng task `[Project X] "chat"`, lý do gộp, thời gian từng task, lý do skip, job bị hủy.
+   - **Lưu ý nhóm chat thuộc 2 dự án**: task key gồm `projectId|chatName|platform` → cùng 1 chat ở 2 project là 2 task RIÊNG (đúng, vì message lưu theo project). UI phân biệt bằng thẻ `P{projectId}`.
+   - **Gộp task trùng (dedup, 09/08)**: task mới trùng task đang chờ trong queue hoặc đang chạy (cùng `projectId + chatName + platform`) sẽ KHÔNG xếp thêm — gộp vào task cũ:
+     - Task mới chỉ `incremental` → bỏ qua hoàn toàn, giữ task cũ (bấm sync nhóm nhiều lần cũng không chồng task).
+     - Task mới yêu cầu `full` mà task cũ đang chờ/pending chỉ `incremental` → **nâng cấp task trong queue lên full**; nếu task cũ đang chạy → ghi vào `refetchTasks` (persist qua `.sync-queue-state.json`), task xong sẽ tự chạy lại full.
+     - Job project mới thay thế job project cũ trước khi gộp (không gộp nhầm vào task sắp xóa); kể cả task chưa chạy trong job đang chạy cũng được tính là "đang cam kết" để gộp.
+   - `tsc --noEmit` exit 0.
+   - **Chưa verify browser** — cần user mở app + thử: project auto 2 phút, sync-all 30 phút sau khi rời mọi project.
+23. **Fix spinner sync 1 nhóm bị tắt sớm khi chuyển sang queue** (09/08, code xong — chưa verify browser):
+   - **Vấn đề**: sau khi chuyển sang queue tập trung (`sync-queue.ts`), route `sync-single-chat` chỉ enqueue rồi trả về ngay → `syncChat()` trong `ProjectDetailPanel` xoá spinner ngay khi fetch xong (vài mili giây), trong khi việc thật (mở Chrome + scroll lấy tin) mất cả phút — user không biết nhóm đang được sync.
+   - **Fix**:
+     1. `sync-queue.ts` thêm `isChatQueuedOrRunning(projectId, chatName, platform)` (hữu ích cho UI/script khác).
+     2. `ProjectDetailPanel.tsx`: bỏ `finally` xoá spinner; thêm poll `/api/agents/sync-project-chats` `{action:"status"}` mỗi 2.5s — khi `currentTask.projectId === project._id` → giữ spinner đúng nhóm đang chạy; khi queue hết việc → xoá hết spinner + invalidate `chats:`/`suggestions:`/`logs:` để tin mới hiện ngay. Nhóm do tay bấm sync (pending) cũng được giữ spinner tới khi queue báo xong; queue rỗng → pending tự xoá.
+   - **Fix 2 — mất loading khi bấm qua lại task (09/08, cùng ngày)**: poll effect ban đầu có early-return `pending.size===0 && !lastQueueWasRunning` đọc từ `useRef` — ref thay đổi không trigger effect chạy lại nên khi mở project lần đầu effect bỏ luôn, không bao giờ poll; đồng thời chuyển project/task làm panel remount → state mất, spinner không hiện lại khi quay về. **Fix**: poll **luôn chạy** khi panel mở; dùng `queuedSyncGroupsRef` đồng bộ state để tránh setState lặp; khi queue hết việc dọn spinner còn sót (kể cả từ mount trước) + invalidate data; chưa từng thấy queue chạy → không invalidate thừa (mở project bình thường không spam fetch/invalidate).
+   - `tsc --noEmit` exit 0 (Tailwind warnings sẵn có, không liên quan).
+   - **Chưa verify browser** — cần user mở project + bấm sync 1 nhóm (hoặc thêm nhóm) để xem spinner/banner hiện đúng tới khi xong, kể cả khi bấm qua lại task khác rồi quay về.
+24. **Cooldown reload UI cho nhóm chat đang mở** (09/08, đã verify browser thật + CDP):
+   - **Yêu cầu**: user muốn có nút reload có cooldown trong chat đang mở — trước đây tin mới chỉ tự hiện khi queue sync xong (poll 2.5s + invalidate), không có cách bấm tay để tải lại ngay.
+   - **Fix `ProjectDetailPanel.tsx`**: thêm nút **"Tải lại"** (icon RefreshCw) cạnh nút "Xóa & đ.bộ lại" trong header chat của nhóm đang mở:
+     - Click → **invalidate `chats:` ngay lập tức** (SWR refetch messages từ DB, tin mới đã sync hiện ngay) + **enqueue sync incremental** cho nhóm đó (lấy tin mới từ Teams/Zalo nếu chưa đang sync).
+     - **Cooldown 60s**: sau click nút hiện `Tải lại (58s)` + disabled + icon xoay chậm; countdown đếm ngược từng giây qua `reloadTimerRef` interval (cleanup khi unmount); click lần 2 trong thời gian chờ bị chặn. Lý do: mỗi lần tải lại mở Chrome + scroll tốn ~20-60s — cooldown tránh spam nhiều sync chồng lên nhau.
+   - **Auto-scroll xuống cuối chat khi vào nhóm** (theo yêu cầu "khi vào chat chi tiết thì scroll xuống cuối cùng chat"): messages sort theo `timestampMs` tăng dần (tin mới nhất ở cuối) → thêm `messagesScrollRef` + 2 effects:
+     - Chọn nhóm chat mới → scroll xuống đáy ngay + lặp lại qua `requestAnimationFrame` + `setTimeout` 250ms/800ms (ảnh trong tin nhắn load sau làm `scrollHeight` tăng — scroll 1 lần dừng cách đáy vài trăm px).
+     - Khi data SWR về muộn cho nhóm vừa chọn → scroll bổ sung 1 lần (guard `messagesScrolledRef` theo tên nhóm) — không scroll lại mỗi khi data đổi (không giật giữa chừng khi sync thêm tin vào nhóm đang xem).
+   - **Verify browser thật (Chrome CDP port 9223, profile copy đã login Clerk, project 45 tab Chats)**:
+     - Nút "Tải lại" hiển thị cạnh nút xóa, click → 2.5s sau nút thành `Tải lại (58s)` disabled, icon xoay; click lần 2 → `false` (bị chặn bởi cooldown).
+     - Auto-scroll: chuyển nhóm An Mai Thuan (9070px) → FRT Migration TF (10895px) → Thảo Nguyên BB (2700px) → quay lại An Mai Thuan — mọi lần đều `atBottom: true` (diff 0-32px), kể cả khi cuộn lên đầu trước khi đổi nhóm.
+     - `tsc --noEmit` exit 0.
+25. **Fix sync Zalo thiếu message cuối + giữa chat** (09/08, đã fix + verify browser thật):
+   - **Triệu chứng**: full sync UICVN (project 29) chỉ thu 93-95 message, thiếu message ở giữa chat (vd "hiện phần này chưa hỗ trợ cho mình add cả dải CIDR anh ạ" — bb_msg_id_1785998924926) dù bubble có trong DOM.
+   - **Root cause 1 — extractor bỏ bubble không có sender name**: trong group chat, Zalo chỉ render tên sender ở bubble ĐẦU mỗi run; bubble tiếp theo (cùng run, không name) bị `if (!sender) continue` loại vì fallback `else if (!sender && !lastSender) sender = "Unknown"` KHÔNG gán `lastSender` khi có — sửa thành `else if (!sender && lastSender) sender = lastSender`. → bubble "add cả dải" + nhiều bubble run-tiếp-theo được collect (29 → 42 messages/collect, full sync 95 → 149).
+   - **Root cause 2 — `timestampMs` cột `real` (float4) mất precision**: epoch ms ~1.7e12 bị tròn hóa (độ phân giải ~64s) → watermark `getLatestTimestampMs` lệch hàng chục giây → incremental early-stop sai chỗ + message cuối bị coi là "đã sync" dù chưa từng lưu. **Fix**: đổi `timestampMs` + `scrapedAt` sang `bigint` (đã `npm run db:push`). Watermark giờ chính xác: UICVN 1786009687448 (khớp bb_msg_id cuối).
+   - **Fix phụ**: `navigateToZaloGroup` dùng **Playwright click thật** (không phải `evaluate().click()` — Zalo SPA không chuyển chat với JS click) + `verifyZaloOpenChat` đối chiếu `.header-title`/sidebar selected → abort nếu mở sai nhóm (tránh gán nhầm sender); bottom stabilization (scroll-to-bottom lặp tới khi maxTs ổn định — Zalo giữ scroll cũ khi mở lại chat đã từng mở, scroll 1 lần rơi vào giữa chat).
+   - **Verify thật**: full sync UICVN project 29 → **149 messages collected, 5 new saved**, watermark chính xác 1786009687448; "add cả dải" có trong DB với sender đúng "Fci - Htkt"; incremental sync → early-stop đúng watermark, 0 new (đã đủ); full sync TCSC project 45 → 239 messages, 11 new. `tsc --noEmit` exit 0.
+   - **Còn lại**: các group Zalo chưa re-sync (project 15, 33, 10, 45 "Thảo Nguyên BB") vẫn mang watermark tròn hóa cũ — đợi queue sync tới hoặc full sync lại (xem Next actions #0b).
 
 **Còn biết tới (chưa confirm làm / tồn đọng):**
 - `src/proxy.ts` + `proxy-image` — proxy image (cần xác nhận role hiện tại).
@@ -299,8 +349,56 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 
 ## 4. Next actions trước mắt
 
-0. **Verify auto-sync 5 phút + queue** (07/08, cần user login + Chrome CDP) — bật hẹn giờ 5 phút trong `/omni`: check 10s/lần, đủ interval mới sync; nếu sync đang chạy thì đợi xong rồi chạy tiếp (không xếp chồng, không spam lỗi "already running"). *(08/08: project đang mở giờ tự sync mỗi phút qua `sync-project-chats` — xem mục 20.)* *(08/08: DB xác nhận user chính `user_3H33...` đang set `autoSyncInterval=30` phút, `lastSyncTime` 21:50 — auto-sync sync-all ĐANG hoạt động bình thường; chỉ user phụ `user_3GR4...` có 0 = tắt.)*
+0. **Verify queue sync mới (08/08, cần user login + Chrome)** — hệ thống vừa chuyển sang queue tập trung (`src/lib/sync-queue.ts`):
+   - Mở 1 project → đợi 2 phút → log server `[Sync] → Bắt đầu job: project N...` + từng task `[Sync] Done teams/xxx (exit 0)`; messages mới hiện trong tab Chats.
+   - Rời project → chờ 30 phút (hoặc bấm "Đồng bộ ngay" trên Omni = enqueue sync-all) → log `[SyncScheduler]` + job `all-...`.
+   - Mở project trong lúc sync-all đang chạy → sync-all bị hủy, job project ưu tiên.
+   - Kiểm tra lock: chạy 2 request `sync-project-chats` liên tiếp → request sau trả `ok:true` (job thay thế, không lỗi "already running").
+   - Lưu ý: 2 next-server đang chạy cùng lúc (PID #19963 + #4772) — chỉ giữ 1 dev server, worker lock chỉ cho 1 instance chạy queue.
 0a. **Gửi tin thật tới "An Mai Thuan" (ANMT3)** (07/08, optional) — dry-run + UI verify đã OK; khi user muốn gửi thật: bấm gửi trong composer Teams (tab Chats project 45) → Chrome thật mở + verify header rồi mới Enter gửi; kiểm tra tin hiển thị sau khi sync.
+0b. **Re-sync các nhóm Zalo còn watermark cũ** (09/08) — project 15 (`[FPTCLOUD] - UICVN`), project 33 (`[FPTCLOUD] - TCSC`), project 45 (`Thảo Nguyên BB`), project 10 (`[FPTCLOUD] - UICVN`) vẫn mang `timestampMs` tròn hóa từ `real` (float4) → chạy full sync (hoặc đợi queue tự sync) để cập nhật watermark chính xác + thu message bị thiếu. Đã fix root cause: cột đổi sang `bigint` + extractor gán `lastSender` cho bubble không name. **Lưu ý profile**: CDP port 9222 đang chạy profile `.teams-session/chrome-profile` (Teams) — sync Zalo qua CDP này sẽ KHÔNG có session Zalo; phải chạy Zalo bằng profile `.zalo-session/chrome-profile` (fallback persistent hoặc mở CDP riêng cho Zalo).
+0c. **Cơ chế huỷ tab sau khi dùng xong** (09/08, đã code) — `sync-single-chat.ts`, `sync-project-chats.ts`, `sync-all-projects.ts` giờ dùng `closeOwnPageOrBrowser()`: trong CDP mode đóng ĐÚNG tab riêng script vừa mở (page.close) sau khi sync xong/lỗi, không đóng Chrome thật + tab script khác; không CDP (persistent fallback) vẫn đóng cả browser như cũ.
+
+---
+
+## 6. Verify end-to-end: gửi tin thật + auto-sync 2 phút (09/08, đã verify browser thật)
+
+**Yêu cầu user**: "mở chi tiết dự án 45, gửi tin Thảo Nguyên BB (Zalo) + [Internal] Hackathon Test (Teams), check sync qua 2 phút".
+
+1. **Đã gửi tin thật** (browser thật, đúng profile chính):
+   - Zalo → `agents/pm/scripts/zalo-send.ts --chat "Thảo Nguyên BB"` → `GUI THANH CONG` (msgCount 0→2), tin: *"Test sync Zalo 09/08 18:47 — tin nhắn gửi từ hệ thống KI, các bạn bỏ qua nhé"*.
+   - Teams → `agents/pm/scripts/teams-send.ts --chat "[Internal] Hackathon Test"` → `GUI THANH CONG` (search find "Group: [Internal] Hackathon TestLuan and Manh", verify header OK), tin: *"Test sync Teams 09/08 18:48 — tin nhắn gửi từ hệ thống KI, các bạn bỏ qua nhé"*.
+2. **Sync 2 phút khi mở project 45 — ĐÃ CHẠY ĐÚNG**:
+   - Mở `http://localhost:3000/projects/45` (Chrome real CDP 9223 + profile copy login Clerk) → `GlobalSyncManager` tự enqueue job project 45; queue `current: project 45 (4 chats)` chạy tuần tự 4 nhóm (An Mai Thuan → Thảo Nguyên BB → Hackathon Test → FRT Migration) rồi **lặp lại chu kỳ mỗi 2 phút** (job mới thay job cũ, trạng thái `activeProject=45` ghi trong `.sync-queue-state.json`).
+   - **DB đã có 2 tin mới** sau sync: `[Internal] Hackathon | Me | "Test sync Teams 09/08 18:48..."` + `An Thảo Nguyên BB | Me | mine:true | "Test sync Zalo 09/08 18:47..."`.
+   - **UI hiển thị đủ**: tab Chats project 45 → group "Thảo Nguyên BB" hiển thị tin Zalo mới (screenshot `/tmp/project45-messages.png`), group "[Internal] Hackathon Test" hiển thị tin Teams mới dưới "test 2" (screenshot `/tmp/project45-teams-msg2.png`); badge `Chats (324)` tăng từ 323.
+3. **Lưu ý còn lại**:
+   - Queue hiện có thể chạy lặp liên tục vì tab project vẫn mở (đúng cơ chế); khi đóng project sẽ dừng.
+   - 2 next-server đang chạy cùng lúc (PID #77797 dev mới + #67356 cũ port 20128) — worker lock chỉ cho 1 instance chạy queue; nếu thấy queue không chạy hãy kiểm tra instance nào giữ worker lock.
+
+0e. **Fix healthcheck dùng 2 profile khác nhau → fail "Đổi thiết bị" / trắng trang** (09/08, đã fix + verify) —
+   - **Gốc rễ**: `zalo-health.ts` + `teams-health.ts` dùng **bản copy** `.health-session/<platform>-profile` (copy 1 lần từ profile chính) → Zalo xem đó như "thiết bị thứ 2" → healthcheck fail / đá logout, và login mới không đồng bộ vào bản copy (trắng trang vì window login `--keep-open` treo ở about:blank giữ SingletonLock).
+   - **Fix**: 2 script health giờ gọi thẳng `createZaloStealthContext`/`createStealthContext` (helper chuẩn): CDP → connect Chrome thật đang mở; không CDP → mở **profile chính** `.zalo-session/chrome-profile`/`.teams-session/chrome-profile` (có cleanup lock an toàn, không kill Chrome thật). Khi xong CDP chỉ đóng tab mới, không đóng Chrome user.
+   - **Đã verify thật**: `zalo-health.ts` → `{"ok":true,"status":"connected"}` (profile chính có session Zalo 18:06); `teams-health.ts` → `connected`. Đã kill Chrome treo `--keep-open` (giữ SingletonLock) + unlock profile.
+   - Lưu ý: `.health-session/` (profile copy cũ) không còn được dùng — có thể xoá.
+0e. **Fix healthcheck dùng 2 profile khác nhau → fail "Đổi thiết bị" / trắng trang** (09/08, đã fix + verify) —
+   - **Zalo** (`scrollZaloChatContainer`): incremental giờ KHÔNG extract DOM sau mỗi scroll (tốn ~giây vì duyệt avatar/ảnh) — chỉ scroll + đo `maxVisibleTs` từ `bb_msg_id_` (nhẹ, 1 querySelector); gặp message <= watermark DB là `EARLY-STOP` ngay + collect DOM hiện tại rồi dừng. `scrollCount` incremental giảm 20 → 5 (an toàn fallback).
+   - **Teams** (`incrementalScrollAndExtract`): thêm `domHasIncrementalSince()` — sau MỖI scroll đọc `<time datetime>` đầu tiên trong DOM, gặp <= watermark là dừng ngay (không chờ đủ batch); thêm `buildFinalResult()` để return sớm khi early-stop.
+   - Kết quả: incremental chỉ mất vài scroll (không tới 6-10 lần như trước), mỗi lượt chỉ 1-2s thay vì extract tốn hàng chục giây. Chưa verify thật (cần Chrome + session).
+
+0g. **Tối ưu tốc độ gửi tin Teams/Zalo** (09/08, đã code + verify thật) —
+   - **Trước**: gửi Zalo 168s / Teams phải chờ sync 20 phút (timeout lock 20p), ~40-50s wait cứng trong automator.
+   - **Đã fix**:
+     - **Waits cứng → polling điều kiện**: Teams `navigateToTeams` (poll sidebar thay waitForFunction 45s), `navigateToChatInSidebar` (poll chat header thay 5s), `sendTeamsMessage` (poll verify header thay openWait chỉ định); Zalo `navigateToZalo` (poll conversation list thay 5s), `sendZaloMessage` (poll search result + poll sidebar-selected thay 2.5s+3.5s) — tổng giảm ~10-20s/chat.
+     - **`isSendWaiting()` + send-preemption**: `teams-automator.ts`/`zalo-automator.ts` check `.teams-send-running`/`.zalo-send-running` mỗi vòng scroll → sync đang chạy **dừng sớm** (nhường Chrome) khi user bấm gửi. `sync-queue.ts` có `runTaskWithSendPreemption()` — kill task con khi send chờ, task đánh `skipped` (sẽ chạy lại vòng sau 2 phút).
+     - **Lock đúng**: `zalo-send.ts` thêm `.zalo-send-running` (trước không có — đè profile sync); `teams-send.ts` giảm timeout chờ sync 20p→3p; cả 2 claim lock NGAY đầu rồi mới đợi sync (preempt nhanh), poll 3s thay 10s; `isAnySyncRunning()` queue + `isSendRunning()` scripts check cả 2 lock.
+     - **Fix false-negative verify**: Zalo OK khi msgCount tăng HOẶC textVisible (không bắt buộc cả 2); Teams OK khi textVisible HOẶC inputCleared.
+   - **Kết quả đo**: Zalo 10s tổng (trước 168s); Teams gửi khi sync đang chạy 19s (14:59→15:00 khi sync 40-160s trước). Tin gửi sync vào DB OK (kiểm tra `projectChats` thấy cả 4 tin test).
+
+0h. **Incremental sync nhanh: scroll từng window + detect watermark mỗi lượt** (09/08, đã code, chưa verify thật) —
+   - **Zalo** (`scrollZaloChatContainer`): incremental giờ KHÔNG extract DOM sau mỗi scroll (tốn ~giây vì duyệt avatar/ảnh) — chỉ scroll + đo `maxVisibleTs` từ `bb_msg_id_` (nhẹ, 1 querySelector); gặp message <= watermark DB là `EARLY-STOP` ngay + collect DOM hiện tại rồi dừng. `scrollCount` incremental giảm 20 → 5 (an toàn fallback).
+   - **Teams** (`incrementalScrollAndExtract`): thêm `domHasIncrementalSince()` — sau MỖI scroll đọc `<time datetime>` đầu tiên trong DOM, gặp <= watermark là dừng ngay (không chờ đủ batch); thêm `buildFinalResult()` để return sớm khi early-stop.
+   - Kết quả: incremental chỉ mất vài scroll (không tới 6-10 lần như trước), mỗi lượt chỉ 1-2s thay vì extract tốn hàng chục giây. Chưa verify thật (cần Chrome + session).
 
 1. **Verify reload UI project 45** (06/08, cần user login) — mở `http://localhost:3000/projects/45` → tab Chats: **93 tin Teams** hiển thị đủ, **34 tin có block quote `> Sender: quoted`**, **13 tin có ảnh** (8 ảnh base64 hiển thị trực tiếp, 5 ảnh sharepoint qua proxy-image có thể 401 nếu cookie hết hạn), tin mới nhất 10:42 06/08. Không còn tin nào dính `1 Heart reaction.`/`Sender8/6/2026...`.
 2. **Verify animation sync chat** (06/08, cần Chrome CDP port 9222 + user login) — thêm 1 nhóm thật vào project → UI phải hiện spinner "Đang đồng bộ..." trên nhóm + banner ở messages area, sau sync messages mới hiện ngay (invalidate chats/suggestions/logs).
@@ -313,6 +411,8 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 9. **Sau khi ổn định** — đánh giá: tự động hóa theo dõi ISD status (scheduled), gắn `team` field check, tối ưu luồng kickoff (đã có `docs/fmon-project-action-logic.md` làm mẫu).
 10. **Verify Import SOW trên project thật có dữ liệu** — đã verify trên project 45 (user đang login): dialog + preview + tạo task + reload đều OK (test data đã dọn). Có thể test thêm với file SOW khác (WAF/NGFW sheet) để xác nhận auto-detect "security"/"waf" qua đường upload file.
 11. **Verify nút "Tải nhóm" trên UI thật** (08/08, cần user login) — mở project → tab Chats → bấm "Tải danh sách nhóm (Teams + Zalo)": giờ không cần mở Chrome CDP tay — fallback persistent profile tự chạy. **Đã verify API end-to-end** (route `teams-automator` + `zalo-automator` `list_chats` trả 97 + 59 chats khi CDP tắt) — chỉ còn chờ user bấm nút trên UI để xác nhận hiển thị.
+12. **Verify spinner sync 1 nhóm sau fix queue** (09/08, cần user login + Chrome) — mở project → tab Chats → bấm 🔄 1 nhóm: spinner + banner "Đang đồng bộ..." phải giữ tới khi task queue xong (mở Chrome + scroll), tin mới hiện ngay sau đó. Xem thêm mục 3.23.
+13. **Verify reload + auto-scroll bằng tay** (09/08) — đã verify bằng Chrome CDP (mục 3.24); nếu user muốn: mở project 45 → tab Chats → bấm "Tải lại" → nút đếm ngược 60s + spinner nhóm hiện trong lúc sync; đổi nhóm chat → scroll tự động xuống tin mới nhất.
 
 ### Lưu ý về run check
 - **Agent tự chạy check ở bước cuối** (sau khi sửa xong hết) theo rule `.cursor/rules/final-build-check.mdc`: `node_modules/.bin/tsc --noEmit`, fix lỗi đến khi exit 0, trước khi báo hoàn thành.
@@ -329,6 +429,16 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 
 - **DB:** PostgreSQL/Drizzle — schema tại `src/lib/db/schema.ts`; không quay lại Convex.
 - **Browser automation:** phải dùng Chrome thật (channel "chrome" + user-data-dir thật), không Playwright chromium headless mặc định (Teams/Zalo detect bot).
+- **MỘT NGUYÊN TẮC QUAN TRỌNG — profile Chrome (09/08):** Teams và Zalo mỗi bên có **duy nhất 1 profile chính** chứa session đăng nhập: `.teams-session/chrome-profile` và `.zalo-session/chrome-profile`. Mọi tool (sync, healthcheck, list-chats, login, send) PHẢI dùng thẳng profile chính — qua `createStealthContext`/`createZaloStealthContext` (helper đã hỗ trợ CDP + fallback persistent). **KHÔNG BAO GIỜ tạo profile copy mới** (`.health-session/*` trước đây là lỗi — Zalo xem đó là thiết bị thứ 2 → fail "Đổi thiết bị", đá logout; mkdir/cp mới sẽ không có session, healthcheck luôn unauthorized). Nếu thấy script nào tự tạo profile riêng (`prepareProfile`, `cpSync`) — hãy sửa theo 2 health script hiện tại.
+- **CDP profile bind cứng**: Chrome mở với `--remote-debugging-port` chỉ dùng 1 user-data-dir. Hiện tại Teams hay mở CDP 9222 với profile `.teams-session/chrome-profile` → sync/zalo health khi `USE_CDP=1` sẽ connect nhầm vào profile đó mà KHÔNG có session Zalo. Khi cần Zalo qua CDP: mở Chrome riêng với `--user-data-dir=.zalo-session/chrome-profile`.
+- **Healthcheck "Failed to create a ProcessSingleton" (09/08, đã fix):** lỗi xảy ra khi healthcheck cố `launchPersistentContext` trên profile Teams/Zalo đang bị Chrome khác giữ (sync/send đang chạy, hoặc Chrome `--keep-open` còn sót). Fix gồm 3 lớp:
+  1. `teams-automator/route.ts` healthcheck giờ **bật `USE_CDP=1`** (giống list_chats) — nếu Chrome CDP đang chạy thì connect vào đó, không mở Chrome thứ 2 cùng profile. (Zalo route KHÔNG bật vì CDP 9222 thường là Chrome Teams — sẽ connect nhầm profile.)
+  2. `teams-health.ts` / `zalo-health.ts` thêm `isProfileInUse()` (pgrep profileDir + kill(pid,0)): profile bị giữ → **chờ tối đa 15s** (sync 2 phút rảnh liên tục) rồi trả `{status:"busy"}` thay vì crash; còn bắt lỗi `ProcessSingleton` trong catch → cũng trả `busy`.
+  3. `createStealthContext` / `createZaloStealthContext` thêm check **trước khi launch persistent**: nếu profile đang bị Chrome live (không phải Playwright pipe) giữ → ném lỗi rõ ràng "profile đang bị Chrome khác dùng" thay vì crash mờ.
+  UI Omni thêm badge **"Đang bận (sync chạy)"** (màu xanh sky) cho status `busy` — user thấy rõ lý do thay vì "Lỗi" mù mờ. `ok:true` khi busy để UI không hiện lỗi đỏ.
+- **Slớp 4 — healthcheck đọc cookies khi profile bị giữ (09/08 tối, đã fix):** khi profile bị Chrome khác giữ (VD Chrome Zalo `--keep-open` từ lúc đăng nhập chạy mãi không thoát) thì chờ 15s xong vẫn báo `busy` mãi dù user ĐÃ đăng nhập → user tưởng vẫn lỗi. Fix: `teams-health.ts` / `zalo-health.ts` thêm `sessionFromTeamsCookies()` / `sessionFromZaloCookies()` — đọc thẳng `Default/Cookies` (SQLite, đọc được ngay cả khi Chrome đang chạy trên profile đó) — có cookie `authtoken` (Teams) / `zpsid` (Zalo) → trả `connected`; không có → `unauthorized`; không mở được DB → `busy`. Áp dụng ở BOTH: nhánh `isProfileInUse` hết hạn chờ, và catch lỗi "ProcessSingleton"/"đang bị Chrome khác dùng" (race: Chrome bắt giữ profile sau check nhưng trước launch).
+- **Chrome treo giữ SingletonLock:** Chrome tàn dư (`--keep-open`, crash) giữ `SingletonLock` → mọi script sau không mở được profile (lỗi "Opening in existing browser session" / trắng trang / lock). Cách xử lý: find PID từ lock, kill nếu là process treo, xoá lock. `createZaloStealthContext`/`createStealthContext` đã tự cleanup lock của process đã chết + chỉ kill Chrome Playwright-spawned (không kill CDP/Chrome người dùng).
+- **Incremental sync (09/08):** chỉ scroll từng window (viewport) + detect mỗi lượt — Zalo đo `maxVisibleTs` từ `bb_msg_id_` (không extract DOM nặng), Teams đọc `<time datetime>` đầu tiên; gặp message <= watermark DB (timestampMs bigint) là EARLY-STOP, collect lần cuối rồi dừng. Không chạy hết `scrollCount` (incremental chỉ còn 5 lượt Zalo / 6-10 Teams). Watermark phải chính xác — đã chuyển `timestampMs`/`scrapedAt` sang `bigint` (trước là real → tròn hoá → early-stop sai).
 - **AI/LLM:** chỉ dùng qua `src/app/api/agents/*` hoặc `agents/pm/lib/llm-client` — không nhúng key vào client.
 - **App: đã có login bắt buộc** (Clerk) cho dashboard; landing page riêng.
 - **Naming:** UI dùng Convex-style `_id`/`_creationTime` (repo `mapProject` chuyển đổi từ drizzle id).

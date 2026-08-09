@@ -1,10 +1,40 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useUserPreferences, usePreferenceMutations, usePaginatedLogs } from "@/hooks/useDomain";
-import { Layers, Loader2, LogIn, RefreshCcw, Settings, Clock, Activity, AlertCircle, CheckCircle2, Info, CheckCircle, XCircle, MessageSquare } from "lucide-react";
+import { Layers, Loader2, LogIn, RefreshCcw, Settings, Clock, Activity, AlertCircle, CheckCircle2, Info, CheckCircle, XCircle, MessageSquare, ListOrdered } from "lucide-react";
 import { format } from "date-fns";
+
+// Queue đồng bộ — shape trả về từ /api/agents/sync-projects (getSyncQueueStatus)
+type QueueJobInfo = {
+  id: string;
+  label: string;
+  type: "project" | "all" | "single";
+  projectId?: string;
+  chats: number;
+  chatTasks?: { projectId?: string; chatName: string; platform: string; syncMode: string }[];
+};
+type CurrentJobTaskInfo = {
+  id: string;
+  projectId: string;
+  chatName: string;
+  platform: string;
+  syncMode: string;
+  status: "pending" | "running" | "done" | "skipped";
+};
+type SyncQueueInfo = {
+  running: boolean;
+  queueLength: number;
+  currentJob: { id: string; label: string; type: string; projectId?: string } | null;
+  currentTask: { projectId: string; chatName: string; platform: string } | null;
+  activeProjectId: string | null;
+  jobStartTime: number | null;
+  taskIndexInJob: number;
+  currentJobTasks: CurrentJobTaskInfo[];
+  queuedJobs: QueueJobInfo[];
+  progress: { total: number; done: number; currentChat?: string; currentProjectId?: string; platform?: string; message?: string } | null;
+};
 
 export default function OmniPage() {
   const { userId } = useAuth();
@@ -18,6 +48,7 @@ export default function OmniPage() {
   const [teamsStatus, setTeamsStatus] = useState<{ running: boolean; pid?: number; health?: string }>({ running: false });
   const [zaloStatus, setZaloStatus] = useState<{ running: boolean; pid?: number; health?: string }>({ running: false });
   const [headlessMode, setHeadlessMode] = useState(true); // default headless
+  const [projectChatReloadInterval, setProjectChatReloadInterval] = useState(120);
   const [lastHealthRun, setLastHealthRun] = useState<number | null>(null);
 
   // Hydrate from localStorage after mount to avoid hydration mismatch
@@ -25,9 +56,11 @@ export default function OmniPage() {
     const savedTeams = localStorage.getItem("healthStatus_teams");
     const savedZalo = localStorage.getItem("healthStatus_zalo");
     const savedHeadless = localStorage.getItem("headlessMode");
+    const savedProjectChatReload = localStorage.getItem("projectChatReloadInterval");
     if (savedTeams) setTeamsStatus({ running: false, health: savedTeams });
     if (savedZalo) setZaloStatus({ running: false, health: savedZalo });
     if (savedHeadless !== null) setHeadlessMode(savedHeadless === "true");
+    if (savedProjectChatReload) setProjectChatReloadInterval(Number(savedProjectChatReload));
 
     const savedTeamsChats = localStorage.getItem("chatList_teams");
     const savedZaloChats = localStorage.getItem("chatList_zalo");
@@ -51,6 +84,7 @@ export default function OmniPage() {
       .catch(() => { /* ignore */ });
   }, []);
   const [syncStatus, setSyncStatus] = useState<{ running: boolean; progress?: { total: number; done: number; currentChat?: string; platform?: string; message?: string } | null }>({ running: false });
+  const [syncQueue, setSyncQueue] = useState<SyncQueueInfo | null>(null);
   const [loadingAction, setLoadingAction] = useState<"teams" | "zalo" | "sync" | "health-teams" | "health-zalo" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,6 +129,7 @@ export default function OmniPage() {
       if (syncRes.ok) {
         const data = await syncRes.json();
         setSyncStatus(prev => ({ ...prev, ...data }));
+        setSyncQueue(data);
       }
     } catch (err) {
       console.error("Failed to check status:", err);
@@ -261,8 +296,47 @@ export default function OmniPage() {
     if (health === "checking") return <span className="flex items-center gap-1.5 text-xs text-yellow-600 bg-yellow-100 dark:bg-yellow-900/30 dark:text-yellow-400 px-2.5 py-0.5 rounded-full"><Loader2 className="w-3 h-3 animate-spin" /> Kiểm tra...</span>;
     if (health === "connected") return <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-400 px-2.5 py-0.5 rounded-full"><CheckCircle className="w-3 h-3" /> Đã kết nối</span>;
     if (health === "unauthorized") return <span className="flex items-center gap-1.5 text-xs text-red-600 bg-red-100 dark:bg-red-900/30 dark:text-red-400 px-2.5 py-0.5 rounded-full"><XCircle className="w-3 h-3" /> Cần đăng nhập</span>;
+    if (health === "busy") return <span className="flex items-center gap-1.5 text-xs text-sky-600 bg-sky-100 dark:bg-sky-900/30 dark:text-sky-400 px-2.5 py-0.5 rounded-full"><Loader2 className="w-3 h-3" /> Đang bận (sync chạy)</span>;
     if (health === "error") return <span className="flex items-center gap-1.5 text-xs text-red-600 bg-red-100 dark:bg-red-900/30 dark:text-red-400 px-2.5 py-0.5 rounded-full"><AlertCircle className="w-3 h-3" /> Lỗi</span>;
     return <span className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted px-2.5 py-0.5 rounded-full">Chưa kiểm tra</span>;
+  };
+
+  const JOB_TYPE_LABEL: Record<string, { label: string; cls: string }> = {
+    project: { label: "Project", cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20" },
+    all: { label: "Tất cả", cls: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20" },
+    single: { label: "1 nhóm", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20" },
+  };
+  const QueueJobBadge = ({ type }: { type: string }) => {
+    const t = JOB_TYPE_LABEL[type] || { label: type, cls: "bg-muted text-muted-foreground border-border" };
+    return (
+      <span className={`text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border shrink-0 ${t.cls}`}>
+        {t.label}
+      </span>
+    );
+  };
+
+  // Hiển thị 1 task (1 nhóm chat) kèm trạng thái
+  const STATUS_META: Record<string, { icon: ReactNode; text: string; cls: string }> = {
+    pending: { icon: <Clock className="w-3 h-3 text-muted-foreground/60" />, text: "Chờ", cls: "text-muted-foreground/70" },
+    running: { icon: <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />, text: "Đang sync", cls: "text-blue-600 dark:text-blue-400 font-medium" },
+    done: { icon: <CheckCircle2 className="w-3 h-3 text-emerald-500" />, text: "Xong", cls: "text-emerald-600 dark:text-emerald-400" },
+    skipped: { icon: <AlertCircle className="w-3 h-3 text-red-400" />, text: "Bỏ qua", cls: "text-red-500/80" },
+  };
+  const TaskItem = ({ task, showProject }: { task: CurrentJobTaskInfo; showProject?: boolean }) => {
+    const meta = STATUS_META[task.status] || STATUS_META.pending;
+    return (
+      <div className="flex items-center gap-2 px-2 py-1 rounded-md bg-muted/20 text-[11px]">
+        <span className="shrink-0">{meta.icon}</span>
+        <span className={`flex-1 min-w-0 truncate ${meta.cls}`}>
+          {task.chatName}
+          <span className="text-muted-foreground/60 font-normal"> · {task.platform} · {task.syncMode}</span>
+          {showProject && task.projectId && (
+            <span className="text-muted-foreground/50 font-normal"> · P{task.projectId}</span>
+          )}
+        </span>
+        <span className={`text-[9px] shrink-0 ${meta.cls}`}>{meta.text}</span>
+      </div>
+    );
   };
 
   return (
@@ -457,43 +531,196 @@ export default function OmniPage() {
                   </div>
                 )}
 
-                <div className="pt-4 border-t border-border/50 flex items-center gap-4">
-                  <Clock className="w-4 h-4 text-muted-foreground shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium flex items-center gap-2">
+                <div className="pt-4 border-t border-border/50 flex flex-col gap-3">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-muted-foreground" />
+                    <p className="text-sm font-medium">
                       Hẹn giờ: <span className="text-primary font-bold">{nextSyncStr}</span>
                     </p>
                   </div>
-                  <div className="shrink-0">
-                    <select
-                      value={autoSyncInterval}
-                      onChange={(e) => handleIntervalChange(Number(e.target.value))}
-                      className="bg-muted border-none rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground"
-                    >
-                      <option value={0}>Tắt tự động</option>
-                      <option value={1}>Mỗi 1 phút</option>
-                      <option value={5}>Mỗi 5 phút</option>
-                      <option value={15}>Mỗi 15 phút</option>
-                      <option value={30}>Mỗi 30 phút</option>
-                      <option value={60}>Mỗi 1 tiếng</option>
-                      <option value={120}>Mỗi 2 tiếng</option>
-                    </select>
-                  </div>
-                  <div className="shrink-0 flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Chế độ sync</span>
-                    <select
-                      value={prefs?.chatSyncMode || "incremental"}
-                      onChange={(e) => {
-                        if (userId) void pm2.updateUserPreferences({ userId, chatSyncMode: e.target.value });
-                      }}
-                      className="bg-muted border-none rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground"
-                      title="Incremental: chỉ lấy tin mới từ mốc đã sync (nhanh). Full: quét toàn bộ lịch sử chat."
-                    >
-                      <option value="incremental">Incremental (nhanh)</option>
-                      <option value="full">Full (đầy đủ)</option>
-                    </select>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-muted/20 p-4 rounded-xl border border-border/50">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Sync Tất Cả (Trang Omni)</label>
+                      <select
+                        value={autoSyncInterval}
+                        onChange={(e) => handleIntervalChange(Number(e.target.value))}
+                        className="bg-background border border-border/50 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground w-full transition-colors hover:bg-accent/50"
+                        title="Thời gian tự động sync tất cả nhóm khi treo Omni page"
+                      >
+                        <option value={0}>Tắt tự động</option>
+                        <option value={1}>Mỗi 1 phút</option>
+                        <option value={5}>Mỗi 5 phút</option>
+                        <option value={15}>Mỗi 15 phút</option>
+                        <option value={30}>Mỗi 30 phút (mặc định)</option>
+                        <option value={60}>Mỗi 1 tiếng</option>
+                        <option value={120}>Mỗi 2 tiếng</option>
+                      </select>
+                    </div>
+                    
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Sync Nhóm (Trang Dự án)</label>
+                      <select
+                        value={projectChatReloadInterval}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setProjectChatReloadInterval(val);
+                          localStorage.setItem("projectChatReloadInterval", val.toString());
+                          window.dispatchEvent(new CustomEvent("projectChatReloadIntervalChanged", { detail: val }));
+                        }}
+                        className="bg-background border border-border/50 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground w-full transition-colors hover:bg-accent/50"
+                        title="Thời gian tự động tải lại chat khi bạn đang mở chi tiết 1 dự án"
+                      >
+                        <option value={0}>Tắt tự động</option>
+                        <option value={30}>Mỗi 30 giây</option>
+                        <option value={60}>Mỗi 1 phút</option>
+                        <option value={90}>Mỗi 1 phút rưỡi</option>
+                        <option value={120}>Mỗi 2 phút (mặc định)</option>
+                        <option value={180}>Mỗi 3 phút</option>
+                        <option value={300}>Mỗi 5 phút</option>
+                      </select>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Chế độ đồng bộ</label>
+                      <select
+                        value={prefs?.chatSyncMode || "incremental"}
+                        onChange={(e) => {
+                          if (userId) void pm2.updateUserPreferences({ userId, chatSyncMode: e.target.value });
+                        }}
+                        className="bg-background border border-border/50 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary cursor-pointer font-medium text-foreground w-full transition-colors hover:bg-accent/50"
+                        title="Incremental: chỉ lấy tin mới từ mốc đã sync (nhanh — dùng cho sync tự động). Full: quét toàn bộ lịch sử chat (chậm — dùng khi cần lấy lại dữ liệu cũ)."
+                      >
+                        <option value="incremental">Incremental (nhanh)</option>
+                        <option value="full">Full (đầy đủ)</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
+              </div>
+            </section>
+
+            {/* Sync Queue */}
+            <section className="space-y-2">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+                <ListOrdered className="w-4 h-4" /> Queue đồng bộ
+                {syncQueue && syncQueue.queueLength > 0 && (
+                  <span className="ml-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                    {syncQueue.queueLength} job chờ
+                  </span>
+                )}
+              </h2>
+              <div className="rounded-2xl border border-border bg-card shadow-sm p-4 space-y-3">
+                {!syncQueue ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/50" />
+                  </div>
+                ) : syncQueue.running || syncQueue.queuedJobs.length > 0 ? (
+                  <>
+                    {/* Job đang chạy */}
+                    {syncQueue.currentJob && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
+                            <Activity className="w-3.5 h-3.5 text-blue-500" />
+                            {syncQueue.currentJob.label}
+                            <QueueJobBadge type={syncQueue.currentJob.type} />
+                          </span>
+                          {syncQueue.currentTask && (
+                            <span className="text-[10px] text-muted-foreground truncate max-w-[45%]">
+                              đang sync: <span className="font-medium text-foreground/70">{syncQueue.currentTask.chatName}</span>
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Progress tổng */}
+                        {syncQueue.progress && syncQueue.progress.total > 0 && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>{syncQueue.progress.message}</span>
+                              <span className="font-medium text-foreground/70">
+                                {Math.round((syncQueue.progress.done / syncQueue.progress.total) * 100)}%
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
+                                style={{ width: `${(syncQueue.progress.done / syncQueue.progress.total) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Từng task nhỏ — trạng thái chờ/đang/xong */}
+                        {syncQueue.currentJobTasks.length > 0 && (
+                          <div className="pt-1 space-y-1">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-semibold">
+                              Task chi tiết ({syncQueue.currentJobTasks.filter(t => t.status === "done").length}/{syncQueue.currentJobTasks.length} xong)
+                            </p>
+                            <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+                              {syncQueue.currentJobTasks.map((task) => (
+                                <TaskItem key={task.id} task={task} showProject />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Worker đang hoạt động nhưng chưa nhặt job (chờ lock) */}
+                    {!syncQueue.currentJob && (
+                      <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
+                        Worker đang chạy — chờ khởi động job kế tiếp...
+                      </div>
+                    )}
+
+                    {/* Job chờ trong queue */}
+                    {syncQueue.queuedJobs.length > 0 && (
+                      <div className="pt-2 border-t border-border/50 space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-semibold">
+                          Đang chờ ({syncQueue.queuedJobs.length} job)
+                        </p>
+                        {syncQueue.queuedJobs.map((job) => (
+                          <div key={job.id} className="px-2 py-1.5 rounded-lg bg-muted/30 text-xs space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Clock className="w-3 h-3 text-muted-foreground shrink-0" />
+                              <span className="flex-1 min-w-0 truncate text-foreground/80">{job.label}</span>
+                              <QueueJobBadge type={job.type} />
+                              <span className="text-[10px] text-muted-foreground/70 shrink-0">{job.chats} chats</span>
+                            </div>
+                            {/* Từng nhóm chat trong job chờ */}
+                            {job.chatTasks && job.chatTasks.length > 0 && (
+                              <div className="pl-5 space-y-0.5">
+                                {job.chatTasks.map((c, i) => (
+                                  <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground/80">
+                                    <span className="w-1 h-1 rounded-full bg-muted-foreground/40 shrink-0" />
+                                    <span className="truncate">{c.chatName}</span>
+                                    <span className="text-muted-foreground/50 shrink-0">· {c.platform}</span>
+                                    {job.type === "all" && c.projectId && (
+                                      <span className="text-muted-foreground/40 shrink-0">· P{c.projectId}</span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {syncQueue.activeProjectId && (
+                      <p className="pt-2 border-t border-border/50 text-[11px] text-muted-foreground/70 flex items-center gap-1.5">
+                        <Info className="w-3 h-3" /> Project đang xem được ưu tiên chạy trước
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-4 text-muted-foreground">
+                    <ListOrdered className="w-8 h-8 mb-2 opacity-20" />
+                    <p className="text-xs">Queue đang rảnh — không có job đang chạy hoặc chờ</p>
+                  </div>
+                )}
               </div>
             </section>
 

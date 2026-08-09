@@ -1,22 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { spawn } from "child_process";
-import path from "path";
-import fs from "fs";
 import { auth } from "@clerk/nextjs/server";
-
-const RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+import {
+  enqueueJob,
+  getSyncQueueStatus,
+  buildChatTasksForProject,
+  buildAllChatTasks,
+  setActiveProjectId,
+  initWorkerState,
+} from "@/lib/sync-queue";
+import { startSyncScheduler } from "@/lib/sync-queue-runner";
 
 /**
  * POST /api/agents/sync-project-chats
  *
- * Spawn script `sync-project-chats.ts` — sync TUẦN TỰ tất cả nhóm chat
- * (Teams + Zalo) trong `teamsGroups` của ĐÚNG project đang được user mở.
- * Incremental theo watermark, chỉ lấy tin mới (nhanh — vài chục giây/vòng).
- * Dùng chung lock `.teams-sync-running` + Chrome profile với sync-projects.
+ * Enqueue job sync TUẦN TỰ các nhóm chat (Teams + Zalo) của ĐÚNG project đang
+ * user mở, vào queue tập trung (ưu tiên job project đang xem). Mỗi nhóm chạy
+ * qua sync-single-chat.ts, incremental theo watermark — nhanh, vài giây/nhóm.
  *
- * Body: { projectId, headless?, syncMode? ("incremental"|"full") }
- * Action: { action: "status" } — sync có đang chạy không (đồng bộ trạng thái
- * với `/api/agents/sync-projects` vì dùng chung lock file).
+ * Body: { projectId, syncMode? ("incremental"|"full") }
+ * Action:
+ *   { action: "status" }                  — trạng thái queue (đang chạy job nào)
+ *   { action: "setActiveProject" }        — báo server project đang xem (projectId)
+ *   { action: "clearActiveProject" }      — rời project / về trang khác
+ *   { action: "syncAllNow" }              — enqueue sync-all ngay (nút manual, 30 phút)
  */
 export async function POST(req: NextRequest) {
   try {
@@ -26,90 +32,75 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
     }
 
+    // Khởi động bộ lập lịch 30 phút (nếu chưa) — lần đầu có userId
+    startSyncScheduler(userId);
+
     const body = await req.json();
     const action = body.action as string | undefined;
     const projectId = body.projectId as string | undefined;
+
+    if (action === "status") {
+      return NextResponse.json({ ok: true, ...getSyncQueueStatus() });
+    }
+
+    // Đánh dấu project đang xem — job project được ưu tiên trong queue
+    if (action === "setActiveProject") {
+      if (!projectId) return NextResponse.json({ ok: false, error: "Missing projectId" }, { status: 400 });
+      setActiveProjectId(projectId);
+      return NextResponse.json({ ok: true, activeProjectId: projectId });
+    }
+
+    if (action === "clearActiveProject") {
+      setActiveProjectId(null);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === "syncAllNow") {
+      const tasks = await buildAllChatTasks(userId);
+      if (tasks.length === 0) {
+        return NextResponse.json({ ok: false, error: "Không có nhóm chat nào cần sync (chưa add group)." });
+      }
+      const status = getSyncQueueStatus();
+      if (status.queueLength > 0 || status.running) {
+        // Ưu tiên: nếu sync-all đang chạy → chỉ báo; nếu project đang xem thì không chèn lên
+        return NextResponse.json({ ok: false, error: "Sync khác đang chạy — thử lại sau." });
+      }
+      const result = enqueueJob({
+        id: `all-manual-${Date.now()}`,
+        label: `sync-all (manual, ${tasks.length} chats)`,
+        type: "all",
+        chatTasks: tasks,
+        createdAt: Date.now(),
+      });
+      return NextResponse.json({ ok: result.ok, message: result.ok ? "Đã xếp hàng đợi sync-all." : result.reason });
+    }
 
     if (!projectId) {
       return NextResponse.json({ ok: false, error: "Missing projectId" }, { status: 400 });
     }
 
-    // Status: sync của project này có đang chạy không
-    if (action === "status") {
-      let isRunning = false;
-      try {
-        if (fs.existsSync(RUNNING_FILE)) {
-          const pid = parseInt(fs.readFileSync(RUNNING_FILE, "utf-8").trim(), 10);
-          if (!isNaN(pid)) {
-            process.kill(pid, 0); // throws if not running
-            isRunning = true;
-          }
-        }
-      } catch {
-        fs.unlinkSync(RUNNING_FILE);
-      }
-      return NextResponse.json({ running: isRunning });
+    // Sync project đang xem: tự build nhóm chat từ teamsGroups (incremental luôn)
+    const tasks = await buildChatTasksForProject(projectId, userId);
+    if (tasks.length === 0) {
+      return NextResponse.json({ ok: false, error: `Project ${projectId} không có nhóm chat nào để sync.` });
     }
 
-    // Chặn trùng lặp: lock file dùng CHUNG với sync-projects (cùng Chrome profile).
-    // Nếu sync khác đang chạy mà route vẫn spawn + ghi đè lock → script mới exit sớm
-    // và route xoá lock của sync đang chạy → sync sau đó chạy chồng lên nhau.
-    let isRunning = false;
-    try {
-      if (fs.existsSync(RUNNING_FILE)) {
-        const pid = parseInt(fs.readFileSync(RUNNING_FILE, "utf-8").trim(), 10);
-        if (!isNaN(pid)) {
-          process.kill(pid, 0); // throws if not running
-          isRunning = true;
-        }
-      }
-    } catch {
-      fs.unlinkSync(RUNNING_FILE);
-    }
-
-    if (isRunning) {
-      return NextResponse.json({
-        ok: false,
-        error: "A sync process is already running.",
-      });
-    }
-
-    // Start sync: 1 process cho toàn bộ groups của project (tuần tự)
-    const scriptPath = path.join(process.cwd(), "agents/pm/scripts/sync-project-chats.ts");
-
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      USER_ID: userId,
-      PROJECT_ID: projectId,
-      HEADLESS: body.headless !== false ? "true" : "false",
-      SYNC_MODE: body.syncMode === "full" ? "full" : "incremental",
-      USE_CDP: process.env.USE_CDP ?? "1",
-      CDP_PORT: process.env.CDP_PORT ?? "9222",
-    };
-
-    const child = spawn("npx", ["tsx", scriptPath], {
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
+    const result = enqueueJob({
+      id: `project-${projectId}-${Date.now()}`,
+      label: `project ${projectId} (${tasks.length} chats)`,
+      type: "project",
+      projectId,
+      chatTasks: tasks,
+      createdAt: Date.now(),
     });
 
-    const pid = child.pid ?? 0;
-    try {
-      fs.writeFileSync(RUNNING_FILE, `${pid}`, "utf-8");
-    } catch { /* ignore */ }
-
-    child.on("exit", (code) => {
-      try {
-        if (fs.existsSync(RUNNING_FILE)) fs.unlinkSync(RUNNING_FILE);
-      } catch { /* ignore */ }
-      console.log(`[SyncProjectChats] Process ${pid} exited with code ${code}`);
-    });
-
-    child.unref();
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.reason || "Không thể xếp hàng đợi." });
+    }
 
     return NextResponse.json({
       ok: true,
-      message: `Started syncing all chats of project ${projectId} in background.`,
+      message: `Project ${projectId}: ${tasks.length} nhóm đã xếp hàng đợi (ưu tiên).`,
     });
   } catch (err) {
     console.error("[SyncProjectChats API] Error:", err);

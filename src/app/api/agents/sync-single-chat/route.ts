@@ -1,8 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { spawn } from "child_process";
-import path from "path";
 import { auth } from "@clerk/nextjs/server";
+import { enqueueJob } from "@/lib/sync-queue";
 
+/**
+ * POST /api/agents/sync-single-chat
+ *
+ * Sync 1 nhóm chat (nút 🔄 / "Đồng bộ toàn bộ" trên UI tab Chats).
+ * Đi qua queue tập trung — chạy tuần tự với auto-sync, không đè Chrome profile.
+ *
+ * Body: { projectId, chatName, platform, syncMode? ("incremental"|"full") }
+ */
 export async function POST(req: NextRequest) {
   try {
     const session = await auth();
@@ -13,43 +20,31 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const { projectId, chatName, platform, syncMode } = body;
-    const headless = body.headless !== false; // default true
 
     if (!projectId || !chatName) {
       return NextResponse.json({ ok: false, error: "Missing projectId or chatName" }, { status: 400 });
     }
 
-    const scriptPath = path.join(process.cwd(), "agents/pm/scripts/sync-single-chat.ts");
-
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      USER_ID: userId,
-      PROJECT_ID: projectId,
-      CHAT_NAME: chatName,
-      PLATFORM: platform || "teams",
-      HEADLESS: headless ? "true" : "false",
-      // Chế độ sync: "incremental" (mặc định) hoặc "full"
-      SYNC_MODE: syncMode === "full" ? "full" : "incremental",
-      // Dùng Chrome thật (CDP) — Teams chặn Playwright profile
-      USE_CDP: process.env.USE_CDP ?? "1",
-      CDP_PORT: process.env.CDP_PORT ?? "9222",
-    };
-
-    const child = spawn("npx", ["tsx", scriptPath], {
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
+    const result = enqueueJob({
+      id: `single-${Date.now()}`,
+      label: `sync 1 chat "${chatName}" (${platform})`,
+      type: "single",
+      chatTasks: [{
+        projectId,
+        chatName: String(chatName).trim(),
+        platform: (platform === "zalo" ? "zalo" : "teams") as "teams" | "zalo",
+        syncMode: syncMode === "full" ? "full" : "incremental",
+      }],
+      createdAt: Date.now(),
     });
 
-    child.on("exit", (code) => {
-      console.log(`[SyncSingleChat] Process for "${chatName}" exited with code ${code}`);
-    });
-
-    child.unref();
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.reason || "Không thể xếp hàng đợi." });
+    }
 
     return NextResponse.json({
       ok: true,
-      message: `Started syncing chat "${chatName}" in background.`,
+      message: `Đã xếp hàng đợi sync chat "${chatName}" (${platform}).`,
     });
   } catch (err) {
     console.error("[SyncSingleChat API] Error:", err);

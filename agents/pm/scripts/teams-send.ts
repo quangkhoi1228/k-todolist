@@ -37,17 +37,24 @@ import * as path from "path";
 const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
 const SEND_RUNNING_FILE = path.join(process.cwd(), ".teams-send-running");
 
-async function waitForSyncToFinish(timeoutMs = 20 * 60 * 1000): Promise<void> {
+async function waitForSyncToFinish(timeoutMs = 3 * 60 * 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     let syncRunning = false;
     try {
       if (fs.existsSync(SYNC_RUNNING_FILE)) {
-        const pid = parseInt(fs.readFileSync(SYNC_RUNNING_FILE, "utf-8").trim(), 10);
-        if (!isNaN(pid)) {
-          process.kill(pid, 0); // throws if not running
-          syncRunning = true;
-        }
+        // Lock file có thể chứa NHIỀU PID (queue chạy song song, mỗi script
+        // con 1 dòng) — dòng nào còn sống là đang có sync chạy.
+        const content = fs.readFileSync(SYNC_RUNNING_FILE, "utf-8");
+        const pids = content.split("\n").map(l => l.trim()).filter(Boolean).map(l => parseInt(l, 10)).filter(p => !isNaN(p));
+        syncRunning = pids.some(pid => {
+          try {
+            process.kill(pid, 0); // throws if not running
+            return true;
+          } catch {
+            return false;
+          }
+        });
       }
     } catch {
       // stale lock file — ignore
@@ -56,8 +63,8 @@ async function waitForSyncToFinish(timeoutMs = 20 * 60 * 1000): Promise<void> {
       log("Khong co sync nao dang chay — bat dau gui tin.");
       return;
     }
-    log("Dang co sync chay nen — cho sync xong roi gui...");
-    await new Promise((r) => setTimeout(r, 10_000));
+    log(`Dang co sync chay — cho sync xong (poll 3s, con ${Math.max(0, Math.round((deadline - Date.now()) / 1000))}s)...`);
+    await new Promise((r) => setTimeout(r, 3_000));
   }
   log("Timeout cho sync — van tiep tuc gui (co the dung chung profile!).");
 }
@@ -140,8 +147,11 @@ async function main() {
   };
 
   // Never launch Chrome while a background sync holds the shared profile.
-  await waitForSyncToFinish();
+  // Claim send lock NGAY (trước khi đợi sync) — sync đang scroll/extract sẽ
+  // thấy `.teams-send-running` và dừng sớm (send-preemption), send không phải
+  // chờ hết task sync.
   claimSendLock();
+  await waitForSyncToFinish();
 
   const { browser, context } = await createStealthContext(config);
   const page = context.pages()[0] || (await context.newPage());

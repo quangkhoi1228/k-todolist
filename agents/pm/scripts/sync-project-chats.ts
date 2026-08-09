@@ -8,7 +8,7 @@
  *   SYNC_MODE=full  — bỏ qua watermark (full sync)
  */
 import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, extractZaloMessages, getGroupUrl, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
 import * as path from "path";
 import * as fs from "fs";
 import dotenv from "dotenv";
@@ -55,16 +55,44 @@ function releaseRunningLock() {
 }
 
 function isSendRunning(): boolean {
-  try {
-    if (fs.existsSync(SEND_RUNNING_FILE)) {
-      const pid = parseInt(fs.readFileSync(SEND_RUNNING_FILE, "utf-8").trim(), 10);
-      if (!isNaN(pid)) {
-        process.kill(pid, 0);
-        return true;
+  // Check cả teams-send và zalo-send lock — mỗi cái 1 PID, pid chết là stale
+  for (const file of [SEND_RUNNING_FILE, path.join(process.cwd(), ".zalo-send-running")]) {
+    try {
+      if (fs.existsSync(file)) {
+        const pid = parseInt(fs.readFileSync(file, "utf-8").trim(), 10);
+        if (!isNaN(pid)) {
+          process.kill(pid, 0);
+          return true;
+        }
       }
-    }
-  } catch { /* ignore */ }
+    } catch { /* ignore */ }
+  }
   return false;
+}
+
+/**
+ * CDP mode: script mở TAB RIÊNG trên Chrome thật — khi xong phải huỷ ĐÚNG
+ * tab đó (page.close()), không đóng browser (Chrome thật + tab khác sống).
+ * Xét page có phải tab do script mở không (không phải tab có sẵn như
+ * pages()[0] / tab zalo.me): nếu có → chỉ đóng page.
+ */
+function shouldCloseOnlyPage(page: import("playwright").Page, context: import("playwright").BrowserContext): boolean {
+  if (process.env.SYNC_CDP_CONNECTED !== "1") return false;
+  try {
+    return context.pages().length > 1 || !context.pages().includes(page) || page.url() === "about:blank";
+  } catch {
+    return false;
+  }
+}
+
+/** Đóng đúng tài nguyên: tab riêng (CDP) hoặc cả browser (persistent fallback). */
+async function closeOwnPageOrBrowser(page: import("playwright").Page, browser: import("playwright").Browser, context: import("playwright").BrowserContext): Promise<void> {
+  if (shouldCloseOnlyPage(page, context)) {
+    await page.close().catch(() => {});
+    console.log("[SyncProject] Đã huỷ tab riêng (CDP).");
+  } else {
+    await browser.close().catch(() => {});
+  }
 }
 
 async function log(projectId: string, chatName: string | undefined, type: string, message: string, details?: string) {
@@ -199,6 +227,24 @@ async function syncZaloChat(page: any, config: any, chatName: string): Promise<n
     await log(projectId, chatName, "sync_error", `Không tìm thấy nhóm Zalo "${chatName}" trong sidebar`);
     return 0;
   }
+
+  // Zalo chỉ cho 1 tab active — xử lý overlay "Kích hoạt" trước khi sync
+  await ensureZaloTabActive(page, config);
+  const foundAfterActivate = await navigateToZaloGroup(page, chatName);
+  if (!foundAfterActivate) {
+    console.log(`[SyncProject-Zalo] Could not find chat "${chatName}" (after activation).`);
+    await log(projectId, chatName, "sync_error", `Không tìm thấy nhóm Zalo "${chatName}" (sau kích hoạt tab)`);
+    return 0;
+  }
+
+  // Verify the chat view is actually showing the target group — abort if a
+  // click landed on a different chat instead of extracting its messages.
+  const openCheck = await verifyZaloOpenChat(page, chatName);
+  if (!openCheck.verified) {
+    console.log(`[SyncProject-Zalo] WRONG CHAT OPEN: "${openCheck.openName}" (${openCheck.reason}). Aborting "${chatName}".`);
+    await log(projectId, chatName, "sync_error", `Sai nhóm khi sync "${chatName}": đang mở "${openCheck.openName}"`, JSON.stringify({ expected: chatName, open: openCheck.openName, reason: openCheck.reason }));
+    return 0;
+  }
   console.log(`[SyncProject-Zalo] Navigated to "${chatName}". Extracting...`);
 
   const chatConfig = { ...config, groupName: chatName };
@@ -211,8 +257,8 @@ async function syncZaloChat(page: any, config: any, chatName: string): Promise<n
       console.log(`[SyncProject-Zalo] No watermark — full sync`);
     }
   }
-  await scrollZaloChatContainer(page, chatConfig);
-  const result = await extractZaloMessages(page, chatConfig);
+  const collected = await scrollZaloChatContainer(page, chatConfig);
+  const result = await finalizeZaloMessages(page, chatConfig, chatName, collected);
   console.log(`[SyncProject-Zalo] Extracted ${result.totalMessages} messages.`);
 
   let savedCount = 0;
@@ -303,7 +349,7 @@ async function main() {
       console.error("[SyncProject-Teams] Error:", errMsg);
       await log(projectId, undefined, "sync_error", `Lỗi Teams: ${errMsg}`);
     } finally {
-      await teamsBrowser.close().catch(() => {});
+      await closeOwnPageOrBrowser(teamsPage, teamsBrowser, teamsContext);
     }
   }
 
@@ -314,7 +360,7 @@ async function main() {
       ...DEFAULT_ZALO_CONFIG,
       headless: headlessMode,
       useRealChrome: true,
-      scrollCount: incrementalMode ? 15 : 60,
+      scrollCount: incrementalMode ? 5 : 60,
     };
     const { browser: zaloBrowser, context: zaloContext } = await createZaloStealthContext(zaloConfig);
     let zaloPage = zaloContext.pages()[0];
@@ -338,7 +384,7 @@ async function main() {
       console.error("[SyncProject-Zalo] Error:", errMsg);
       await log(projectId, undefined, "sync_error", `Lỗi Zalo: ${errMsg}`);
     } finally {
-      await zaloBrowser.close().catch(() => {});
+      await closeOwnPageOrBrowser(zaloPage, zaloBrowser, zaloContext);
     }
   }
 

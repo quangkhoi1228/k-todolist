@@ -23,6 +23,26 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync, spawn } from "child_process";
 
+/**
+ * Kiểm tra nhanh (không đọc cả file lặp) — có send lock nào đang chờ không.
+ * zalo-send.ts / teams-send.ts ghi `.zalo-send-running` / `.teams-send-running`
+ * NGAY KHI bấm gửi. Sync đang scroll thấy lock này → dừng sớm nhường Chrome.
+ */
+export function isSendWaiting(): boolean {
+  try {
+    for (const file of [".zalo-send-running", ".teams-send-running"]) {
+      const lockPath = path.join(process.cwd(), file);
+      if (fs.existsSync(lockPath)) {
+        const pid = parseInt(fs.readFileSync(lockPath, "utf-8").trim(), 10);
+        if (!isNaN(pid)) {
+          try { process.kill(pid, 0); return true; } catch { /* pid chết -> lock stale */ }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
 // ─── Config ─────────────────────────────────────────────────
 
 export interface ZaloAutomatorConfig {
@@ -188,6 +208,11 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
       const context = browser.contexts()[0];
       if (!context) throw new Error("CDP browser has no default context.");
 
+      // Đánh dấu CDP connect thành công — script con dùng để biết có nên
+      // mở tab riêng (sync song song) hay fallback đang dùng persistent
+      // profile (phải đóng cả browser).
+      process.env.SYNC_CDP_CONNECTED = "1";
+
       context.on("page", (newPage) => {
         newPage.on("dialog", async (dialog) => {
           log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
@@ -313,6 +338,38 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
     }
 
     log(`Mo Chrome that voi persistent profile: ${profileDir}`);
+
+    // ── Trước khi launch: nếu profile đang bị Chrome KHÁC giữ (live) mà
+    // không phải orphan/pipe của mình → launch thất bại "Failed to create a
+    // ProcessSingleton" (2 Chrome cùng user-data-dir). Detect sớm để trả
+    // lỗi rõ ràng thay vì crash.
+    const profileTaken = (() => {
+      try {
+        const lines = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+        for (const line of lines) {
+          if (!line.includes(profileDir)) continue;
+          if (line.includes("--remote-debugging-pipe")) continue; // pipe-cùng script khác, sẽ được cleanup
+          const m = line.match(/^(\d+)\s/);
+          if (!m) continue;
+          const pid = Number(m[1]);
+          try {
+            process.kill(pid, 0);
+            return pid; // live non-pipe Chrome đang giữ profile
+          } catch {
+            // process gone — ignore
+          }
+        }
+      } catch {
+        // pgrep unavailable
+      }
+      return null;
+    })();
+    if (profileTaken) {
+      throw new Error(
+        `Zalo profile đang bị Chrome khác dùng (pid=${profileTaken}, sync/send/đang mở). ` +
+        `Trả busy thay vì mở Chrome thứ 2 cùng profile.`
+      );
+    }
 
     const persistentContext = await chromium.launchPersistentContext(profileDir, {
       channel: "chrome",
@@ -529,7 +586,18 @@ export async function navigateToZalo(
 ): Promise<void> {
   log("Dang mo Zalo Web...");
   await page.goto("https://chat.zalo.me", { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.waitForTimeout(5_000);
+  // Poll conversation list xuất hiện — dừng ngay khi app render xong
+  // (không chờ đủ 5s nếu session ấm, tab cũ đã load sẵn).
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    try {
+      const ready = await page.evaluate(() =>
+        !!document.querySelector('#conversationListId, [data-id="conversations-list"], .conv-list, .chat-list, [class*="conversation-list"]')
+      );
+      if (ready) break;
+    } catch { /* app đang load */ }
+    await page.waitForTimeout(400);
+  }
   log(`URL: ${page.url()}`);
 }
 
@@ -539,6 +607,100 @@ export async function navigateToZalo(
  * Navigate to a specific group chat by clicking on it in the sidebar.
  * Handles scrolling and searching.
  */
+/**
+ * Find the index (within the sidebar selector) of the conversation item whose
+ * TITLE matches `name` (exact normalized equality, NOT substring — "Thảo
+ * Nguyên BB" must never match "Thảo Nguyên BB 2"). Only the item title is
+ * compared so sender names in message previews are ignored. Returns -1 when
+ * not found.
+ */
+async function findConversationItemIndex(page: Page, name: string): Promise<number> {
+  const normalized = name.trim().replace(/\s+/g, " ").toLowerCase();
+  return page.evaluate((target) => {
+    const items = Array.from(document.querySelectorAll(
+      '[class*="conv-item"], [class*="conversation-item"], [class*="ChatItem"], [role="listitem"]'
+    ));
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const titleEl = item.querySelector('[class*="name"], [class*="title"], .truncate');
+      const text = (titleEl ? titleEl.textContent : item.textContent) || "";
+      const norm = text.replace(/\u00a0/g, " ").trim().replace(/\s+/g, " ").toLowerCase();
+      if (norm === target) return i;
+    }
+    return -1;
+  }, normalized);
+}
+
+/**
+ * Read the currently open chat name from the Zalo DOM:
+ * - `header .header-title` (verified live: the open chat's title bar), or
+ * - the sidebar item carrying the "selected"/"active" class.
+ * Returns the normalized name or "" when no chat is open.
+ */
+export async function getZaloOpenChatName(page: Page): Promise<string> {
+  try {
+    return await page.evaluate(() => {
+      const headerEl =
+        document.querySelector<HTMLElement>('.header-title') ||
+        document.querySelector<HTMLElement>('.chat-info .title') ||
+        document.querySelector<HTMLElement>('header [class*="name"]');
+      const headerName = headerEl?.textContent?.trim().replace(/\u00a0/g, " ") || "";
+
+      if (headerName) return headerName;
+
+      // Fallback: sidebar selected item
+      for (const item of Array.from(document.querySelectorAll('[class*="conv-item"]'))) {
+        const cls = (item.className || "").toString();
+        if (cls.includes("selected") || cls.includes("--active") ||
+            (item as HTMLElement).getAttribute("aria-selected") === "true") {
+          const titleEl = item.querySelector('[class*="name"], [class*="title"], .truncate');
+          return (titleEl?.textContent || item.textContent || "").trim().replace(/\u00a0/g, " ");
+        }
+      }
+      return "";
+    });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Verify the chat actually open in Zalo is the expected one, using the DOM
+ * header (`.header-title`) and the sidebar "selected" state. Returns
+ * { verified, openName, reason }.
+ */
+export async function verifyZaloOpenChat(
+  page: Page,
+  expectedName: string
+): Promise<{ verified: boolean; openName: string; reason: string }> {
+  const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+  const openName = (await getZaloOpenChatName(page)).trim();
+  const target = normalize(expectedName);
+
+  if (!openName) {
+    return { verified: false, openName, reason: "no chat header visible" };
+  }
+  if (normalize(openName) === target) {
+    return { verified: true, openName, reason: "header matches" };
+  }
+  return {
+    verified: false,
+    openName,
+    reason: `header is "${openName}", expected "${expectedName}"`,
+  };
+}
+
+/**
+ * Navigate to a specific group chat by clicking it in the sidebar.
+ *
+ * IMPORTANT: clicks are REAL Playwright clicks (page.locator().click()).
+ * Zalo's SPA does NOT reliably switch chats when the click is dispatched via
+ * element.click() in page.evaluate — the sidebar may highlight the item but
+ * the chat view stays on the previous conversation, so a sync would extract
+ * the WRONG chat's messages. Real pointer events are the only dependable way.
+ *
+ * Returns true when the target chat is verified open in the chat view.
+ */
 export async function navigateToZaloGroup(
   page: Page,
   groupName: string
@@ -547,46 +709,38 @@ export async function navigateToZaloGroup(
 
   log(`Tim kiem nhom chat Zalo: "${groupName}" trong sidebar...`);
 
-  // Helper: search and click the group item by text content
-  async function tryClickGroup(name: string): Promise<string | null> {
-    return page.evaluate((searchName: string) => {
-      // Find all elements that might be conversation items
-      const possibleItems = document.querySelectorAll(
-        '[class*="conv-item"], [class*="conversation-item"], [class*="ChatItem"], [role="listitem"]'
-      );
-      
-      let bestMatch: HTMLElement | null = null;
-      let bestLen = Infinity;
+  // Close any open search/overlay that intercepts pointer events
+  // (recent-search-list overlay has been observed blocking sidebar clicks)
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(300);
 
-      for (const item of Array.from(possibleItems)) {
-        // Find the title element inside the item to avoid matching sender names in previews
-        const titleEl = item.querySelector('[class*="name"], [class*="title"], .truncate');
-        const textToMatch = titleEl ? titleEl.textContent?.trim() || "" : item.textContent?.trim() || "";
-        
-        if (textToMatch.toLowerCase().includes(searchName.toLowerCase()) && textToMatch.length < bestLen) {
-          bestMatch = item as HTMLElement;
-          bestLen = textToMatch.length;
-        }
+  const tryClickGroup = async (): Promise<boolean> => {
+    const idx = await findConversationItemIndex(page, groupName);
+    if (idx < 0) return false;
+    const item = page
+      .locator('[class*="conv-item"], [class*="conversation-item"], [class*="ChatItem"], [role="listitem"]')
+      .nth(idx);
+    try {
+      await item.scrollIntoViewIfNeeded({ timeout: 3_000 });
+      await item.click({ timeout: 8_000, force: false });
+      await page.waitForTimeout(3_000);
+      const check = await verifyZaloOpenChat(page, groupName);
+      if (check.verified) {
+        log(`Da mo dung nhom Zalo: "${check.openName}"`);
+        return true;
       }
+      log(`Click vao item "${groupName}" nhung chat dang mo la "${check.openName}" (${check.reason}) — thu cach khac.`);
+      return false;
+    } catch (e) {
+      log(`Click item "${groupName}" that bai: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+      return false;
+    }
+  };
 
-      if (bestMatch) {
-        bestMatch.click();
-        const titleEl = bestMatch.querySelector('[class*="name"], [class*="title"], .truncate');
-        return titleEl ? titleEl.textContent?.trim() || "clicked" : bestMatch.textContent?.trim().slice(0, 100) || "clicked";
-      }
-      return null;
-    }, name);
-  }
+  // Attempt 1: Direct click on the visible sidebar item
+  if (await tryClickGroup()) return true;
 
-  // Attempt 1: Direct search in visible sidebar
-  let found = await tryClickGroup(groupName);
-  if (found) {
-    log(`Da click vao nhom Zalo: "${found}"`);
-    await page.waitForTimeout(3_000);
-    return true;
-  }
-
-  // Attempt 2: Use Zalo's search box to find the group
+  // Attempt 2: Use Zalo's search box to find the group, then click the result
   log("Nhom khong thay truc tiep, thu tim qua search...");
   try {
     const searchBox = page.locator(
@@ -600,20 +754,15 @@ export async function navigateToZaloGroup(
       await searchBox.fill(groupName);
       await page.waitForTimeout(3_000); // Wait for search results to populate
 
-      // Click the search result
-      found = await tryClickGroup(groupName);
-      if (found) {
-        log(`Da click vao nhom Zalo (sau search): "${found}"`);
-        await page.waitForTimeout(3_000);
-        
-        // Clear search box by clicking a clear button or backspace
+      if (await tryClickGroup()) {
+        // Clear the search box so the next group sync starts from a clean list
         const clearBtn = page.locator('[class*="clear-search"], [icon="close"]').first();
         if (await clearBtn.isVisible().catch(() => false)) {
           await clearBtn.click();
         } else {
           await searchBox.fill("");
         }
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(1_000);
         return true;
       }
 
@@ -625,7 +774,7 @@ export async function navigateToZaloGroup(
     log("Khong the su dung search box.");
   }
 
-  // Attempt 3: Scroll the sidebar
+  // Attempt 3: Scroll the sidebar to load more items, then click
   log("Thu scroll sidebar...");
   for (let i = 0; i < 8; i++) {
     await page.evaluate(() => {
@@ -638,16 +787,68 @@ export async function navigateToZaloGroup(
     });
     await page.waitForTimeout(1_500);
 
-    found = await tryClickGroup(groupName);
-    if (found) {
-      log(`Da click vao nhom Zalo (sau scroll): "${found}"`);
-      await page.waitForTimeout(3_000);
-      return true;
-    }
+    if (await tryClickGroup()) return true;
   }
 
   log(`Khong tim thay nhom Zalo "${groupName}" trong sidebar.`);
   await page.screenshot({ path: path.join(DEFAULT_ZALO_CONFIG.screenshotDir, `not-found-${Date.now()}.png`) });
+  return false;
+}
+
+/**
+ * Zalo Web only keeps ONE tab active per session. When another tab is opened
+ * (parallel sync, or the user's own Zalo tab), a fresh tab shows
+ * "Bạn đang mở Zalo trên một Tab khác..." with a "Kích hoạt" button and the
+ * whole app (`#app`) is hidden (display:none) — a sync on such a tab silently
+ * extracts 0 messages. Reloading the tab re-runs Zalo's activation check;
+ * once all other Zalo tabs are closed, the reloaded tab becomes the active
+ * session and the conversation renders normally. We wait until #app is
+ * actually visible (with a chat header present) before scrolling/extracting.
+ *
+ * NOTE: parallel sync can only WORK for ONE Zalo chat at a time because of
+ * this limitation — other Zalo tasks will keep retrying here until their tab
+ * becomes the active one.
+ */
+export async function ensureZaloTabActive(page: Page, config: ZaloAutomatorConfig): Promise<boolean> {
+  const deadline = Date.now() + (config.loginTimeoutMs || 120_000);
+  let attempts = 0;
+
+  const isAppVisible = async (): Promise<boolean> => {
+    return page.evaluate(() => {
+      const app = document.getElementById("app");
+      if (!app) return false;
+      if (getComputedStyle(app).display === "none") return false;
+      // App hiển thị nhưng vẫn còn overlay "Kích hoạt" thì coi như chưa active
+      const overlay = Array.from(document.querySelectorAll("div")).some(
+        (el) => (el.textContent || "").includes("Nhấn kích hoạt để sử dụng trên Tab này")
+      );
+      return !overlay;
+    }).catch(() => false);
+  };
+
+  while (Date.now() < deadline) {
+    attempts++;
+    const visible = await isAppVisible();
+    if (visible) {
+      log(`[Zalo] Tab da active (lan thu ${attempts}).`);
+      return true;
+    }
+
+    const url = page.url();
+    log(`[Zalo] Tab chua active (overlay "Kich hoat") — reload lan ${attempts} (${url.slice(0, 60)}).`);
+    try {
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 45_000 });
+    } catch {
+      // reload có thể fail khi tab vừa bị đóng/điều hướng — thử lại vòng sau
+    }
+    await page.waitForTimeout(4_000 + randomInt(0, 2_000));
+    // Sau reload, nếu chưa có session (login page) → chờ redirect về chat.zalo.me
+    if (page.url().includes("id.zalo.me") || page.url().includes("login")) {
+      await page.waitForTimeout(3_000);
+    }
+  }
+
+  log("[Zalo] Hết thời gian chờ tab active — sync tiếp tục (có thể extract rỗng).");
   return false;
 }
 
@@ -673,9 +874,31 @@ export async function getGroupUrl(page: Page): Promise<string | undefined> {
  * Scroll chat container to load older messages.
  * Zalo Web loads messages lazily on scroll up.
  */
-export async function scrollZaloChatContainer(page: Page, config: ZaloAutomatorConfig): Promise<void> {
+/**
+ * Scroll the Zalo chat and COLLECT messages in chunks so both the OLDEST and
+ * the NEWEST messages survive ReactVirtualized's DOM recycling.
+ *
+ * Old behavior scrolled ALL the way to the top and extracted ONCE at the end —
+ * Zalo virtualizes the message list, so once you reach the top the newest
+ * messages are unmounted from the DOM and the final extract silently misses
+ * them ("thiếu message ở cuối"). Now we:
+ *   - start at the bottom (newest loaded first)
+ *   - scroll up CHUNK_SCROLLS at a time
+ *   - collect whatever is currently rendered after each chunk
+ *   - go to the next chunk
+ * This keeps a moving window: newest messages are captured in the first pass,
+ * older ones in later passes. `scrollCount` keeps its meaning (total number
+ * of scroll steps). For incremental syncs we still early-stop once the DOM's
+ * newest bubble is at/below the DB watermark.
+ *
+ * Returns the combined (unsorted, unhydrated) messages from all passes —
+ * callers must run finalizeZaloMessages() before saving.
+ */
+export async function scrollZaloChatContainer(
+  page: Page,
+  config: ZaloAutomatorConfig
+): Promise<ZaloExtractedMessage[]> {
   log(`Dang scroll len de load tin nhan cu hon (${config.scrollCount} lan)...`);
-
   // Find the REAL scroll container of the MESSAGE LIST (not the sidebar!):
   // #messageViewContainer > .transform-gpu (overflow: scroll) > #messageViewScroll
   // The sidebar's #conversationList is a DIFFERENT ReactVirtualized list and must
@@ -700,67 +923,209 @@ export async function scrollZaloChatContainer(page: Page, config: ZaloAutomatorC
     );
   };
 
-  // Ensure we start at the bottom so the latest messages are loaded first
-  await page.evaluate(`
+  // Mỗi chunk: số scroll tối đa trước khi collect DOM. Collect thường xuyên
+  // giữ cửa sổ DOM nhỏ (ReactVirtualized) — message mới nhất không bị mất.
+  const CHUNK_SCROLLS = 30;
+  const totalScrolled = config.scrollCount > 0 ? config.scrollCount : 1;
+  const collected: ZaloExtractedMessage[] = [];
+
+  // Dedup theo platformMsgId (bb_msg_id) + fallback sender|content|ts — các
+  // pass collect lặp lại nhiều message giống nhau.
+  const seen = new Set<string>();
+  const pushUnique = (msgs: ZaloExtractedMessage[]) => {
+    for (const m of msgs) {
+      const key = m.platformMsgId
+        ? `id:${m.platformMsgId}`
+        : `fallback:${m.sender}|${(m.content || "").slice(0, 100)}|${m.timestamp}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      collected.push(m);
+    }
+  };
+
+  // Ensure we are at the BOTTOM of the chat so the newest messages load.
+  // Zalo keeps the previous scroll position when reopening a chat and
+  // renders messages lazily, so a single `scrollTop = scrollHeight` right
+  // after opening can land MID-chat (scrollHeight at that moment only
+  // covers what has been rendered so far, and newer bubbles that load
+  // afterwards never move the scroll position down). Repeat until the
+  // container truly reaches the bottom — i.e. the scroll offset stops
+  // growing AND the newest visible message timestamp stops advancing.
+  await page
+    .waitForSelector('[id^="bb_msg_id_"], [class*="message-wrapper"], [class*="chat-message"]', {
+      timeout: 20_000,
+    })
+    .catch(() => log("[Zalo] Khong thay message nao sau khi mo chat — tiep tuc..."));
+  await page.waitForTimeout(1_500);
+
+  const scrollToBottom = `
     const __getZaloScrollContainer = ${getScrollContainer.toString()};
     (function() {
       const container = __getZaloScrollContainer();
       container.scrollTop = container.scrollHeight;
     })();
-  `);
-  await page.waitForTimeout(1500);
-
-  for (let i = 0; i < config.scrollCount; i++) {
-    await page.evaluate(`
-      const __getZaloScrollContainer = ${getScrollContainer.toString()};
-      (function() {
-        const container = __getZaloScrollContainer();
-        // Progressive scroll up by ~80% of viewport height each step.
-        // This loads older messages incrementally instead of jumping to top.
-        const vh = container.clientHeight || window.innerHeight;
-        container.scrollBy({ top: -Math.round(vh * 0.8) });
-      })();
-    `);
-
-    await page.waitForTimeout(config.scrollWaitMs + randomInt(500, 1500));
-
-    // Incremental early-stop: if the newest bubble still visible in the DOM is
-    // at/below the DB watermark, everything older is already stored — stop.
-    if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
-      const maxVisibleTs = await page.evaluate(() => {
-        let maxTs = -1;
-        document.querySelectorAll<HTMLElement>('[id^="bb_msg_id_"]').forEach((el) => {
-          const m = (el.id || "").match(/bb_msg_id_(\d+)/);
-          if (m) {
-            const ts = parseInt(m[1], 10);
-            if (ts > maxTs) maxTs = ts;
-          }
-        });
-        return maxTs;
-      });
-      if (maxVisibleTs > 0 && maxVisibleTs <= config.incrementalSince) {
-        log(`[Incremental] EARLY-STOP at scroll ${i + 1}: max visible timestamp ${maxVisibleTs} <= watermark ${config.incrementalSince}`);
-        break;
-      }
-    }
-    if (i % 10 === 9) log(`  Scroll ${i + 1}/${config.scrollCount}`);
-  }
-
-  // Final scroll to top to ensure oldest messages are loaded
-  await page.evaluate(`
+  `;
+  const getBottomState = `
     const __getZaloScrollContainer = ${getScrollContainer.toString()};
     (function() {
       const container = __getZaloScrollContainer();
-      container.scrollTop = 0;
+      let maxTs = -1;
+      document.querySelectorAll('[id^="bb_msg_id_"]').forEach((el) => {
+        const m = (el.id || "").match(/bb_msg_id_(\\d+)/);
+        if (m) {
+          const ts = parseInt(m[1], 10);
+          if (ts > maxTs) maxTs = ts;
+        }
+      });
+      return {
+        maxTs,
+        atBottom: container.scrollTop + container.clientHeight >= container.scrollHeight - 5,
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        clientHeight: container.clientHeight,
+      };
     })();
-  `);
-  await page.waitForTimeout(2_000);
+  `;
+
+  interface BottomState {
+    maxTs: number;
+    atBottom: boolean;
+    scrollTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+  }
+  let prevMaxTs = -1;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    // Send preemption: nhường Chrome ngay khi send bấm gửi.
+    if (isSendWaiting()) {
+      log(`[Zalo] Send đang chờ — dừng bottom-stabilize sớm (attempt ${attempt}).`);
+      pushUnique(await collectZaloMessagesFromPage(page, config));
+      return collected;
+    }
+    await page.evaluate(scrollToBottom);
+    await page.waitForTimeout(2_000);
+    const state = (await page.evaluate(getBottomState)) as BottomState;
+    const settled = state.atBottom && state.maxTs <= prevMaxTs && prevMaxTs > 0;
+    if (settled) {
+      log(`[Zalo] Da o cuoi chat (bottom ổn định): maxTs=${state.maxTs} sau ${attempt + 1} lan.`);
+      break;
+    }
+    if (attempt === 5) {
+      log(`[Zalo] Bottom chua on dinh sau 6 lan (scrollTop=${state.scrollTop}/${state.scrollHeight}, maxTs=${state.maxTs}) — tiep tuc voi vung DOM hien tai.`);
+    }
+    prevMaxTs = state.maxTs;
+  }
+
+  // ── Step 1: Fast Timestamp Check & Collect at BOTTOM ──
+  if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+    const tsInfo = await page.evaluate(() => {
+      let maxTs = -1;
+      let minTs = Infinity;
+      document.querySelectorAll<HTMLElement>('[id^="bb_msg_id_"]').forEach((el) => {
+        const m = (el.id || "").match(/bb_msg_id_(\d+)/);
+        if (m) {
+          const ts = parseInt(m[1], 10);
+          if (ts > maxTs) maxTs = ts;
+          if (ts < minTs) minTs = ts;
+        }
+      });
+      return { maxTs, minTs: minTs === Infinity ? -1 : minTs };
+    });
+
+    if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince) {
+      log(`[Incremental] EARLY-STOP before extract: max visible time ${tsInfo.maxTs} <= watermark ${config.incrementalSince}. (0 new messages)`);
+      return collected;
+    }
+  }
+
+  // Collect first pass (newest messages — CRITICAL, đừng để scroll lên làm mất)
+  pushUnique(await collectZaloMessagesFromPage(page, config));
+
+  if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+    const tsInfo = await page.evaluate(() => {
+      let minTs = Infinity;
+      document.querySelectorAll<HTMLElement>('[id^="bb_msg_id_"]').forEach((el) => {
+        const m = (el.id || "").match(/bb_msg_id_(\d+)/);
+        if (m) {
+          const ts = parseInt(m[1], 10);
+          if (ts < minTs) minTs = ts;
+        }
+      });
+      return { minTs: minTs === Infinity ? -1 : minTs };
+    });
+
+    if (tsInfo.minTs > 0 && tsInfo.minTs <= config.incrementalSince) {
+      log(`[Incremental] EARLY-STOP after bottom extract: min visible time ${tsInfo.minTs} <= watermark ${config.incrementalSince}.`);
+      return collected;
+    }
+  }
+
+  let scrollsDone = 0;
+  while (scrollsDone < totalScrolled) {
+    const chunkStart = scrollsDone;
+    const chunkEnd = Math.min(chunkStart + CHUNK_SCROLLS, totalScrolled);
+
+    for (let i = chunkStart; i < chunkEnd; i++) {
+      // Send preemption: nếu có zalo-send/teams-send đang chờ (giữ Chrome
+      // profile), dừng scroll sớm để nhường Chrome cho lệnh gửi — việc còn
+      // lại sẽ do vòng sync tiếp theo (2 phút) lo sau.
+      if (isSendWaiting()) {
+        log(`[Zalo] PHÁT HIỆN send đang chờ — dừng scroll sớm tại ${scrollsDone + 1}/${totalScrolled} để nhường Chrome.`);
+        return collected;
+      }
+      
+      await page.evaluate(`
+        const __getZaloScrollContainer = ${getScrollContainer.toString()};
+        (function() {
+          const container = __getZaloScrollContainer();
+          const vh = container.clientHeight || window.innerHeight;
+          container.scrollBy({ top: -Math.round(vh * 0.8) });
+        })();
+      `);
+      await page.waitForTimeout(config.scrollWaitMs + randomInt(500, 1500));
+
+      if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+        const tsInfo = await page.evaluate(() => {
+          let maxTs = -1;
+          let minTs = Infinity;
+          document.querySelectorAll<HTMLElement>('[id^="bb_msg_id_"]').forEach((el) => {
+            const m = (el.id || "").match(/bb_msg_id_(\d+)/);
+            if (m) {
+              const ts = parseInt(m[1], 10);
+              if (ts > maxTs) maxTs = ts;
+              if (ts < minTs) minTs = ts;
+            }
+          });
+          return { maxTs, minTs: minTs === Infinity ? -1 : minTs };
+        });
+
+        // Nếu cả màn hình đều là tin cũ -> Dừng (nhưng hiếm khi xảy ra vì minTs màn trước chưa chạm mốc)
+        if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince) {
+           log(`[Incremental] EARLY-STOP at scroll ${i + 1}: max visible timestamp ${tsInfo.maxTs} <= watermark ${config.incrementalSince}`);
+           return collected;
+        }
+        
+        // Bắt buộc phải extract vì có tin nhắn mới (chưa bị continue bỏ qua)
+        pushUnique(await collectZaloMessagesFromPage(page, config));
+        
+        if (tsInfo.minTs > 0 && tsInfo.minTs <= config.incrementalSince) {
+           log(`[Incremental] EARLY-STOP at scroll ${i + 1}: min visible timestamp ${tsInfo.minTs} <= watermark ${config.incrementalSince}`);
+           return collected;
+        }
+      } else {
+        // COLLECT sau khi scroll (FULL SYNC)
+        pushUnique(await collectZaloMessagesFromPage(page, config));
+      }
+    }
+    scrollsDone = chunkEnd;
+
+    if (scrollsDone >= totalScrolled) break;
+    log(`  Scroll ${scrollsDone}/${totalScrolled}`);
+  }
 
   // Kick lazy loading on all images with a small nudge (down then back up).
   // We do NOT scroll all the way to the bottom — that would unload the old
   // messages from ReactVirtualized's DOM and we'd lose them for extraction.
-  // (In incremental mode we skip this: the oldest already-synced messages
-  // were just reached, and bottom-nudging may recycle them anyway.)
   if (config.incrementalSince === undefined || config.incrementalSince <= 0) {
     await page.evaluate(`
       const __getZaloScrollContainer = ${getScrollContainer.toString()};
@@ -777,17 +1142,28 @@ export async function scrollZaloChatContainer(page: Page, config: ZaloAutomatorC
       })();
     `);
     await page.waitForTimeout(4_000);
+    // Collect lại lần cuối — nudge có thể đã load thêm ảnh/caption cho
+    // messages đang ở trong DOM.
+    pushUnique(await collectZaloMessagesFromPage(page, config));
   } else {
     log(`[Incremental] Skipped bottom-nudge (incremental mode)`);
   }
+
+  log(`[Zalo] Collected ${collected.length} unique messages sau ${scrollsDone} scrolls.`);
+  return collected;
 }
 
 /**
- * Extract messages from the current Zalo group chat.
+ * Collect messages currently rendered in the Zalo chat DOM (no scrolling).
  * Uses multiple selector strategies for robustness across Zalo Web versions.
+ * Returns ONLY the raw extracted messages — callers combine multiple passes
+ * (see scrollZaloChatContainer) and hydrate via finalizeZaloMessages.
  */
-export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfig): Promise<ZaloExtractResult> {
-  log("Dang trich xuat tin nhan Zalo...");
+export async function collectZaloMessagesFromPage(
+  page: Page,
+  config: ZaloAutomatorConfig
+): Promise<ZaloExtractedMessage[]> {
+  log("Dang trich xuat tin nhan Zalo (DOM hien tai)...");
 
   // Take debug screenshot first (only when DEBUG_SCRIPTS=1 to avoid junk files)
   if (process.env.DEBUG_SCRIPTS === "1") {
@@ -994,7 +1370,11 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
       //   of a contiguous run) — `lastSender` is correct there.
       if (!sender && !isMine && singleChat) {
         sender = partnerName || "Unknown";
-      } else if (!sender && !lastSender) {
+      } else if (!sender && lastSender) {
+        // Group chat: bubble tiếp theo của cùng run không render name —
+        // thuộc về sender của bubble trước đó.
+        sender = lastSender;
+      } else if (!sender) {
         sender = "Unknown";
       }
       const chatItem = el.closest<HTMLElement>('.chat-item');
@@ -1280,8 +1660,23 @@ export async function extractZaloMessages(page: Page, config: ZaloAutomatorConfi
   });
 
   console.log("FIRST MSG HTML:", extractedMessages.htmlDump.substring(0, 3000));
-  const messagesArray = extractedMessages.messages;
 
+  return extractedMessages.messages;
+}
+
+/**
+ * Finalize a set of collected Zalo messages:
+ * - Hydrate sender avatars (Zalo avatar URLs need session cookies; download
+ *   via page.request and convert to base64 data URLs).
+ * - Sort chronologically by real epoch timestamp (timestampMs).
+ * - Build the ZaloExtractResult (dedup + merge with the output JSON file).
+ */
+export async function finalizeZaloMessages(
+  page: Page,
+  config: ZaloAutomatorConfig,
+  displayGroupName: string,
+  messagesArray: ZaloExtractedMessage[]
+): Promise<ZaloExtractResult> {
   // ── Hydrate sender avatars ──
   // Zalo avatar URLs (s*-ava-talk.zadn.vn) require the session cookies and are
   // blocked by CORS for in-page fetch, and return 403 for cookie-less server
@@ -1502,23 +1897,27 @@ export async function sendZaloMessage(
 
   if (searchVisible) {
     await searchBox.click();
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(200);
     await searchBox.fill(chatName);
-    await page.waitForTimeout(2_500);
-
-    const clicked = await page.evaluate((target: string) => {
-      const items = document.querySelectorAll('[class*="conv-item"], [role="listitem"]');
-      for (const item of items) {
-        const titleEl = item.querySelector('[class*="conv-item-title__name"], [class*="name"], .truncate');
-        const text = (titleEl?.textContent || item.textContent || '').trim().replace(/\u00a0/g, ' ');
-        const firstLine = text.split('\n')[0].trim();
-        if (firstLine.toLowerCase() === target.toLowerCase()) {
-          (item as HTMLElement).click();
-          return firstLine;
+    // Poll kết quả xuất hiện (tối đa 2.5s) — dừng ngay khi thấy item tên khớp
+    const resultsDeadline = Date.now() + 2_500;
+    let clicked: string | null = null;
+    while (Date.now() < resultsDeadline && !clicked) {
+      clicked = await page.evaluate((target: string) => {
+        const items = document.querySelectorAll('[class*="conv-item"], [role="listitem"]');
+        for (const item of items) {
+          const titleEl = item.querySelector('[class*="conv-item-title__name"], [class*="name"], .truncate');
+          const text = (titleEl?.textContent || item.textContent || '').trim().replace(/\u00a0/g, ' ');
+          const firstLine = text.split('\n')[0].trim();
+          if (firstLine.toLowerCase() === target.toLowerCase()) {
+            (item as HTMLElement).click();
+            return firstLine;
+          }
         }
-      }
-      return null;
-    }, chatName);
+        return null;
+      }, chatName);
+      if (!clicked) await page.waitForTimeout(400);
+    }
 
     if (!clicked) {
       // Clear the search box so we don't leave it dirty
@@ -1530,10 +1929,15 @@ export async function sendZaloMessage(
     return { ok: false, error: "Khong tim thay o tim kiem Zalo (search box). Khong gui gi ca." };
   }
 
-  await page.waitForTimeout(openWaitMs);
-
   // ── 2. VERIFY the open chat is the intended target ──────────
-  const verify = await verifyOpenChat(page, chatName);
+  // Poll sidebar-selected (tối đa openWaitMs, mỗi 400ms) — dừng ngay khi
+  // item tên khớp được chọn, không chờ cứng openWaitMs.
+  const verifyDeadline = Date.now() + openWaitMs;
+  let verify = await verifyOpenChat(page, chatName);
+  while (!verify.verified && Date.now() < verifyDeadline) {
+    await page.waitForTimeout(400);
+    verify = await verifyOpenChat(page, chatName);
+  }
   if (!verify.verified) {
     await page.screenshot({ path: path.join(shotDir, `send-verify-fail-${stamp}.png`) }).catch(() => {});
     return {
@@ -1553,9 +1957,9 @@ export async function sendZaloMessage(
   }
 
   await input.click();
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(150);
   await input.fill(message);
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(300);
 
   // Confirm the text actually landed in the input
   const typedText = await page.evaluate(() => {
@@ -1582,21 +1986,28 @@ export async function sendZaloMessage(
   // ── 5. Send via Enter ───────────────────────────────────────
   log("Nhan Enter de gui tin nhan...");
   await input.press("Enter");
-  await page.waitForTimeout(1_500);
 
   // ── 6. Verify send succeeded ────────────────────────────────
-  const afterVerify = await verifyOpenChat(page, chatName);
+  // Poll msgCount tăng (tối đa ~2.5s) — dừng ngay khi tin mới xuất hiện.
+  const afterDeadline = Date.now() + 2_500;
+  let afterVerify = await verifyOpenChat(page, chatName);
+  while (Date.now() < afterDeadline && afterVerify.msgCount <= verify.msgCount) {
+    await page.waitForTimeout(300);
+    afterVerify = await verifyOpenChat(page, chatName);
+  }
   const inputNow = await page.evaluate(() => {
     const el = document.querySelector('#richInput') as HTMLElement | null;
     return el?.innerText || '';
   });
   const inputCleared = inputNow.trim() === "";
 
-  let sent = false;
+  // sent = msgCount tăng (dấu hiệu tin đã vào list) HOẶC input đã rỗng (Zalo
+  // thường xoá ô soạn ngay khi Enter; msgCount đếm từ #messageViewContainer
+  // có thể về 0 khi ReactVirtualized re-render). textVisible chỉ là check phụ.
+  const msgCountIncreased = afterVerify.msgCount > verify.msgCount;
   let sentTextVisible = false;
-  if (afterVerify.verified) {
-    sent = afterVerify.msgCount > verify.msgCount;
-    // Also check the last message in the chat contains our text
+  if (afterVerify.verified || msgCountIncreased) {
+    // Check the last message in the chat contains our text
     sentTextVisible = await page.evaluate((msg: string) => {
       const wrappers = Array.from(document.querySelectorAll(
         '#messageViewContainer [class*="message-content-wrapper"], ' +
@@ -1607,6 +2018,7 @@ export async function sendZaloMessage(
       return (last.textContent || '').includes(msg);
     }, message.slice(0, 80));
   }
+  const sent = inputCleared && (msgCountIncreased || sentTextVisible);
 
   if (screenshots) {
     await page.screenshot({ path: path.join(shotDir, `send-result-${stamp}.png`) }).catch(() => {});
@@ -1670,11 +2082,15 @@ export async function runZaloAutomation(
       await navigateToZaloGroup(page, config.groupName);
     }
 
-    // Step 4: Scroll to load history
-    await scrollZaloChatContainer(page, config);
+    // Step 4: Scroll to load history (collect từng chunk — giữ cả message cũ
+    // lẫn mới, không scroll lên tới đỉnh làm mất message cuối khỏi DOM)
+    const collected = await scrollZaloChatContainer(page, config);
+    const displayGroupName = collected.length > 0
+      ? (collected[0] as any).groupName || config.groupName || "Zalo Group"
+      : config.groupName || "Zalo Group";
 
-    // Step 5: Extract messages
-    const result = await extractZaloMessages(page, config);
+    // Step 5: Extract messages (finalize: hydrate avatars, sort, merge)
+    const result = await finalizeZaloMessages(page, config, displayGroupName, collected);
 
     // Step 6: Save session
     try {

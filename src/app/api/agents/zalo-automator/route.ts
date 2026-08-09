@@ -107,7 +107,10 @@ export async function POST(req: NextRequest) {
       const scriptPath = path.join(process.cwd(), "agents/pm/scripts/zalo-health.ts");
       const headless = body.headless !== false;
       
-      // Pass full env so child processes (Chrome via Playwright) get system vars
+      // Pass full env so child processes (Chrome via Playwright) get system vars.
+      // Lưu ý: KHÔNG force USE_CDP ở đây như list_chats — Zalo có profile riêng
+      // (.zalo-session); nếu CDP 9222 là Chrome Teams thì connect nhầm. Script
+      // zalo-health tự quyết định: USE_CDP bật nếu Chrome Zalo đang chạy.
       const env = { ...process.env };
 
       try {

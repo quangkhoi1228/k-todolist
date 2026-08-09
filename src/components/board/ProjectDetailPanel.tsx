@@ -685,7 +685,6 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const [availableTeamsChats, setAvailableTeamsChats] = useState<{name: string; scrapedAt?: number}[]>([]);
   const [availableZaloChats, setAvailableZaloChats] = useState<{name: string; scrapedAt?: number}[]>([]);
   const [lastListedAt, setLastListedAt] = useState<{teams: number | null; zalo: number | null}>({teams: null, zalo: null});
-  const [syncingGroups, setSyncingGroups] = useState<Set<string>>(new Set());
   const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [clearGroup, setClearGroup] = useState<string | null>(null); // group currently being cleared
   const [chatSearch, setChatSearch] = useState("");
@@ -1133,6 +1132,7 @@ ${resourceTicketsLinks}
   const quickAddGroup = async (name: string, platform: "teams" | "zalo") => {
     if (!name.trim()) return;
     if (activeTeamsGroups.some((g) => g.name === name.trim())) return; // trùng — bỏ qua
+    if (!window.confirm(`Bạn có chắc muốn thêm nhóm "${name}" vào dự án này không?`)) return;
     const newGroups = [
       ...activeTeamsGroups,
       { name: name.trim(), type: "customer" as const, platform },
@@ -1151,10 +1151,75 @@ ${resourceTicketsLinks}
   const invalidateAfterSync = useCallback(() => {
     invalidateRef.current?.(["chats:", "suggestions:", "logs:"]);
   }, []);
+
+  // Các nhóm đang nằm trong queue sync (đang chạy hoặc chờ) — hiện spinner
+  // thật cho đến khi task xong, không phụ thuộc response của route enqueue.
+  const [queuedSyncGroups, setQueuedSyncGroups] = useState<Set<string>>(new Set());
+  const queuedSyncGroupsRef = useRef(queuedSyncGroups);
+  const syncStateRef = useRef<{ pending: Set<string>; lastQueueWasRunning: boolean }>({
+    pending: new Set(),
+    lastQueueWasRunning: false,
+  });
+
+  useEffect(() => {
+    if (!project?._id) return;
+    let disposed = false;
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/agents/sync-project-chats", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "status" }),
+        });
+        const data = await res.json();
+        if (disposed || !data.ok) return;
+
+        const st = syncStateRef.current;
+        const running = !!data.running;
+        const cur = data.currentTask as { projectId?: string; chatName?: string; platform?: string } | null;
+
+        if (running) {
+          st.lastQueueWasRunning = true;
+          // Nhóm của project này đang chạy → hiện spinner cho đúng nhóm đó
+          if (cur?.projectId === project._id && cur.chatName) {
+            const busy = new Set<string>([cur.chatName]);
+            const prev = queuedSyncGroupsRef.current;
+            if (prev.size !== 1 || !prev.has(cur.chatName)) {
+              queuedSyncGroupsRef.current = busy;
+              setQueuedSyncGroups(busy);
+            }
+          }
+          return;
+        }
+
+        // Queue hết việc — dọn spinner còn sót (kể cả từ lần mount trước) + invalidate
+        if (st.pending.size > 0 || queuedSyncGroupsRef.current.size > 0 || st.lastQueueWasRunning) {
+          st.pending.clear();
+          st.lastQueueWasRunning = false;
+          queuedSyncGroupsRef.current = new Set();
+          setQueuedSyncGroups(new Set());
+          invalidateAfterSync();
+        }
+      } catch { /* network error — bỏ qua */ }
+    };
+    void tick();
+    const intervalId = setInterval(tick, 2500);
+    return () => {
+      disposed = true;
+      clearInterval(intervalId);
+    };
+  }, [project?._id, invalidateAfterSync]);
+
+  // Nhóm có spinner: do chính tay bấm sync (pending) hoặc đang thực sự được queue chạy
+  const syncingGroups = useMemo(() => {
+    return new Set([...syncStateRef.current.pending, ...queuedSyncGroups]);
+  }, [queuedSyncGroups]);
+
   const syncChat = useCallback(async (name: string, platform: string, mode?: "incremental" | "full") => {
-    if (!project?._id || syncingGroups.has(name)) return;
+    if (!project?._id || syncStateRef.current.pending.has(name)) return;
     setSyncErrors((prev) => { const n = { ...prev }; delete n[name]; return n; });
-    setSyncingGroups((prev) => new Set(prev).add(name));
+    syncStateRef.current.pending.add(name);
+    setQueuedSyncGroups((prev) => new Set(prev));
     try {
       const res = await fetch("/api/agents/sync-single-chat", {
         method: "POST",
@@ -1172,19 +1237,116 @@ ${resourceTicketsLinks}
         const errMsg = data.error || `HTTP ${res.status}`;
         setSyncErrors((prev) => ({ ...prev, [name]: errMsg }));
         console.error(`Sync "${name}" failed:`, errMsg);
+        syncStateRef.current.pending.delete(name);
       }
-      invalidateAfterSync();
     } catch (err) {
       setSyncErrors((prev) => ({ ...prev, [name]: err instanceof Error ? err.message : "Lỗi không xác định" }));
       console.error(`Sync "${name}" failed:`, err);
-    } finally {
-      setSyncingGroups((prev) => {
-        const n = new Set(prev);
-        n.delete(name);
-        return n;
-      });
+      syncStateRef.current.pending.delete(name);
     }
-  }, [project?._id, syncingGroups, invalidateAfterSync]);
+    // KHÔNG xoá spinner ở đây — giữ cho tới khi queue báo task xong (poll ở trên)
+  }, [project?._id]);
+
+  const [autoReloadIntervalConfig, setAutoReloadIntervalConfig] = useState(120);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("projectChatReloadInterval");
+    if (saved !== null) {
+      setAutoReloadIntervalConfig(Number(saved));
+    }
+    const handleConfigChange = (e: any) => {
+      setAutoReloadIntervalConfig(e.detail);
+    };
+    window.addEventListener("projectChatReloadIntervalChanged", handleConfigChange);
+    return () => window.removeEventListener("projectChatReloadIntervalChanged", handleConfigChange);
+  }, []);
+
+  const [autoReloadCountdown, setAutoReloadCountdown] = useState(120);
+
+  const handleReloadChat = useCallback(() => {
+    if (!selectedChatGroup || syncingGroups.has(selectedChatGroup)) return;
+    const group = activeTeamsGroups.find((g) => g.name === selectedChatGroup);
+    // 1. Refetch messages ngay lập tức từ DB (SWR invalidate)
+    invalidateAfterSync();
+    // 2. Enqueue sync incremental cho nhóm đang mở để lấy tin mới (nếu chưa đang sync)
+    if (group) {
+      syncChat(group.name, group.platform || "teams", "incremental");
+    }
+    setAutoReloadCountdown(autoReloadIntervalConfig > 0 ? autoReloadIntervalConfig : 120);
+  }, [selectedChatGroup, activeTeamsGroups, syncingGroups, syncChat, invalidateAfterSync, autoReloadIntervalConfig]);
+
+  // ─── Auto-reload nhóm chat mỗi 2 phút ───
+  const activeTeamsGroupsRef = useRef(activeTeamsGroups);
+  useEffect(() => {
+    activeTeamsGroupsRef.current = activeTeamsGroups;
+  }, [activeTeamsGroups]);
+
+  useEffect(() => {
+    if (!project?._id || autoReloadIntervalConfig === 0) return;
+    
+    setAutoReloadCountdown(autoReloadIntervalConfig);
+    const intervalId = setInterval(() => {
+      setAutoReloadCountdown((prev) => {
+        if (prev <= 1) {
+          activeTeamsGroupsRef.current.forEach((group) => {
+            syncChat(group.name, group.platform || "teams", "incremental");
+          });
+          return autoReloadIntervalConfig;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [project?._id, syncChat, autoReloadIntervalConfig]);
+
+  // ─── Auto-scroll xuống cuối (tin mới nhất) khi vào nhóm chat ───
+  // Messages sort theo timestampMs tăng dần → tin mới nhất nằm cuối container.
+  // Scroll lặp lại vài lần (raf + timeout) vì ảnh trong tin nhắn (data URL /
+  // HTTP) load sau khi render làm scrollHeight tăng lên — chỉ scroll 1 lần sẽ
+  // dừng cách đáy vài trăm px.
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  // Nhóm đã được auto-scroll lần đầu sau khi data về (tránh scroll giật khi
+  // sync thêm tin mới vào nhóm đang xem — user tự quyết định xem tin mới).
+  const messagesScrolledRef = useRef<string | null>(null);
+
+  // Chọn nhóm chat mới → đánh dấu chưa scroll + scroll xuống cuối ngay (data
+  // thường đã có sẵn trong projectChats); nếu data chưa về thì effect dưới
+  // sẽ scroll bổ sung khi tin nhắn tải xong.
+  useEffect(() => {
+    if (!selectedChatGroup) return;
+    messagesScrolledRef.current = null;
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const scrollToBottom = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    scrollToBottom();
+    const raf = requestAnimationFrame(scrollToBottom);
+    const t1 = setTimeout(scrollToBottom, 250);
+    const t2 = setTimeout(scrollToBottom, 800);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [selectedChatGroup]);
+
+  // Tin nhắn tải về muộn (SWR fetch) → lần đầu có data cho nhóm vừa chọn thì
+  // scroll xuống cuối (không làm lại mỗi khi data đổi → không giật giữa chừng).
+  useEffect(() => {
+    if (!selectedChatGroup) return;
+    const el = messagesScrollRef.current;
+    if (!el || messagesScrolledRef.current === selectedChatGroup) return;
+    const hasMsgs = (projectChats || []).some((m: any) => m.chatName === selectedChatGroup);
+    if (!hasMsgs) return;
+    messagesScrolledRef.current = selectedChatGroup;
+    el.scrollTop = el.scrollHeight;
+    const t = setTimeout(() => {
+      el.scrollTop = el.scrollHeight;
+    }, 300);
+    return () => clearTimeout(t);
+  }, [selectedChatGroup, projectChats]);
 
   const nmx = useNoteMutations();
 
@@ -2106,13 +2268,13 @@ ${resourceTicketsLinks}
                     <button
                       type="button"
                       onClick={() => setSelectedChatGroup(group.name)}
-                      className={`flex-1 text-left px-2 py-1 text-[10px] font-medium rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
+                      className={`flex-1 text-left px-2 py-1.5 text-[11px] font-medium rounded-md transition-all flex items-center gap-1.5 min-w-0 border-l-2 ${
                         selectedChatGroup === group.name
-                          ? "bg-primary text-primary-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                          ? "bg-primary/10 text-primary border-primary shadow-sm"
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50 border-transparent"
                       }`}
                     >
-                      <span className={`w-1 h-1 rounded-full shrink-0 ${
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                         group.type === "customer" ? "bg-orange-500" : "bg-blue-500"
                       }`} />
                       <span className="truncate flex-1 min-w-0">{group.name}</span>
@@ -2189,12 +2351,12 @@ ${resourceTicketsLinks}
                     {savedTeamsChats.map((g: any) => {
                       const isAdded = activeTeamsGroups.some((ag) => ag.name === g.name);
                       return (
-                        <div key={`t-${g._id ?? g.name}`} className="group flex items-center gap-1">
+                        <div key={`t-${g._id ?? g.name}`} className="group flex items-center gap-1 pr-1.5">
                           <button
                             type="button"
                             disabled={isAdded}
                             onClick={() => quickAddGroup(g.name, "teams")}
-                            className={`flex-1 text-left px-2 py-1 text-[10px] rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
+                            className={`flex-1 text-left px-2 py-1.5 text-[11px] rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
                               isAdded
                                 ? "text-muted-foreground/40 cursor-default"
                                 : "text-muted-foreground hover:text-foreground hover:bg-muted/50 cursor-pointer"
@@ -2209,14 +2371,14 @@ ${resourceTicketsLinks}
                             type="button"
                             disabled={isAdded}
                             onClick={() => quickAddGroup(g.name, "teams")}
-                            className={`shrink-0 p-0.5 rounded transition-all ${
+                            className={`shrink-0 p-1 rounded-md transition-all ${
                               isAdded
                                 ? "text-emerald-500/60 cursor-default"
-                                : "text-muted-foreground/40 hover:text-primary hover:bg-muted/50 cursor-pointer"
+                                : "text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-primary hover:bg-muted/50 cursor-pointer"
                             }`}
                             title={isAdded ? "Đã thêm" : "Thêm vào dự án"}
                           >
-                            {isAdded ? <Check className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
+                            {isAdded ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
                           </button>
                         </div>
                       );
@@ -2224,12 +2386,12 @@ ${resourceTicketsLinks}
                     {savedZaloChats.map((g: any) => {
                       const isAdded = activeTeamsGroups.some((ag) => ag.name === g.name);
                       return (
-                        <div key={`z-${g._id ?? g.name}`} className="group flex items-center gap-1">
+                        <div key={`z-${g._id ?? g.name}`} className="group flex items-center gap-1 pr-1.5">
                           <button
                             type="button"
                             disabled={isAdded}
                             onClick={() => quickAddGroup(g.name, "zalo")}
-                            className={`flex-1 text-left px-2 py-1 text-[10px] rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
+                            className={`flex-1 text-left px-2 py-1.5 text-[11px] rounded-md transition-all flex items-center gap-1.5 min-w-0 ${
                               isAdded
                                 ? "text-muted-foreground/40 cursor-default"
                                 : "text-muted-foreground hover:text-foreground hover:bg-muted/50 cursor-pointer"
@@ -2244,14 +2406,14 @@ ${resourceTicketsLinks}
                             type="button"
                             disabled={isAdded}
                             onClick={() => quickAddGroup(g.name, "zalo")}
-                            className={`shrink-0 p-0.5 rounded transition-all ${
+                            className={`shrink-0 p-1 rounded-md transition-all ${
                               isAdded
                                 ? "text-emerald-500/60 cursor-default"
-                                : "text-muted-foreground/40 hover:text-primary hover:bg-muted/50 cursor-pointer"
+                                : "text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-primary hover:bg-muted/50 cursor-pointer"
                             }`}
                             title={isAdded ? "Đã thêm" : "Thêm vào dự án"}
                           >
-                            {isAdded ? <Check className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
+                            {isAdded ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
                           </button>
                         </div>
                       );
@@ -2264,18 +2426,18 @@ ${resourceTicketsLinks}
               )}
               
               {/* Sync buttons — each group has its own sync on hover */}
-              <div className="flex items-center gap-1.5 pt-2 border-t border-border/30">
+              <div className="flex items-center gap-1.5 pt-2 border-t border-border/30 px-1">
                 <button
                   type="button"
                   onClick={() => fetchChats()}
                   disabled={fetchingChats}
-                  className={`flex-1 text-[9px] px-1.5 py-1 rounded border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`w-full h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                     fetchingChats
-                      ? "bg-muted text-muted-foreground border-border/50"
-                      : "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/30 hover:bg-purple-500/20"
+                      ? "bg-muted text-muted-foreground border-border/50 disabled:cursor-not-allowed disabled:opacity-50"
+                      : "bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:shadow-sm"
                   }`}
                 >
-                  {fetchingChats ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "🔄"}
+                  {fetchingChats ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                   <span>Tải nhóm</span>
                 </button>
               </div>
@@ -2365,12 +2527,7 @@ ${resourceTicketsLinks}
                   {projectChats?.filter((m: any) => m.chatName === selectedChatGroup)?.length || 0
                   } tin nhắn
                 </span>
-                {selectedChatGroup && syncingGroups.has(selectedChatGroup) && (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded-full animate-pulse">
-                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                    Đang đồng bộ...
-                  </span>
-                )}
+
                 {selectedChatGroup && syncErrors[selectedChatGroup] && !syncingGroups.has(selectedChatGroup) && (
                   <span
                     className="inline-flex items-center gap-1 text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full"
@@ -2380,45 +2537,45 @@ ${resourceTicketsLinks}
                     Lỗi đồng bộ
                   </span>
                 )}
-                <div className="relative ml-auto w-40">
-                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/60 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={chatSearch}
-                    onChange={(e) => setChatSearch(e.target.value)}
-                    placeholder="Tìm tin nhắn..."
-                    className="w-full pl-7 pr-6 py-1 text-[11px] rounded-lg bg-muted/50 border border-border/50 outline-none focus:border-primary/40 placeholder:text-muted-foreground/40"
-                  />
-                  {chatSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setChatSearch("")}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground transition-colors"
-                      title="Xoá tìm kiếm"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-                <div className="ml-auto flex items-center gap-1">
-                  {selectedChatGroup && (() => {
-                    const group = activeTeamsGroups.find(g => g.name === selectedChatGroup);
-                    const isZalo = group?.platform === "zalo";
-                    // Use the captured deep link when available; fall back to the platform homepage
-                    const appUrl = group?.url || (isZalo ? "https://chat.zalo.me/" : "https://teams.microsoft.com/");
-                    const platformName = isZalo ? "Zalo" : "Teams";
-                    return (
-                      <a
-                        href={appUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={group?.url ? `Mở "${selectedChatGroup}" trên ${platformName}` : `Mở trang ${platformName}`}
-                        className="p-1.5 mr-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors flex items-center justify-center"
+                <div className="ml-auto flex items-center gap-1.5">
+                  <div className="relative w-48 shrink-0 mr-1">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={chatSearch}
+                      onChange={(e) => setChatSearch(e.target.value)}
+                      placeholder="Tìm kiếm..."
+                      className="w-full pl-8 pr-7 py-1 h-7 text-xs rounded-md bg-muted/40 border border-border/40 focus:bg-background focus:border-primary/40 focus:ring-1 focus:ring-primary/20 transition-all outline-none placeholder:text-muted-foreground/50"
+                    />
+                    {chatSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setChatSearch("")}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+                        title="Xoá tìm kiếm"
                       >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                    );
-                  })()}
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleReloadChat}
+                    disabled={syncingGroups.has(selectedChatGroup)}
+                    className="h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 cursor-pointer bg-primary/10 text-primary hover:bg-primary/20 hover:shadow-sm border border-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={syncingGroups.has(selectedChatGroup)
+                      ? `Đang tải lại tin nhắn của "${selectedChatGroup}" từ Teams/Zalo...`
+                      : `Tải lại tin nhắn của "${selectedChatGroup}" từ Teams/Zalo`}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncingGroups.has(selectedChatGroup) ? "animate-[spin_2s_linear_infinite]" : ""}`} />
+                    <span>
+                      {syncingGroups.has(selectedChatGroup) 
+                        ? "Đang tải..." 
+                        : autoReloadIntervalConfig > 0 
+                          ? `Tải lại (${Math.floor(autoReloadCountdown / 60)}:${(autoReloadCountdown % 60).toString().padStart(2, "0")})`
+                          : "Tải lại"}
+                    </span>
+                  </button>
                   <button
                     type="button"
                     onClick={async () => {
@@ -2436,17 +2593,17 @@ ${resourceTicketsLinks}
                       }
                     }}
                     disabled={isClearing || !selectedChatGroup || syncingGroups.has(selectedChatGroup)}
-                    className="text-[9px] px-1.5 py-1 rounded border transition-all flex items-center gap-1 cursor-pointer bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/30 hover:bg-red-500/20 disabled:opacity-50"
+                    className="h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-red-600 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                     title={selectedChatGroup ? `Xóa dữ liệu chat của "${selectedChatGroup}" và đồng bộ lại` : "Chọn nhóm chat trước"}
                   >
-                    {isClearing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Trash2 className="w-2.5 h-2.5" />}
-                    <span className="hidden sm:inline">Xóa & đ.bộ lại</span>
+                    {isClearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    <span>Xóa & đ.bộ</span>
                   </button>
                 </div>
               </div>
               
               {/* Messages Area */}
-              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col pb-4 pr-2">
+              <div ref={messagesScrollRef} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col pb-4 pr-2">
               {selectedChatGroup && syncingGroups.has(selectedChatGroup) && (
                 <div className="shrink-0 mb-2 px-3 py-2 rounded-lg border border-primary/20 bg-primary/5 flex items-center gap-2">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
@@ -2505,8 +2662,22 @@ ${resourceTicketsLinks}
                     const prev = idx > 0 ? chatMessages[idx - 1] : undefined;
                     const next = idx < chatMessages.length - 1 ? chatMessages[idx + 1] : undefined;
                     
-                    const isFirstInGroup = !prev || prev.sender !== msg.sender;
-                    const isLastInGroup = !next || next.sender !== msg.sender;
+                    const getMsgTs = (m: any) => {
+                      if (!m) return 0;
+                      if (m.timestampMs !== undefined && m.timestampMs !== null) return Number(m.timestampMs);
+                      const t = Number(m.timestamp);
+                      if (!isNaN(t) && t > 1000000000000) return t;
+                      const d = new Date(m.timestamp);
+                      if (!isNaN(d.getTime())) return d.getTime();
+                      return 0;
+                    };
+
+                    const msgTs = getMsgTs(msg);
+                    const prevTs = getMsgTs(prev);
+                    const nextTs = getMsgTs(next);
+                    
+                    const isFirstInGroup = !prev || prev.sender !== msg.sender || (msgTs - prevTs > 5 * 60 * 1000);
+                    const isLastInGroup = !next || next.sender !== msg.sender || (nextTs - msgTs > 5 * 60 * 1000);
                     
                     const isAgent = msg.sender.includes("Antigravity") || msg.sender.includes("Bot") || msg.sender.toLowerCase().includes("trợ lý");
                     // Own messages (extracted from Teams/Zalo): "Me"/"Tôi" sender or isMine flag
@@ -2592,8 +2763,8 @@ ${resourceTicketsLinks}
 
                     return (
                       <div key={msg._id} className={`flex gap-2.5 group ${paddingClass} ${isMine ? "flex-row-reverse" : ""}`}>
-                        {/* Avatar */}
-                        {isFirstInGroup ? (
+                        {/* Avatar — tin của mình không hiển thị avatar, chỉ giữ khoảng trống */}
+                        {isFirstInGroup && !isMine ? (
                           <img 
                             src={msg.senderAvatar 
                               ? (msg.senderAvatar.startsWith("http") ? proxyImageUrl(msg.senderAvatar) : msg.senderAvatar) 

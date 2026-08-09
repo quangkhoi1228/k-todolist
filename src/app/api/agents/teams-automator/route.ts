@@ -108,7 +108,10 @@ export async function POST(req: NextRequest) {
       const headless = body.headless !== false;
       
       // Pass full env so child processes (Chrome via Playwright) get system vars
-      const env = { ...process.env };
+      // Quan trọng: bật USE_CDP để nếu Chrome thật đang chạy (CDP 9222 trên
+      // profile chính) thì healthcheck CONNECT vào đó (không mở Chrome thứ 2
+      // cùng profile → "Failed to create a ProcessSingleton").
+      const env = { ...process.env, USE_CDP: process.env.USE_CDP ?? "1", CDP_PORT: process.env.CDP_PORT ?? "9222" };
 
       try {
         const headlessFlag = headless ? "" : "--headfull";

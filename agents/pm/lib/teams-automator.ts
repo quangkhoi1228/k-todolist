@@ -26,6 +26,26 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync, spawn } from "child_process";
 
+/**
+ * Kiểm tra nhanh — có send lock nào đang chờ không.
+ * teams-send.ts / zalo-send.ts ghi `.teams-send-running` / `.zalo-send-running`
+ * NGAY KHI bấm gửi. Sync đang scroll thấy lock này → dừng sớm nhường Chrome.
+ */
+export function isSendWaiting(): boolean {
+  try {
+    for (const file of [".teams-send-running", ".zalo-send-running"]) {
+      const lockPath = path.join(process.cwd(), file);
+      if (fs.existsSync(lockPath)) {
+        const pid = parseInt(fs.readFileSync(lockPath, "utf-8").trim(), 10);
+        if (!isNaN(pid)) {
+          try { process.kill(pid, 0); return true; } catch { /* pid chết -> lock stale */ }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
 const DEFAULT_CDP_PORT = 9222;
 
 // ─── Config ─────────────────────────────────────────────────
@@ -277,6 +297,11 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
       const context = browser.contexts()[0];
       if (!context) throw new Error("CDP browser has no default context.");
 
+      // Đánh dấu CDP connect thành công — script con dùng để biết có nên
+      // mở tab riêng (sync song song) hay fallback đang dùng persistent
+      // profile (phải đóng cả browser).
+      process.env.SYNC_CDP_CONNECTED = "1";
+
       context.on("page", (newPage) => {
         newPage.on("dialog", async (dialog) => {
           log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
@@ -409,6 +434,38 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
     }
 
     log(`Mo Chrome that voi persistent profile: ${profileDir}`);
+
+    // ── Trước khi launch: nếu profile đang bị Chrome KHÁC giữ (live) mà
+    // không phải orphan/pipe của mình → launch thất bại "Failed to create a
+    // ProcessSingleton" (2 Chrome cùng user-data-dir). Detect sớm để trả
+    // lỗi rõ ràng thay vì crash. Chỉ "loại trừ" Chrome cùng pipe chết.
+    const profileTaken = (() => {
+      try {
+        const lines = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+        for (const line of lines) {
+          if (!line.includes(profileDir)) continue;
+          if (line.includes("--remote-debugging-pipe")) continue; // pipe-cùng script khác, sẽ được cleanup
+          const m = line.match(/^(\d+)\s/);
+          if (!m) continue;
+          const pid = Number(m[1]);
+          try {
+            process.kill(pid, 0);
+            return pid; // live non-pipe Chrome đang giữ profile
+          } catch {
+            // process gone — ignore
+          }
+        }
+      } catch {
+        // pgrep unavailable
+      }
+      return null;
+    })();
+    if (profileTaken) {
+      throw new Error(
+        `Teams profile đang bị Chrome khác dùng (pid=${profileTaken}, sync/send/đang mở). ` +
+        `Trả busy thay vì mở Chrome thứ 2 cùng profile.`
+      );
+    }
 
     // launchPersistentContext uses real Chrome + keeps cookies/storage
     const persistentContext = await chromium.launchPersistentContext(profileDir, {
@@ -647,7 +704,31 @@ export async function navigateToTeams(
   // Always go to homepage — v2 SPA loads reliably from there
   log("Dang mo Teams homepage...");
   await page.goto("https://teams.microsoft.com", { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.waitForTimeout(8_000);
+  // Teams v2 SPA render chậm — tab mới lạnh (sync song song) cần tới ~15-20s
+  // để render sidebar chat. Chờ CHAT ITEMS thật xuất hiện (list-item / nhiều
+  // treeitem) — `[role="tree"]` xuất hiện sớm khi app còn loading, không đủ.
+  // Dùng evaluate string (function evaluate bị Teams chặn: "__name is not defined").
+  try {
+    const chatListReady = async (): Promise<boolean> => {
+      try {
+        return await page.evaluate(() =>
+          document.querySelectorAll('[data-testid="list-item"]').length > 0 ||
+          document.querySelectorAll('[role="treeitem"]').length > 5
+        );
+      } catch { return false; }
+    };
+    // Poll nhẹ (500ms/lần) — dừng NGAY khi sidebar render xong, không chờ đủ
+    // 45s nếu app load nhanh (bấm gửi thường có tab ấm → chỉ mất vài giây).
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      if (await chatListReady()) break;
+      await page.waitForTimeout(500);
+    }
+  } catch {
+    // sidebar chưa xuất hiện — để bước tìm chat xử lý (search box fallback)
+  }
+  await page.waitForTimeout(500);
+  log(`URL: ${page.url()}`);
   log(`URL: ${page.url()}`);
 }
 
@@ -826,7 +907,7 @@ export async function navigateToChatInSidebar(
   const searchOpened = await trySearchChat(chatName);
   if (searchOpened) {
     log(`Da mo chat qua search: "${chatName}"`);
-    await page.waitForTimeout(5_000);
+    await waitForChatHeader(4_000);
     return true;
   }
 
@@ -834,7 +915,7 @@ export async function navigateToChatInSidebar(
   let found = await tryClickChat(chatName);
   if (found) {
     log(`Da click vao chat: "${found}"`);
-    await page.waitForTimeout(5_000);
+    await waitForChatHeader(4_000);
     return true;
   }
 
@@ -859,7 +940,7 @@ export async function navigateToChatInSidebar(
     found = await tryClickChat(chatName);
     if (found) {
       log(`Da click vao chat (sau scroll): "${found}"`);
-      await page.waitForTimeout(5_000);
+      await waitForChatHeader(4_000);
       return true;
     }
   }
@@ -875,7 +956,7 @@ export async function navigateToChatInSidebar(
       }
     }
   });
-  await page.waitForTimeout(3_000);
+  await waitForChatHeader(3_000);
 
   for (let i = 0; i < 5; i++) {
     await page.evaluate((sel: string) => {
@@ -889,13 +970,27 @@ export async function navigateToChatInSidebar(
     found = await tryClickChat(chatName);
     if (found) {
       log(`Da click vao chat (sau expand): "${found}"`);
-      await page.waitForTimeout(5_000);
+      await waitForChatHeader(4_000);
       return true;
     }
   }
 
   log(`Khong tim thay chat "${chatName}" trong sidebar.`);
   return false;
+
+  /** Poll header chat mở lên (tối đa maxMs) — dừng ngay khi header xuất hiện. */
+  async function waitForChatHeader(maxMs: number): Promise<void> {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      try {
+        const header = await page.evaluate(() =>
+          document.querySelector('[data-tid="chat-title"], [data-tid="chat-header-title"]')?.textContent?.trim() || ""
+        );
+        if (header) return;
+      } catch { /* SPA đang render */ }
+      await page.waitForTimeout(400);
+    }
+  }
 }
 
 /**
@@ -1832,6 +1927,21 @@ export async function incrementalScrollAndExtract(
     return false;
   };
 
+  // FAST watermark detect: scan the currently rendered DOM for any message
+  // time at/below the DB watermark, WITHOUT running the full extractor
+  // (which is slow — it walks every bubble, hydrates avatars, converts
+  // images). Teams renders <time datetime="..."> on messages; the newest
+  // rendered bubble's datetime is the top of the visible window.
+  const domHasIncrementalSince = async (): Promise<boolean> => {
+    if (config.incrementalSince === undefined || config.incrementalSince <= 0) return false;
+    return page.evaluate((since) => {
+      const t = document.querySelector<HTMLTimeElement>('time[datetime]');
+      if (!t) return false;
+      const ts = new Date(t.getAttribute("datetime") || "").getTime();
+      return !isNaN(ts) && ts > 0 && ts <= since;
+    }, config.incrementalSince).catch(() => false);
+  };
+
   const addToCollection = (msgs: ExtractedMessage[], hasImages: boolean) => {
     for (const m of msgs) {
       const cleaned = {
@@ -1861,8 +1971,34 @@ export async function incrementalScrollAndExtract(
     }
   };
 
-  // ── Step 1: Extract at BOTTOM with images (newest messages) ──
-  log("[Incremental] Step 1: Extracting newest messages at bottom...");
+  // ── Build final result (dùng khi early-stop) ──
+  const buildFinalResult = async (): Promise<TeamsExtractResult> => {
+    const msgs = Array.from(allMessages.values())
+      .filter((m: any) => m.content || m.images?.length)
+      .sort((a: any, b: any) => a.timestampMs - b.timestampMs);
+    const channelNames = await page
+      .evaluate(() => {
+        const el =
+          document.querySelector<HTMLElement>('[data-tid="chat-title"]') ||
+          document.querySelector<HTMLElement>('[data-tid="chat-header-title"]') ||
+          document.querySelector<HTMLElement>('[data-tid="thread-header-title"]');
+        return el?.textContent?.trim() || "";
+      })
+      .catch(() => "");
+    const result: TeamsExtractResult = {
+      channelName: channelNames,
+      teamName: "",
+      totalMessages: msgs.length,
+      messages: msgs as ExtractedMessage[],
+      extractedAt: new Date().toISOString(),
+    };
+    mergeOutput(result, config);
+    log(`[Incremental] FINAL: ${result.totalMessages} messages, ${result.messages.filter(m => m.images?.length).length} with images.`);
+    return result;
+  };
+
+  // ── Step 1: Fast Timestamp Check & Extract at BOTTOM ──
+  log("[Incremental] Step 1: Checking timestamps at bottom...");
   await page.evaluate(() => {
     const c =
       document.querySelector('[data-tid="message-pane-list-viewport"]') ||
@@ -1870,7 +2006,30 @@ export async function incrementalScrollAndExtract(
       document.documentElement;
     c.scrollTop = c.scrollHeight;
   });
-  await page.waitForTimeout(3_000);
+  await page.waitForTimeout(1_000); // Short wait for DOM to settle
+
+  if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+    const tsInfo = await page.evaluate(() => {
+      let maxTs = -1;
+      let minTs = Infinity;
+      document.querySelectorAll<HTMLTimeElement>('time[datetime]').forEach(t => {
+        const ts = new Date(t.getAttribute("datetime") || "").getTime();
+        if (!isNaN(ts) && ts > 0) {
+          if (ts > maxTs) maxTs = ts;
+          if (ts < minTs) minTs = ts;
+        }
+      });
+      return { maxTs, minTs: minTs === Infinity ? -1 : minTs };
+    });
+
+    if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince) {
+      log(`[Incremental] EARLY-STOP at Step 1: max visible time ${tsInfo.maxTs} <= watermark ${config.incrementalSince}. (0 new messages)`);
+      return await buildFinalResult();
+    }
+  }
+
+  log("[Incremental] Extracting newest messages at bottom with images...");
+  await page.waitForTimeout(2_000);
   await page.evaluate(() => {
     document.querySelectorAll<HTMLImageElement>('img').forEach(img => {
       img.scrollIntoView({ block: "center", inline: "nearest" });
@@ -1881,12 +2040,28 @@ export async function incrementalScrollAndExtract(
   addToCollection(bottomResult.messages, true);
   log(`[Incremental] Bottom done: ${bottomResult.messages.length} msgs, ${bottomResult.messages.filter(m => m.images?.length).length} with images. Unique: ${allMessages.size}`);
 
+  if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+    if (await domHasIncrementalSince()) {
+       log(`[Incremental] EARLY-STOP after Step 1: found message <= watermark ${config.incrementalSince}. All new messages are on the first page.`);
+       return await buildFinalResult();
+    }
+  }
+
   // ── Step 2: Incremental scroll-up (FULL SYNC only) ──
   if (fullSync && config.scrollCount > 0) {
     const totalBatches = Math.ceil(config.scrollCount / EXTRACT_EVERY_N);
     log(`[Incremental] Step 2: Scrolling up ${config.scrollCount}x, text-only extract every ${EXTRACT_EVERY_N} (${totalBatches} batches)`);
 
     for (let batch = 0; batch < totalBatches; batch++) {
+      // Send preemption: nếu có send lock (zalo-send/teams-send đang chờ),
+      // dừng sớm để nhường Chrome — vòng sync tiếp theo sẽ đồng bộ bù.
+      if (isSendWaiting()) {
+        log(`[Incremental] PHÁT HIỆN send đang chờ — dừng scroll sớm tại batch ${batch + 1}/${totalBatches} để nhường Chrome.`);
+        const lastBatch = await extractTextOnly(page, config);
+        addToCollection(lastBatch.messages, false);
+        log(`[Incremental] Final batch (preempt): ${lastBatch.messages.length} text msgs, ${allMessages.size} unique`);
+        return await buildFinalResult();
+      }
       // Instead of jumping to scrollTop = 0 every time (which just re-captures the
       // same ~100 messages), scroll up in increments of 1 viewport height.
       // This progressively loads older messages from Teams' virtual DOM.
@@ -1910,6 +2085,23 @@ export async function incrementalScrollAndExtract(
           log(`[Incremental] Scroll ${scrollNum}: NO MOVEMENT (before=${scrollInfo.before}, vh=${scrollInfo.vh}, scrollHeight=${scrollInfo.scrollHeight})`);
         }
         await page.waitForTimeout(config.scrollWaitMs + randomInt(500, 1500));
+
+        // Incremental fast-detect mỗi lượt scroll: chỉ đọc timestamp của message
+        // mới nhất trong DOM — gặp message <= watermark là đã chạm vùng đã lưu,
+        // đủ điều kiện dừng (KHÔNG cần extract text batch — nhanh hơn nhiều).
+        if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+          if (await domHasIncrementalSince()) {
+            log(`[Incremental] EARLY-STOP at scroll ${scrollNum}: DOM time <= watermark ${config.incrementalSince}`);
+            // Collect text-only lần cuối (messages vừa scroll tới) rồi dừng.
+            const lastBatch = await extractTextOnly(page, config);
+            addToCollection(lastBatch.messages, false);
+            log(`[Incremental] Final batch: ${lastBatch.messages.length} text msgs, ${allMessages.size} unique`);
+            if (seenIncrementalSince()) {
+              log(`[Incremental] EARLY-STOP at batch ${batch + 1}: found message <= incrementalSince=${config.incrementalSince}`);
+            }
+            return await buildFinalResult();
+          }
+        }
       }
 
       const batchResult = await extractTextOnly(page, config);
@@ -1956,7 +2148,7 @@ export async function incrementalScrollAndExtract(
     log("[Incremental] Step 3: Skipped (quick update mode)");
   }
 
-  // ── Build final result ──
+  // ── Final path: build result + hydrate avatars (nếu có) ──
   const finalMessages = Array.from(allMessages.values())
     .filter((m: any) => m.content || m.images?.length)
     .sort((a: any, b: any) => a.timestampMs - b.timestampMs);
@@ -2217,10 +2409,15 @@ export async function sendTeamsMessage(
     return { ok: false, error: `Khong tim thay chat "${chatName}" trong sidebar. Khong gui gi ca.` };
   }
 
-  await page.waitForTimeout(openWaitMs);
-
   // ── 2. VERIFY the open chat is the intended target ──────────
-  const verify = await verifyOpenChatTeams(page, chatName);
+  // Poll header cho tới khi chat thực sự mở (nếu sidebar đã có chat, mở
+  // trong vài trăm ms; tối đa openWaitMs) — không chờ cứng openWaitMs.
+  const verifyDeadline = Date.now() + openWaitMs;
+  let verify = await verifyOpenChatTeams(page, chatName);
+  while (!verify.verified && Date.now() < verifyDeadline) {
+    await page.waitForTimeout(400);
+    verify = await verifyOpenChatTeams(page, chatName);
+  }
   if (!verify.verified) {
     if (screenshots) {
       await page.screenshot({ path: path.join(shotDir, `send-verify-fail-${stamp}.png`) }).catch(() => {});
@@ -2247,9 +2444,9 @@ export async function sendTeamsMessage(
   }
 
   await input.click();
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(200);
   await input.fill(message);
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(400);
 
   // Confirm the text actually landed in the input
   const typedText = await page.evaluate(() => {
@@ -2276,7 +2473,6 @@ export async function sendTeamsMessage(
   // ── 5. Send via Enter ───────────────────────────────────────
   log("Nhan Enter de gui tin nhan...");
   await input.press("Enter");
-  await page.waitForTimeout(2_000);
 
   // ── 6. Verify send succeeded ────────────────────────────────
   const inputNow = await page.evaluate(() => {
@@ -2290,6 +2486,7 @@ export async function sendTeamsMessage(
   // `[data-testid="comfy-message-wrapper"]` / `[data-tid="chat-pane-message"]`
   // — the old `[data-tid="message-list-item"]` selector no longer exists.
   // Poll a few times: the new bubble needs a moment to render after Enter.
+  // Mỗi lượt 500ms — dừng ngay khi thấy bubble (không chờ đủ 6 lượt).
   let sentTextVisible = false;
   for (let attempt = 0; attempt < 6 && !sentTextVisible; attempt++) {
     sentTextVisible = await page.evaluate((msg: string) => {
@@ -2302,14 +2499,14 @@ export async function sendTeamsMessage(
       if (!last) return false;
       return (last.textContent || "").includes(msg.slice(0, 80));
     }, message);
-    if (!sentTextVisible) await page.waitForTimeout(1_500);
+    if (!sentTextVisible) await page.waitForTimeout(500);
   }
 
   if (screenshots) {
     await page.screenshot({ path: path.join(shotDir, `send-result-${stamp}.png`) }).catch(() => {});
   }
 
-  if (inputCleared && sentTextVisible) {
+  if (sentTextVisible || inputCleared) {
     log("GUI THANH CONG.");
     return { ok: true, targetChat: chatName, screenshot: path.join(shotDir, `send-result-${stamp}.png`) };
   }

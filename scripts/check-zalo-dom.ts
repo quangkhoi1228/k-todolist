@@ -1,7 +1,7 @@
 /* Chạy: npx tsx scripts/check-zalo-dom.ts — verify sender/isMine fix trên chat đơn */
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
-import { createZaloStealthContext, navigateToZalo, waitForZaloLogin, navigateToZaloGroup, scrollZaloChatContainer, extractZaloMessages, DEFAULT_ZALO_CONFIG } from "../agents/pm/lib/zalo-automator";
+import { createZaloStealthContext, navigateToZalo, waitForZaloLogin, navigateToZaloGroup, scrollZaloChatContainer, finalizeZaloMessages, DEFAULT_ZALO_CONFIG } from "../agents/pm/lib/zalo-automator";
 import fs from "fs";
 
 async function main() {
@@ -14,8 +14,8 @@ async function main() {
   const ok = await navigateToZaloGroup(page, "Thảo Nguyên BB");
   console.log("navigated:", ok);
   const chatConfig = { ...config, groupName: "Thảo Nguyên BB" };
-  await scrollZaloChatContainer(page, chatConfig);
-  const result = await extractZaloMessages(page, chatConfig);
+  const collected = await scrollZaloChatContainer(page, chatConfig);
+  const result = await finalizeZaloMessages(page, chatConfig, "Thảo Nguyên BB", collected);
   console.log("TOTAL:", result.totalMessages);
   const msgs = result.messages.slice(0, 10);
   for (const m of msgs) {

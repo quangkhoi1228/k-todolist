@@ -3,138 +3,79 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import { useUserPreferences, usePreferenceMutations } from "@/hooks/useDomain";
 
 /**
- * Auto-sync chat messages:
- * - Khi đang mở trang `/projects/[id]`: sync NHANH chỉ project đó mỗi 1 phút
- *   (chỉ các nhóm đã add qua UI — script sync-project-chats.ts).
- * - Khi không mở project nào: sync tất cả project theo autoSyncInterval
- *   (setting trong /omni, mặc định 0 = tắt).
+ * Auto-sync qua queue tập trung (server-side, `sync-queue.ts`):
+ * - Đang mở `/projects/[id]`: mỗi 2 phút enqueue job sync project đó
+ *   (các nhóm đã add, incremental). Job này được ưu tiên trong queue.
+ * - Sync-all định kỳ do SERVER đảm nhiệm (bộ lập lịch trong next-server),
+ *   interval = `autoSyncInterval` trong trang Omni (mặc định 30 phút).
+ *   Client KHÔNG tự gọi sync-all nữa — server tự serialize.
  */
 export function GlobalSyncManager() {
   const { userId } = useAuth();
   const pathname = usePathname();
-  const { data: prefs } = useUserPreferences(userId);
-  const prefx = usePreferenceMutations();
-  const isSyncingRef = useRef(false);
+  const lastEnqueuedRef = useRef<Record<string, number>>({});
+  const isPollingRef = useRef(false);
 
   // Trích projectId từ URL `/projects/123?tab=chats`
   const projectMatch = pathname?.match(/\/projects\/(\d+)/);
   const activeProjectId = projectMatch ? projectMatch[1] : null;
 
-  const checkIfRunning = async (): Promise<boolean> => {
-    try {
-      const res = await fetch("/api/agents/sync-projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "status" }),
-      });
-      const data = await res.json();
-      return !!(data && data.running);
-    } catch {
-      return false;
-    }
-  };
-
-  const startSyncProject = async (projectId: string): Promise<boolean> => {
-    const headless = localStorage.getItem("headlessMode") !== "false";
-    // Server-side route tự chặn khi sync khác đang chạy (lock file chung).
-    const res = await fetch("/api/agents/sync-project-chats", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId, headless }),
-    });
-    const data = await res.json();
-    return !!(res.ok && data.ok);
-  };
-
-  const startSyncAll = async (): Promise<boolean> => {
-    const headless = localStorage.getItem("headlessMode") !== "false";
-    const res = await fetch("/api/agents/sync-projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "start", headless }),
-    });
-    const data = await res.json();
-    return !!(res.ok && data.ok);
-  };
-
   useEffect(() => {
     if (!userId) return;
 
-    // ─── Trường hợp 1: đang mở 1 project → sync project đó mỗi phút ───
-    if (activeProjectId) {
-      const runProjectSync = async () => {
-        if (isSyncingRef.current) return; // vòng lặp trước chưa xong — bỏ qua, vòng 60s sau sẽ chạy
-        isSyncingRef.current = true;
+    // Báo server project đang xem (để queue ưu tiên job project này)
+    void announceProject(activeProjectId);
+
+    // Chỉ sync project khi đang xem project
+    if (!activeProjectId) return;
+
+    const runProjectSync = () => {
+      if (isPollingRef.current) return;
+      isPollingRef.current = true;
+      void (async () => {
         try {
-          // Chờ sync khác xong rồi mới bắt đầu (không xếp chồng, chung Chrome profile)
-          let waited = 0;
-          while (await checkIfRunning() && waited < 60_000) {
-            await new Promise((r) => setTimeout(r, 10_000));
-            waited += 10_000;
+          // Mỗi 2 phút enqueue 1 lần (server queue gom/ưu tiên job này)
+          const last = lastEnqueuedRef.current[`p:${activeProjectId}`] || 0;
+          if (Date.now() - last < 120_000) return;
+          lastEnqueuedRef.current[`p:${activeProjectId}`] = Date.now();
+
+          const res = await fetch("/api/agents/sync-project-chats", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: activeProjectId }),
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            console.warn("[GlobalSyncManager] Project sync rejected:", data.error || "");
           }
-          const ok = await startSyncProject(activeProjectId);
-          if (!ok) console.warn("[GlobalSyncManager] Project sync start rejected (sync khác đang chạy?)");
         } catch (err) {
-          console.error("[GlobalSyncManager] Project auto-sync failed:", err);
+          console.error("[GlobalSyncManager] Project sync failed:", err);
         } finally {
-          isSyncingRef.current = false;
+          isPollingRef.current = false;
         }
-      };
-
-      // Chạy ngay khi mở project, sau đó mỗi 60s
-      runProjectSync();
-      const intervalId = setInterval(runProjectSync, 60_000);
-      return () => clearInterval(intervalId);
-    }
-
-    // ─── Trường hợp 2: không mở project → sync all theo autoSyncInterval ───
-    if (!prefs || !prefs.autoSyncInterval || prefs.autoSyncInterval <= 0) return;
-
-    const intervalMs = prefs.autoSyncInterval! * 60 * 1000;
-
-    const runSync = async () => {
-      if (isSyncingRef.current) return; // vòng lặp trước chưa xong — bỏ qua, check 10s sau sẽ chạy lại
-
-      const lastSync = prefs.lastSyncTime || 0;
-      const now = Date.now();
-      if (now - lastSync < intervalMs) return;
-
-      isSyncingRef.current = true;
-      try {
-        let waited = 0;
-        while (await checkIfRunning() && waited < intervalMs) {
-          await new Promise((r) => setTimeout(r, 15000));
-          waited += 15000;
-        }
-
-        const ok = await startSyncAll();
-        if (ok) {
-          await prefx.updateUserPreferences({
-            userId,
-            lastSyncTime: Date.now(),
-          });
-        } else {
-          console.warn("[GlobalSyncManager] Sync start rejected — will retry at next interval");
-          await prefx.updateUserPreferences({
-            userId,
-            lastSyncTime: Date.now(),
-          });
-        }
-      } catch (err) {
-        console.error("[GlobalSyncManager] Auto-sync failed:", err);
-      } finally {
-        isSyncingRef.current = false;
-      }
+      })();
     };
 
-    // Check immediately on mount, then every 10 seconds
-    runSync();
-    const intervalId = setInterval(runSync, 10000);
+    runProjectSync();
+    const intervalId = setInterval(runProjectSync, 120_000);
     return () => clearInterval(intervalId);
-  }, [userId, activeProjectId, prefs, prefx]);
+  }, [userId, activeProjectId]);
 
   return null; // Hidden component
+}
+
+// Announce cho server biết project đang xem (để queue ưu tiên)
+async function announceProject(projectId: string | null) {
+  try {
+    const body = projectId
+      ? { action: "setActiveProject", projectId }
+      : { action: "clearActiveProject" };
+    await fetch("/api/agents/sync-project-chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch { /* ignore */ }
 }

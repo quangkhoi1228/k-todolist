@@ -5,6 +5,7 @@ import {
   boolean,
   jsonb,
   bigserial,
+  bigint,
   real,
   timestamp,
   uniqueIndex,
@@ -221,8 +222,11 @@ export const projectChats = pgTable(
     content: text("content").notNull(),
     images: text("images"), // JSON array of image URLs
     timestamp: text("timestamp").notNull(),
-    timestampMs: real("timestampMs"),
-    scrapedAt: real("scrapedAt").notNull(),
+    // bigint giữ chính xác epoch ms (~1.7e12). `real` (float4) trước đây mất
+    // precision (~64s) khiến các message gần nhau bị trùng timestamp →
+    // watermark incremental lệch → early-stop sai → thiếu message cuối.
+    timestampMs: bigint("timestampMs", { mode: "number" }),
+    scrapedAt: bigint("scrapedAt", { mode: "number" }).notNull(),
     platform: text("platform"), // teams|zalo
     isMine: boolean("isMine"),
   },

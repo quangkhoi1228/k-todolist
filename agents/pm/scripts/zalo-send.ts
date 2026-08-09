@@ -27,6 +27,50 @@ import {
   log,
   type ZaloAutomatorConfig,
 } from "../lib/zalo-automator";
+import * as fs from "fs";
+import * as path from "path";
+
+/**
+ * Lock chung: sync (queue/sync-all/sync-one) và zalo-send dùng CHUNG Chrome
+ * profile `.zalo-session/chrome-profile` — 2 Chrome cùng user-data-dir không
+ * chạy song song được. zalo-send phải:
+ * - Chờ sync đang chạy xong (từng vòng 10s, tối đa 3 phút — KHÔNG 20 phút)
+ * - Ghi `.zalo-send-running` để sync biết mà chờ/skip
+ */
+const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+const SEND_RUNNING_FILE = path.join(process.cwd(), ".zalo-send-running");
+
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/** Đang có sync nào chạy (đọc lock nhiều PID) — chờ tối đa `timeoutMs`. */
+async function waitForSyncToFinish(timeoutMs = 3 * 60 * 1000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let syncRunning = false;
+    try {
+      if (fs.existsSync(SYNC_RUNNING_FILE)) {
+        const content = fs.readFileSync(SYNC_RUNNING_FILE, "utf-8");
+        const pids = content.split("\n").map(l => l.trim()).filter(Boolean).map(l => parseInt(l, 10)).filter(p => !isNaN(p));
+        syncRunning = pids.some(pid => pid !== process.pid && pidAlive(pid));
+      }
+    } catch { /* stale lock */ }
+    if (!syncRunning) return true;
+    log("Dang co sync chay — cho sync xong (poll 3s)...");
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+  log("Timeout cho sync (3 phut) — van tiep tuc gui (co the dung chung profile!).");
+  return true;
+}
+
+function claimSendLock(): void {
+  try { fs.writeFileSync(SEND_RUNNING_FILE, `${process.pid}`, "utf-8"); } catch { /* */ }
+}
+
+function releaseSendLock(): void {
+  try { if (fs.existsSync(SEND_RUNNING_FILE)) fs.unlinkSync(SEND_RUNNING_FILE); } catch { /* */ }
+}
 
 function parseArgs(): {
   chatName: string;
@@ -66,6 +110,7 @@ async function main() {
     console.error("Error: --message <text> is required (noi dung tin nhan).");
     process.exit(1);
   }
+
   if (force && !confirm) {
     // --force only meaningful with --yes; if --force but not --yes, still confirm
   }
@@ -89,6 +134,12 @@ async function main() {
     headless,
     keepOpen,
   };
+
+  // Không mở Chrome khi sync đang giữ profile chính — chờ ngắn (3 phút tối đa)
+  // Claim send lock NGAY (trước khi đợi sync): sync đang chạy phát hiện
+  // `.zalo-send-running` sẽ thoát sớm → send không phải chờ lâu.
+  claimSendLock();
+  await waitForSyncToFinish();
 
   const { browser, context } = await createZaloStealthContext(config);
   const page = context.pages()[0] || (await context.newPage());
@@ -122,6 +173,7 @@ async function main() {
       log("Tin nhan da gui thanh cong.");
     }
   } finally {
+    releaseSendLock();
     try {
       await context.storageState({ path: config.sessionDir + "/state.json" });
     } catch { /* */ }
