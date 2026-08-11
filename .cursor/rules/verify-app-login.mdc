@@ -7,25 +7,61 @@ Khi cần verify UI app (localhost:3000) bằng browser thật: **session Clerk 
 - Thư mục: `~/Library/Application Support/Google/Chrome/` (gốc, chứa `Default/` ~983M)
 - Cookie: `localhost | __session` (+ `__client_uat`, `__refresh_*`) — hạn tới 2027
 
-## Các cách SAI (đã mắc lỗi 07/08 — đừng lặp lại)
+## Tại sao PHẢI copy profile (user hỏi: "sao ko dùng luôn")
 
-1. `chromium.launchPersistentContext(".../Google/Chrome/Default")` — trỏ vào **profile con Default** → Chrome tạo `Default/Default` mới, **mất session**, cứ bắt đăng nhập.
-2. `--user-data-dir="$HOME/.../Google/Chrome" --remote-debugging-port=9222` trực tiếp → Chrome báo **"DevTools remote debugging requires a non-default data directory"** và thoát.
-3. Mở browser bằng profile mới trắng `/tmp/kflow-verify-profile` rồi chờ user đăng nhập thủ công — lãng phí thời gian, user không cần đăng nhập.
+Chrome profile thật **đang được mở bởi Chrome của user** → nó giữ `SingletonLock`/`SingletonSocket` trong `Default/`. Nếu agent mở instance thứ 2 trỏ thẳng vào profile đó:
 
-## CÁCH ĐÚNG (verify 07/08 OK)
+- Chrome sẽ **tự thoát** (`DevTools remote debugging requires a non-default data directory` với profile gốc),
+- hoặc **từ chối khởi động** vì profile đang bị lock,
+- hoặc chạy dưới dạng tab mới của instance đang chạy (không có CDP như mong muốn).
+
+Nên cơ chế chuẩn là: **copy profile → đổi thư mục → xoá lock/session files** → mở Chrome CDP bằng bản copy. **Session không mất** vì quyền đăng nhập (cooke `__session`/`__client_uat`) nằm trong file `Cookies` — file này **giữ nguyên**, chỉ xoá lock + history + session-restore (để không mở lại tab cũ).
+
+**Điều kiện bắt buộc để giữ session khi copy:**
+
+1. Copy **nguyên vẹn** `Default/` (CHỈ `Default/`, không dùng `--user-data-dir` trỏ tới `Default`).
+2. Xoá các file sau (chỉ các file này, KHÔNG đụng `Cookies`):
+   - `Singleton*` (SingletonLock/Socket/Cookie) — nếu không xoá, Chrome từ chối mở bản copy
+   - `Preferences`, `Secure Preferences`, `History`, `History-journal`
+   - `Current Session|Tabs`, `Last Session|Tabs`, `Sessions/` (folder)
+   - `Login Data*` (Login Data, Login Data For Account, + `-journal`), `Network Persistent State` (để không bị "restore session" hoặc xung đột cookie storage)
+
+## Các cách SAI (đã mắc lỗi — đừng lặp lại)
+
+1. **Dùng profile `.teams-session/chrome-profile` (hoặc `.zalo-session/*`) để mở app** — profile này TIN CẬY chỉ có session **Teams/Zalo**, **KHÔNG có session Clerk** → app bắt đăng nhập. Profile này CHỈ dùng cho sync Teams/Zalo. Để verify UI app, luôn dùng **profile thật của user** (`~/Library/Application Support/Google/Chrome`).
+2. `chromium.launchPersistentContext(".../Google/Chrome/Default")` — trỏ vào **profile con Default** → Chrome tạo `Default/Default` mới, **mất session**, cứ bắt đăng nhập.
+3. `--user-data-dir="$HOME/.../Google/Chrome" --remote-debugging-port=9222` trực tiếp → Chrome báo **"DevTools remote debugging requires a non-default data directory"** và thoát.
+4. Mở browser bằng profile mới trắng `/tmp/kflow-verify-profile` rồi chờ user đăng nhập thủ công — lãng phí thời gian, user không cần đăng nhập.
+5. Chạy Chrome bằng `nohup ... & disown` — instance dễ chết/mất kiểm soát; launch bằng background job của **shell thường** (không detach khỏi shell) để Chrome sống ổn định.
+
+## CÁCH ĐÚNG — 1 lệnh duy nhất
+
+Đã đóng gói thành script: `scripts/verify-ui-open.sh` — tự copy profile (nếu cần), mở Chrome CDP bằng profile copy, in URL tab để confirm session OK.
 
 ```bash
-# 1. Copy profile đã login sang thư mục tạm
+# Mở Chrome CDP (profile copy giữ session, mặc định port 9222)
+scripts/verify-ui-open.sh                        # mở http://localhost:3000/projects
+
+# Tuỳ chọn URL, port
+scripts/verify-ui-open.sh "http://localhost:3000/projects/45?tab=chats" 9223
+
+# Khi xong (dọn cả Chrome + profile copy)
+scripts/verify-ui-open.sh --stop
+```
+
+Làm thủ công (nếu cần):
+
+```bash
+# 1. Copy profile đã login sang thư mục tạm (CHỈ Default, giữ Cookies)
 rm -rf /tmp/kflow-login-profile && mkdir -p /tmp/kflow-login-profile
 cp -R "$HOME/Library/Application Support/Google/Chrome/Default" /tmp/kflow-login-profile/Default
 rm -f /tmp/kflow-login-profile/Default/Singleton* /tmp/kflow-login-profile/Default/Preferences /tmp/kflow-login-profile/Default/"Secure Preferences"
 
-# 2. Mở Chrome CDP bằng profile copy (detached, không bị kill)
-nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+# 2. Mở Chrome CDP bằng profile copy (background job, không nohup/disown)
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 --user-data-dir=/tmp/kflow-login-profile \
   --no-first-run --no-default-browser-check --no-sandbox \
-  "http://localhost:3000/projects" >/tmp/chrome-verify.log 2>&1 & disown
+  "http://localhost:3000/projects" >/tmp/chrome-verify.log 2>&1 &
 
 # 3. Kiểm tra session OK: URL page trỏ /projects (không phải /sign-in)
 curl -s http://127.0.0.1:9222/json/list | python3 -c "import sys,json; [print(p['url'][:100]) for p in json.load(sys.stdin) if p['type']=='page']"
@@ -37,4 +73,4 @@ Nếu dùng Playwright `launchPersistentContext` thì trỏ **thư mục gốc**
 
 ## Không áp dụng cho sync Teams/Zalo
 
-Profile này CHỈ dùng verify UI app. Sync Teams/Zalo vẫn dùng `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` (xem real-browser-verification.mdc). Chrome CDP 9222 dùng cho sync chỉ được mở bằng lệnh `open -n -a "Google Chrome" --args --user-data-dir="<profile>" --remote-debugging-port=9222 ...`.
+Profile verify UI này CHỈ dùng verify app. Sync Teams/Zalo vẫn dùng `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` (xem real-browser-verification.mdc). Chrome CDP 9222 dùng cho sync chỉ được mở bằng lệnh `open -n -a "Google Chrome" --args --user-data-dir="<profile>" --remote-debugging-port=9222 ...`.

@@ -23,6 +23,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync, spawn } from "child_process";
 
+// (Browser-only — được eval trong page.evaluate qua arg avatarSource.)
+declare function isUsableZaloAvatarSrc(src: string): boolean;
+
 /**
  * Kiểm tra nhanh (không đọc cả file lặp) — có send lock nào đang chờ không.
  * zalo-send.ts / teams-send.ts ghi `.zalo-send-running` / `.teams-send-running`
@@ -1262,9 +1265,27 @@ export async function collectZaloMessagesFromPage(
   if (process.env.DEBUG_SCRIPTS === "1") {
     fs.writeFileSync('zalo-dom.html', await page.content());
   }
+
+  // Filter avatar URL: loại icon/placeholder (icon like, sticker, avatar chưa
+  // tải là svg placeholder) — chỉ giữ avatar thật (ava-talk/ava-grp zadn).
+  // (Browser-only — được eval trong page.evaluate qua arg avatarSource.)
+  const zaloAvatarHelperSource = `
+function isUsableZaloAvatarSrc(src) {
+  if (!src || !src.length) return false;
+  const lower = src.toLowerCase();
+  if (lower.startsWith('data:image/svg')) return false;       // placeholder svg
+  if (lower.includes('iconlike') || lower.includes('icon-like')) return false; // icon like
+  if (lower.includes('emoji')) return false;                  // emoji/sticker
+  if (lower.includes('sticker')) return false;
+  if (lower.includes('res-zalo.zadn.vn')) return false;       // resource (icon/nhạc chuông...)
+  return true;
+}
+`;
   
   const extractedMessages: { messages: ZaloExtractedMessage[]; htmlDump: string } = 
-  await page.evaluate(async (args: { kwList: string[]; groupName: string; imgBlocklist: string[] }) => {
+  await page.evaluate(async (args: { kwList: string[]; groupName: string; imgBlocklist: string[]; avatarSource: string }) => {
+    // Inject avatar filter helper (module-scope source, truyền qua arg).
+    eval(args.avatarSource);
     const results: ZaloExtractedMessage[] = [];
     let counter = 0;
     const seen = new Set<string>();
@@ -1408,6 +1429,9 @@ export async function collectZaloMessagesFromPage(
       let senderAvatar = "";
       if (avatarImg) {
         senderAvatar = avatarImg.getAttribute('src') || avatarImg.getAttribute('data-src') || "";
+        // Loại icon/placeholder lạ (vd icon "like" của Zalo nằm trong scope
+        // nhưng không phải avatar người) — để UI fallback dicebear.
+        if (!isUsableZaloAvatarSrc(senderAvatar)) senderAvatar = "";
       }
 
       // Track the previous real sender for the group-chat fallback, but NEVER
@@ -1679,7 +1703,8 @@ export async function collectZaloMessagesFromPage(
       'ava-talk',
       'ava-grp',
       'ava-'
-    ]
+    ],
+    avatarSource: zaloAvatarHelperSource
   });
 
   console.log("FIRST MSG HTML:", extractedMessages.htmlDump.substring(0, 3000));

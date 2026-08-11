@@ -9,7 +9,7 @@ tags: []
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-10
+- **Cập nhật lần cuối:** 2026-08-11 (flow init → kick-off + role capabilities + bỏ kho quy trình xong, đã verify browser thật; thêm script `scripts/verify-ui-open.sh` mở Chrome CDP 1 lệnh bằng profile copy giữ session Clerk — verified 11/08)
 - **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
@@ -71,11 +71,12 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 ### Verify UI app đã đăng nhập sẵn (Clerk) — KHÔNG bắt user đăng nhập lại
 
 - **Session Clerk app nằm trong Chrome profile thật của user** tại `~/Library/Application Support/Google/Chrome/` (thư mục gốc, chứa `Default/` — 983M). Cookies `localhost|__session` còn hạn tới 2027.
-- **SAI LẦM CẦN TRÁNH** (đã mắc 07/08): dùng `chromium.launchPersistentContext` trỏ vào **profile con `Default`** (vd `/Users/.../Google/Chrome/Default`) → Chrome tạo `Default/Default` mới → **mất session, bắt đăng nhập** dù cookie vẫn còn. Cũng **không dùng** `--user-data-dir="$HOME/.../Google/Chrome"` kèm `--remote-debugging-port` trực tiếp: Chrome báo *"DevTools remote debugging requires a non-default data directory"*.
-- **CÁCH ĐÚNG khi cần verify UI với browser thật** (07/08 đã chạy OK):
-  1. Copy profile đã login sang thư mục tạm: `rm -rf /tmp/kflow-login-profile && mkdir -p /tmp/kflow-login-profile && cp -R "$HOME/Library/Application Support/Google/Chrome/Default" /tmp/kflow-login-profile/Default && rm -f /tmp/kflow-login-profile/Default/Singleton* /tmp/kflow-login-profile/Default/Preferences /tmp/kflow-login-profile/Default/"Secure Preferences"`
-  2. Mở Chrome CDP bằng profile copy: `nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir=/tmp/kflow-login-profile --no-first-run --no-default-browser-check --no-sandbox "http://localhost:3000/projects" >/tmp/chrome-verify.log 2>&1 & disown`
-  3. Verify qua `http://127.0.0.1:9222/json/list` — page URL trỏ `/projects` (không phải `/sign-in`) là session OK. Khi verify xong `pkill -f kflow-login-profile`.
+- **Phải COPY profile (user hỏi 11/08 "sao ko dùng luôn")**: profile thật đang bị Chrome user mở giữ `SingletonLock` → mở instance CDP trỏ thẳng vào sẽ thoát/từ chối. Copy sang `/tmp/kflow-login-profile` **giữ nguyên Cookies** (session không mất), chỉ xoá lock/history/session-restore/Login Data. Chi tiết xem `.cursor/rules/verify-app-login.mdc`.
+- **SAI LẦM CẦN TRÁNH** (đã mắc 07/08): dùng `chromium.launchPersistentContext` trỏ vào **profile con `Default`** (vd `/Users/.../Google/Chrome/Default`) → Chrome tạo `Default/Default` mới → **mất session, bắt đăng nhập** dù cookie vẫn còn. Cũng **không dùng** `--user-data-dir="$HOME/.../Google/Chrome"` kèm `--remote-debugging-port` trực tiếp: Chrome báo *"DevTools remote debugging requires a non-default data directory"*. **Không dùng profile `.teams-session/*`/`.zalo-session/*` để mở app** — chỉ có session Teams/Zalo, không có Clerk → bắt đăng nhập.
+- **CÁCH ĐÚNG — 1 lệnh (script `scripts/verify-ui-open.sh`, verified 11/08 OK)**:
+  1. Mở: `scripts/verify-ui-open.sh` (tuỳ chọn `"<url>" [port]`, mặc định `http://localhost:3000/projects` port 9222). Script tự copy profile → xoá lock files → mở Chrome CDP bằng `open -n` (không dùng `nohup & disown` — dễ chết process).
+  2. Verify qua `http://127.0.0.1:9222/json/list` — page URL trỏ `/projects` (không phải `/sign-in`) là session OK. Có thể chụp screenshot bằng Playwright `connectOverCDP` (VD: `npx tsx` script nhỏ gọi `chromium.connectOverCDP("http://127.0.0.1:9222")` → `page.screenshot()`).
+  3. Khi xong: `scripts/verify-ui-open.sh --stop` (tắt Chrome + dọn profile copy).
   - Nếu dùng Playwright `launchPersistentContext` thì trỏ **thư mục gốc** `/tmp/kflow-login-profile` (KHÔNG phải `/tmp/kflow-login-profile/Default`).
 - **Lưu ý**: copy profile này KHÔNG nên dùng để chạy sync Teams/Zalo (dùng `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` riêng, xem mục CDP bên dưới).
 
@@ -83,13 +84,13 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - `useData` dùng SWR (polling/invalidate), không có real-time server push. Fetch chat có thể **kẹt lâu** khi browser thật (Chrome profile) bị mở popup/login — không phải app treo.
 
 ### Các khu vực code chính
-- `src/app/(dashboard)/` — board, gantt, list, notes, omni, pm-agent (chat + `[id]` + new), projects (+`[id]`), settings/roles, email, **business-processes (kho quy trình)**.
-- `src/app/api/data/*` — repo cho UI (projects, tasks, notes, suggestions, chats, groups, members, roles, isd, logs, emails, files, preferences, agents-pm, **business-processes**).
+- `src/app/(dashboard)/` — board, gantt, list, notes, omni, pm-agent (chat + `[id]` + new), projects (+`[id]`), settings/roles, email.
+- `src/app/api/data/*` — repo cho UI (projects, tasks, notes, suggestions, chats, groups, members, roles, isd, logs, emails, files, preferences, agents-pm, **project-workflows**).
 - `src/app/api/agents/*` — pipeline PM agent (parse-intent, match-project, fetch-isd, refresh-isd-statuses, sync-groups, sync-projects, sync-single-chat, monitor-messages, analyse-suggestions, generate-project-suggestions, teams/zalo-automator, teams/zalo-send, teams-messages, outlook-send, health-status, project-teams-groups).
 - `agents/pm/lib/` — automator (Teams/Zalo bằng Chrome thật), teams-monitor, outlook-automator, intent-parser, llm-client, isd-api, workflow (các bước PM), monitor (**tham khảo kho business processes khi phân tích gợi ý**).
 - `agents/pm/scripts/` — scripts chạy ngoài: sync-all-projects, sync-single-chat, sync-all-groups, teams/zalo-extractor/health/list-chats/send, teams-automator, zalo-automator, outlook-send, hourly-healthcheck. *(Các script này được route API gọi — không được xoá.)*
 - `src/lib/db/schema.ts` + `src/lib/repo/*` + `src/lib/db/index.ts` — DB layer. Push schema: `npm run db:push`.
-- Scripts seed/test reusable: `scripts/seed-business-processes.ts` (seed 8 quy trình mẫu cho Kho quy trình), `scripts/test-db.ts`, `scripts/check-pg-*`.
+- Scripts seed/test reusable: `scripts/test-db.ts`, `scripts/check-pg-*`.
 
 ---
 
@@ -104,6 +105,8 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - Sync Teams + Zalo bằng Playwright **Chrome profile thật** (`useRealChrome: true`, `createStealthContext`); sync từng chat, sync all groups/projects; health check; sync logs.
 - ISD pipeline: fetch ticket (fetch-isd), refresh statuses, lưu `projectIsdData`; match trạng thái → suggestions.
 - Suggestion actions: mark read/resolve, **Thêm task**, "Sao chép tin nhắn".
+- **Workflow dự án init → kick-off** (11/08): `projectWorkflows` table + card "Quy trình dự án" trong tab Thông tin dự án — gợi ý mẫu tin nhắn chào Sale (copy), gợi ý nhập thông tin sơ bộ (pre-sale + nhóm external/internal), chuyển phase `kickoff`, gợi ý câu hỏi hỏi Pre-sale/Sale, nhập yêu cầu sơ bộ → **tự sinh task tracking** (`[Kickoff] ...`). Mỗi bước đánh dấu done → update tiến độ. Phase hiển thị badge trên Kanban board (Init/Kick-off). **Check lại 11/08**: tsc + build OK; API test full flow (ensure → step → data → phase → generate tasks → taskIds) chạy đúng, phase đồng bộ vào `projects`; verify browser thật CDP 9223 — project 16 (init): card + hint + nút "Đã gửi" bước 1 hoạt động, nút Chuyển Kick-off chỉ hiện khi đủ 2 bước; project 45 (kickoff): card hiển thị 2 task tracking tự sinh. **Fix nhỏ**: `moveToKickoff` giờ giữ nguyên trạng thái `skipped` của bước đã bỏ qua (trước ghi đè thành done); toast sau lưu requirements gộp luôn số task đã sinh.
+- **Role capabilities + member permissions** (11/08): `CAPABILITY_CATALOG` (10 chức năng) trong `src/lib/roleCapabilities.ts` (file thuần, dùng chung server/client); `projectRoles.capabilities` + `projectMembers.permissions` (jsonb) — UI settings/roles tick chức năng theo role, MemberCard hiển thị + chỉnh chức năng riêng member (ghi đè role). **Đã xoá cơ chế Kho quy trình (businessProcesses)** — table + page + API + hooks + sidebar link đã gỡ.
 
 **Đang làm dở (working tree — CHƯA commit, khả năng chưa hoàn thiện):**
 1. **Deep link Teams cho suggestion kickoff** — `generate-project-suggestions/route.ts` thêm `saleEmail`/`emailSubject`/`emailBody`/`teamsDeepLink`/`input`/`reasoning`/`expectedOutcome`; `SuggestionsQuickView` + `ProjectDetailPanel` + PMAgentPopup + chat page thêm:
@@ -374,6 +377,11 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 
 ## 4. Next actions trước mắt
 
+0j. **Flow init → kick-off vừa làm (11/08, đã verify browser thật + check lại)** — cần user dùng thử trên dự án thật:
+   - Mở project (phase Init) → tab Thông tin dự án → card "Quy trình dự án": sao chép tin chào Sale → nhập thông tin sơ bộ (pre-sale, nhóm ext/int) → bấm "Chuyển sang Kick-off" → chọn câu hỏi gửi Pre-sale/Sale → nhập yêu cầu sơ bộ → tự sinh task tracking.
+   - Kiểm tra: task tracking hiện trong board (title `[Kickoff] ...`), phase badge trên Kanban, dữ liệu `projectWorkflows` trong DB.
+   - Kết nối thêm (nếu muốn): tự động gửi tin nhắn chào sale / câu hỏi kick-off qua Teams/Zalo composer thay vì chỉ copy; sinh suggestions từ `projectWorkflows`; đồng bộ phase với `pmAgentSessions.currentStep`.
+   - Lưu ý: `phase` mặc định `init` — dự án cũ chưa có workflow sẽ tự tạo khi mở card.
 0. **Verify queue sync mới (08/08, cần user login + Chrome)** — hệ thống vừa chuyển sang queue tập trung (`src/lib/sync-queue.ts`):
    - Mở 1 project → đợi 2 phút → log server `[Sync] → Bắt đầu job: project N...` + từng task `[Sync] Done teams/xxx (exit 0)`; messages mới hiện trong tab Chats.
    - Rời project → chờ 30 phút (hoặc bấm "Đồng bộ ngay" trên Omni = enqueue sync-all) → log `[SyncScheduler]` + job `all-...`.
@@ -425,6 +433,52 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
    - **Teams** (`incrementalScrollAndExtract`): thêm `domHasIncrementalSince()` — sau MỖI scroll đọc `<time datetime>` đầu tiên trong DOM, gặp <= watermark là dừng ngay (không chờ đủ batch); thêm `buildFinalResult()` để return sớm khi early-stop. **Tối ưu 10/08**: Step 1 (bottom) incremental rút từ `2s+img-scrollIntoView+5s` (~7s) xuống `800ms` (không cần chờ ảnh lazy-load khi chỉ đo watermark); Step 2 wait mỗi scroll rút từ `scrollWaitMs+random(500-1500)` (~3s) xuống `700+random(200-600)` (~1s).
    - **sync-single-chat.ts**: sau click chat Teams, wait rút từ 5s → 2s khi incremental (tin mới render text đủ, ảnh tự tải sau). **Log thời gian (10/08)**: thêm log `[SyncOne] ⏱  Teams/Zalo "<tên>" tổng Xs | mở+nav+extract: Ys | save: Zs | extract=N saved=M (incremental|full) lúc HH:MM:SS` ở cuối mỗi sync (cả Teams lẫn Zalo, cả nhánh có tin mới / 0 tin / FAIL) — dễ đối chiếu tốc độ từng nhóm. `sync-queue.ts` `runTask` cũng log `[Sync] ▶ BẮT ĐẦU ... lúc <ISO>` + `[Sync] ✓ KẾT THÚC ... — Xs (xong lúc <ISO>)`.
    - Kết quả ước tính: incremental Zalo từ ~40s/chat → ~10-15s/chat; Teams từ ~30-40s/chat → ~10-15s/chat (chỉ vài scroll × ~1s thay vì ~3s + ít call extract). **Đã verify thật (10/08)**: Zalo `[FPTCLOUD] - UICVN` incremental EARLY-STOP ngay lập tức (0 tin mới), tổng 15.3s (mở Chrome + navigate chiếm hầu hết); Teams `[Internal] UICVN x FCI` EARLY-STOP tại batch 1, Step 2 chỉ 11s, `Saved 75 new messages to Postgres`.
+
+0i. **Verify dual-platform queue song song** (10/08, đã code — chưa verify browser) — sau khi restart dev server (kill PID cũ đang chạy code single-queue), mở project có cả nhóm Teams + Zalo (vd project 45):
+   - Log server phải có `[Worker:teams] Sync worker bắt đầu (lock acquired)` + `[Worker:zalo] Sync worker bắt đầu` gần nhau (2 worker song song).
+   - Sync project có 2 nhóm khác platform → log `[Sync:teams] ▶ BẮT ĐẦU ...` + `[Sync:zalo] ▶ BẮT ĐẦU ...` gần nhau (2 task chạy đồng thời), không còn "hủy job sync-all" khi mở project (chỉ interleave).
+   - Sau project sync xong → đợi 3 phút → bấm sync lại/log scheduler fire → log `[Queue] ⏭ Skip 45 (teams|zalo) — cooldown còn Xs` (3 phút mới chạy lại).
+   - Bấm sync-all qua Omni → log `[SyncScheduler]` + enqueue tạo 2 job (`<id>-teams` + `<id>-zalo`, cùng `jobGroupId`); 2 worker chạy 2 lane song song → xong nhanh hơn 2x so với cũ.
+   - Gửi tin Zalo khi Teams sync đang chạy → log `[Sync:zalo] ⏸ Send đang chờ — kill task` (vì Zalo send nhường Zalo sync), nhưng Teams sync KHÔNG bị kill (log Teams tiếp tục `✓ KẾT THÚC`).
+   - Login Zalo (route `zalo-automator` headfull) khi Teams sync đang chạy → `stopBackgroundSync` chỉ kill Zalo sync (`[Sync:zalo]` dừng), Teams sync tiếp tục.
+   - UI ProjectDetailPanel tab Chats → 2 nhóm khác platform cùng spinner "Đang đồng bộ..." cùng lúc (đọc `currentTasks` plural).
+   - Omni "Queue đồng bộ" section → queue hiển thị gộp 2 worker; `(optional)` muốn hiển thị 2 lane rõ ràng thì đọc `teamsWorker`/`zaloWorker` từ `getSyncQueueStatus()`.
+   - `ls -la .teams-sync-running .zalo-sync-running .sync-queue-teams-worker.lock .sync-queue-zalo-worker.lock` — teams lock chỉ chứa PID teams, zalo lock chỉ chứa PID zalo.
+
+0j. **Fix Teams sync sai user nhắn (sender/isMine)** (10-11/08, đã fix + verify DB + UI browser thật) —
+   - **Triệu chứng**: user báo sync Teams gán sai người gửi — tin của "Luan Tran Cao" trong nhóm `[Internal] Hackathon Test` (project 45) bị lưu `sender="Me", isMine=true`; nhiều tin khác trong `Internal - FRT Migration TF` cũng bị "Me" hoá sai.
+   - **Root cause chính — `isTeamsMeSender()` match nhầm theo họ chung**: logic cũ so khớp **1 token ≥4 chữ** của sender với token của meName → `"Luan Tran Cao"` có token `"tran"` trùng với `"Khoi Tran Quang"` (meName) → bị coi là "Me" → `cleanTeamMessages` đổi sender thành "Me" + `isMine=true` → DB lưu sai. **Fix**: yêu cầu **≥2 token trùng trong cùng 1 meName** ("Luan Tran Cao" chỉ trùng 1 token "tran" → `false`; "Khoi Tran Quang" trùng 3 → `true`). Đã test edge cases: "Luan Tran Cao"→false, "Manh Ho Duc Tri"→false, "Khoi Quang"→true, "Tran Cao"→false.
+   - **Fix kèm (hardening)**:
+     - `cleanTeamMessages`: đồng bộ 2 chiều isMine/sender — khi `isTeamsMeSender(sender)` đổi sender="Me" thì set `isMine=true` (trước đây để `isMine=null` gây lệch).
+     - `extractMessages` + `extractTextOnly`: `lastSender` fallback chỉ kế thừa khi **cùng isMine** với bubble trước (tránh gán nhầm khi DOM lazy-load chưa render nameEl); `isMine=true` không có nameEl → sender="Me" trực tiếp.
+     - `addToCollection` (incrementalScrollAndExtract): **preserve `isMine`** từ extract (trước đây dropout → DB lưu isMine=null cho mọi tin Teams); thêm logic ưu tiên sender cụ thể (không "Me"/"") khi cùng timestampMs+content trong collection.
+     - Upsert `ON CONFLICT (projectId, messageId) DO UPDATE SET sender/isMine` (messageId không chứa sender) → full re-sync tự sửa rows cũ, không cần script backfill.
+   - **Verify thật (10-11/08)**:
+     - Full sync lại `[Internal] Hackathon Test` (project 45) → DB: "Okay", "ok anh thấy rồi nha", "=))" giờ `sender="Luan Tran Cao", isMine=false` — trước là Me; các tin của mình vẫn `Me/isMine=true`; "Manh Ho Duc Tri" không đổi.
+     - Full sync `Internal - FRT Migration TF` (project 45, 266 msgs, 199 mới) → các tin trước bị "Me" hoá giờ hiển thị đúng tên người gửi ("Quang Nguyen Duy" 40, "Toan Bui Song" 35, "Tuyen Phan Thai" 16...), chỉ còn tin mình thật sự là "Me" (61).
+     - Chat 1:1 "An Mai Thuan" (project 45) → toàn bộ 127 tin: 64 `Me/isMine=true` + 63 `An Mai Thuan/isMine=false` — hoàn hảo.
+     - **UI browser thật** (Clerk session sẵn): project 45 → tab Chats → nhóm "[Internal] Hackathon Test" → tin "ok anh thấy rồi nha" hiển thị **"Luan Tran Cao" phía trái** + tin reply của mình "Mute đi anh ơi..." hiển thị **"Me" phía phải** — đúng (screenshot `teams-screenshots/verify-chat-luan-sender-fixed.png`).
+     - `tsc --noEmit` exit 0.
+   - **Scripts giữ lại** (reusable, `scripts/`): `check-teams-sender.ts` (list sender/isMine theo project+chat), `verify-teams-extract.ts` (extract DOM không save — xem sender của tin cuối), `check-p45-all.ts`, `dump-teams-dom.ts`, `inspect-teams-detail.ts`, `inspect-teams-hackathon.ts`, `dump-anmai.ts` (debug DOM).
+
+0k. **Clear toàn bộ chat cũ + full sync all để verify sender/isMine** (11/08, hoàn tất) —
+   - **Yêu cầu user**: "sau khi xong hãy clear data chat cũ và sync all để check đến khi nào xong thì thôi".
+   - **Đã làm**:
+     1. Dừng `next-server` (queue worker) tránh đụng Chrome profile khi sync tay.
+     2. Clear 402 messages của 6 groups active (theo `teamsGroups` trong DB): #18 `[TEST] Grouping Verify` (7), `[TEST] Teams Real` (11); #29 `[FPTCLOUD] - UICVN` zalo (178); #45 `An Mai Thuan` teams (127), `[Internal] Hackathon Test` teams (28), `Thảo Nguyên BB` zalo (51). Giữ dữ liệu project archived (#33) + group lịch sử.
+     3. Full sync lại từng chat (`FULL_SYNC=true` + `USE_CDP=1` cho Teams / `USE_CDP=0` cho Zalo theo rule "Zalo luôn persistent profile"):
+        - #29 Zalo UICVN → 102 msgs (Zalo chỉ scroll được ~102 tin trong 200 scrolls — virtual DOM limit).
+        - #45 Teams `An Mai Thuan` → 124 msgs.
+        - #45 Teams `[Internal] Hackathon Test` → 28 msgs.
+        - #45 Zalo `Thảo Nguyên BB` → 43 msgs.
+        - #18 2 chat `[TEST]` **không còn tồn tại trên Teams** (đã xoá/archive trong Teams — verify bằng dump sidebar 106 chats, không thấy tên) → sync báo "not found", không phải lỗi.
+   - **Verify DB sau full sync** (script check sender/isMine theo từng nhóm):
+     - `An Mai Thuan`: 64 `Me/isMine=true` + 60 `An Mai Thuan/isMine=false`; **0 tin `sender="Me" nhưng isMine!=true`**.
+     - `[Internal] Hackathon Test`: 22 `Me` + **3 `Luan Tran Cao` + 3 `Manh Ho Duc Tri`** (đúng user khác — fix `isTeamsMeSender` ăn); **0 bất thường**.
+     - Zalo `Thảo Nguyên BB`: 34 `Me/isMine=true` + 9 `Zalo Group` (isMine null — Zalo DOM không cung cấp đầy đủ, không phải bug sender).
+     - Zalo UICVN: `Me=12` + các tên đúng (Viet It Uic 53, Đat Pham 14, Minh Long 11, Fci - Htkt 10, Henry Hưng 2).
+   - **Verify UI browser thật** (Chrome CDP 9223 + profile copy Clerk session — theo mục "Verify UI app đã đăng nhập sẵn"): project 45 → tab Chats → `An Mai Thuan` → **124 tin nhắn**, sender "Me" và "An Mai Thuan" hiển thị đúng từng tin (screenshot `teams-screenshots/verify-fullsync-anmaithuan.png`).
+   - `tsc --noEmit` exit 0. Đã dừng Chrome 9223 + dọn profile copy `/tmp/kflow-login-profile`.
 
 1. **Verify reload UI project 45** (06/08, cần user login) — mở `http://localhost:3000/projects/45` → tab Chats: **93 tin Teams** hiển thị đủ, **34 tin có block quote `> Sender: quoted`**, **13 tin có ảnh** (8 ảnh base64 hiển thị trực tiếp, 5 ảnh sharepoint qua proxy-image có thể 401 nếu cookie hết hạn), tin mới nhất 10:42 06/08. Không còn tin nào dính `1 Heart reaction.`/`Sender8/6/2026...`.
 2. **Verify animation sync chat** (06/08, cần Chrome CDP port 9222 + user login) — thêm 1 nhóm thật vào project → UI phải hiện spinner "Đang đồng bộ..." trên nhóm + banner ở messages area, sau sync messages mới hiện ngay (invalidate chats/suggestions/logs).

@@ -152,16 +152,32 @@ export function isTeamsMeSender(sender: string): boolean {
   const meNames = getTeamsMeNames();
   // Alias dạng khoitq3 thường được Teams gán sau tên ("Khoi Tran Quang (khoitq3)")
   if (meNames.some((n) => n === s || s === n || s.includes(n) || n.includes(s))) return true;
-  // Chỉ khớp theo từ khoá có độ dài ≥ 4 chữ cái — tránh nhầm tên ngắn
-  const sTokens = s.split(" ").filter((t) => t.length >= 4);
-  return sTokens.length > 0 && sTokens.some((t) => meNames.some((n) => n.split(" ").includes(t)));
+  // So khớp theo tên đầy đủ (≥2 token): "luan tran cao" có chung token "tran"
+  // với "khoi tran quang" (họ chung) nhưng khác token tên → KHÔNG khớp.
+  // Trước đây chỉ cần 1 token ≥4 chữ trùng (vd "tran") là match → nhầm tin
+  // của "Luan Tran Cao" thành "Me" (bug sync Teams sai user nhắn, Hackathon).
+  const sTokens = s.split(" ").filter((t) => t.length >= 3);
+  if (sTokens.length < 2) return false;
+  const meTokenSets = meNames.map((n) => new Set(n.split(" ").filter((t) => t.length >= 3)));
+  // Sender là "Me" nếu ít nhất 2 token của sender xuất hiện trong cùng 1 meName
+  // (vd "khoi quang", "khoi tran" khớp "khoi tran quang"; "tran cao" KHÔNG khớp
+  // vì chỉ 1 token "tran" trùng).
+  return meTokenSets.some((meTokens) => {
+    const overlap = sTokens.filter((t) => meTokens.has(t)).length;
+    return overlap >= 2;
+  });
 }
 
-/** Chuẩn hoá dữ liệu tin nhắn sau khi trích xuất: gán sender="Me" nếu isMine. */
+/** Chuẩn hoá dữ liệu tin nhắn sau khi trích xuất: gán sender="Me" nếu isMine
+ *  (và ngược lại: gán isMine=true nếu sender đã là "Me" — đồng bộ 2 chiều để
+ *  downstream save vào DB (projectChats.isMine + sender) không bị lệch giữa
+ *  isMine=null / sender="Me" khi isMine được thoát đi qua addToCollection). */
 export function cleanTeamMessages<T extends { sender: string; isMine?: boolean }>(messages: T[]): T[] {
   for (const m of messages) {
     if (m.isMine) m.sender = "Me";
-    else if (isTeamsMeSender(m.sender)) m.sender = "Me";
+    else if (isTeamsMeSender(m.sender)) { m.sender = "Me"; m.isMine = true; }
+    else if (m.sender === "Me") m.isMine = true;
+    else m.isMine = m.isMine ?? false;
   }
   return messages;
 }
@@ -1117,6 +1133,126 @@ export async function scrollChatContainer(page: Page, config: AutomatorConfig, s
  * Extract messages from the current Teams channel.
 
 /**
+ * Chọn ảnh avatar của bubble message (Teams v2). Ưu tiên ảnh nằm trong wrapper
+ * avatar của Teams (fui-Avatar / persona) trước; nếu không có, chọn ảnh nhỏ
+ * (≤ 28px) bên trong wrapper — emoji cũng ≤ 28px nhưng nằm trong body, còn
+ * avatar nằm ở container ngoài nên thứ tự selector vẫn ưu tiên đúng.
+ * Trả null khi không tìm thấy (lúc đó dùng dicebear fallback ở UI).
+ */
+// Browser-only (page.evaluate): không dùng DOM API bên ngoài.
+declare function pickSenderAvatarImg(rootEl: HTMLElement): HTMLImageElement | null;
+declare function isUsableAvatarSrc(src: string): boolean;
+
+/**
+ * Định nghĩa thật (module scope) của 2 helper avatar — được inject vào
+ * page.evaluate qua arg (serialize function). page.evaluate KHÔNG nhìn thấy
+ * declare ở type level, nên phải truyền bằng giá trị qua arg.
+ */
+const avatarHelpersSource = `
+function pickSenderAvatarImg(rootEl) {
+  const avatarSelectors = [
+    'img.fui-Avatar__image',
+    'img[class*="avatar"]',
+    'img[data-tid*="avatar"]',
+    'img[class*="Avatar"]',
+    '[class*="fui-Avatar"] img',
+    '[class*="avatar"] img',
+    'img[class*="Persona"]',
+    'img[class*="persona"]',
+    'img[class*="profile"]',
+    'img[aria-label*="avatar"]',
+    'img[role="presentation"]',
+  ];
+  for (const sel of avatarSelectors) {
+    const img = rootEl.querySelector(sel);
+    if (img && img.getAttribute('src')) return img;
+  }
+  const allImgs = rootEl.querySelectorAll('img[src]');
+  let smallestArea = Infinity;
+  let smallestImg = null;
+  for (const img of allImgs) {
+    const w = img.naturalWidth || parseInt(img.getAttribute('width') || '0');
+    const h = img.naturalHeight || parseInt(img.getAttribute('height') || '0');
+    const area = w * h;
+    if (w > 0 && w <= 28 && h > 0 && h <= 28 && area < smallestArea) {
+      smallestArea = area;
+      smallestImg = img;
+    }
+  }
+  return smallestImg;
+}
+function isUsableAvatarSrc(src) {
+  if (!src || !src.length) return false;
+  const lower = src.toLowerCase();
+  if (lower.startsWith('data:image/svg')) return false; // placeholder svg
+  if (lower.includes('/evergreen-assets/')) return false; // avatar chung Teams
+  if (lower.includes('/evergreen-asset')) return false;
+  if (lower.includes('/mountpoint/')) return false; // file mountpoint
+  return true;
+}
+`;
+
+/**
+ * Hydrate avatar URL (Teams profilepicturev2, cần session đăng nhập) → data
+ * URL base64 ngay trong-page — nếu không, URL hết hạn auth sau này → 401 →
+ * UI fallback dicebear, mất avatar. Gọi sau mỗi lần extract (full lẫn
+ * incremental / text-only) để mọi tin đều có avatar "vĩnh viễn".
+ */
+async function hydrateSenderAvatars(page: Page, messages: Array<{ senderAvatar?: string }>): Promise<void> {
+  const avatarUrls = [...new Set(
+    messages
+      .map((m) => m.senderAvatar)
+      .filter((u): u is string => typeof u === 'string' && u.length > 0 && !u.startsWith('data:'))
+  )];
+  if (avatarUrls.length === 0) return;
+
+  log(`Hydrating ${avatarUrls.length} unique Teams avatars in-page...`);
+  const avatarCache = new Map<string, string>();
+  for (const url of avatarUrls) {
+    try {
+      const dataUrl = await page.evaluate(async (u: string) => {
+        try {
+          const r = await fetch(u, { credentials: "include", signal: AbortSignal.timeout(15000) });
+          if (!r.ok) return null;
+          const blob = await r.blob();
+          return await new Promise<string | null>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          });
+        } catch {
+          return null;
+        }
+      }, url);
+      if (dataUrl && dataUrl.startsWith('data:')) {
+        avatarCache.set(url, dataUrl);
+      } else {
+        log(`  avatar fetch failed: ${url.slice(0, 80)}`);
+      }
+    } catch (e) {
+      log(`  avatar fetch error: ${String(e).slice(0, 80)}`);
+    }
+  }
+  let hydrated = 0;
+  for (const m of messages) {
+    const av = m.senderAvatar;
+    if (av && avatarCache.has(av)) {
+      m.senderAvatar = avatarCache.get(av);
+      hydrated++;
+    }
+  }
+  log(`Hydrated ${hydrated} Teams avatars (${avatarCache.size} unique).`);
+}
+
+/**
+ * Browser-only impl của pickSenderAvatarImg / isUsableAvatarSrc — các hàm
+ * này được gọi trong page.evaluate (serialize biến thể truyền qua arg).
+ * Vì vậy cần khai báo dạng function (không arrow) ở module scope.
+ */
+declare const __pickSenderAvatarImg: (rootEl: HTMLElement) => HTMLImageElement | null;
+
+/**
  * Extract messages from the current Teams channel.
  * Uses multiple selector strategies for robustness.
  */
@@ -1229,7 +1365,10 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
     };
   });
   const extractedMessages: ExtractedMessage[] = 
-  await page.evaluate(async (args: { kwList: string[]; groupName: string; imgBlocklist: string[] }) => {
+  await page.evaluate(async (args: { kwList: string[]; groupName: string; imgBlocklist: string[]; avatarHelpersSource: string }) => {
+    // Inject avatar helpers (module-scope source, truyền qua arg — Playwright
+    // không serialize closure của function evaluate).
+    eval(args.avatarHelpersSource);
     const results: ExtractedMessage[] = [];
     let counter = 0;
     const seen = new Set<string>();
@@ -1247,6 +1386,13 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
 
     let lastSender = "";
     let lastSenderAvatar = "";
+    // lastSenderIsMine (đồng bộ cùng lastSender) — chỉ fallback lastSender khi
+    // bubble hiện tại CÙNG isMine với lastSender. Lý do: trong group chat nhiều
+    // member, khi DOM đang lazy-load và nameEl chưa render, tin của 1 người khác
+    // (isMine=false) kế thừa nhầm lastSender của bubble mine=Y trước đó → bị
+    // gán thành "Me" sau cleanTeamMessages → sai user nhắn (xem PROJECT_STATUS:
+    // "Hackathon test" 10/08: tin của "Luan Tran Cao" bị lưu sender="Me").
+    let lastSenderIsMine = false;
 
     for (const el of wrappers) {
       const isMine = el.classList.contains('fui-ChatMyMessage') ||
@@ -1256,55 +1402,30 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
       let sender = nameEl?.textContent?.trim() || "";
       
       let senderAvatar = "";
-      let avatarImg: HTMLImageElement | null = null;
-
-      const avatarSelectors = [
-        'img.fui-Avatar__image',
-        'img[class*="avatar"]',
-        'img[data-tid*="avatar"]',
-        'img[class*="Avatar"]',
-        '[class*="fui-Avatar"] img',
-        '[class*="avatar"] img',
-        'img[class*="Persona"]',
-        'img[class*="persona"]',
-        'img[class*="profile"]',
-        'img[aria-label*="avatar"]',
-        'img[role="presentation"]',
-      ];
-
-      for (const sel of avatarSelectors) {
-        avatarImg = el.querySelector<HTMLImageElement>(sel);
-        if (avatarImg) break;
-      }
-
-      if (!avatarImg) {
-        const allImgs = el.querySelectorAll<HTMLImageElement>('img[src]');
-        let smallestArea = Infinity;
-        let smallestImg: HTMLImageElement | null = null;
-
-        allImgs.forEach((img) => {
-          const w = img.naturalWidth || parseInt(img.getAttribute('width') || '0');
-          const h = img.naturalHeight || parseInt(img.getAttribute('height') || '0');
-          const area = w * h;
-          if (w > 0 && w <= 28 && h > 0 && h <= 28 && area < smallestArea) {
-            smallestArea = area;
-            smallestImg = img;
-          }
-        });
-
-        if (smallestImg) {
-          avatarImg = smallestImg;
-        }
-      }
-
+      const avatarImg = pickSenderAvatarImg(el);
       if (avatarImg) {
         senderAvatar = avatarImg.getAttribute('src') || avatarImg.getAttribute('data-src') || "";
+        // Loại placeholder chung của Teams (avatar giả "người dùng ẩn") —
+        // nếu lưu nó, UI hiển thị ảnh placeholder thay vì dicebear fallback.
+        if (!isUsableAvatarSrc(senderAvatar)) senderAvatar = "";
       }
 
       if (!sender && lastSender) {
-        sender = lastSender;
+        // Chỉ kế thừa lastSender nếu cùng isMine — tránh gán nhầm tin của người
+        // khác cho "Me" hay ngược lại khi nameEl chưa render kịp do Teams v2
+        // lazy-load. Nếu khác isMine → bỏ qua fallback (tin này sẽ được extract
+        // ở lần sau khi nameEl render xong), trừ khi isMine=true (tin của mình):
+        // class fui-ChatMyMessage đã xác nhận → sender="Me" trực tiếp.
+        if (lastSenderIsMine === isMine) {
+          sender = lastSender;
+        } else if (isMine) {
+          // DOM nói là mine, không có nameEl — tin của chính mình, không cần name.
+          sender = "Me";
+        }
+        // else: isMine=false nhưng lastSender là mine khác → skip tin (no fallback)
       } else if (sender) {
         lastSender = sender;
+        lastSenderIsMine = isMine;
       }
 
       if (!senderAvatar && lastSenderAvatar && sender === lastSender) {
@@ -1701,10 +1822,15 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
       '/personal-expressions/',
       '/reactions/',
       '/evergreen-assets/'
-    ]
+    ],
+    avatarHelpersSource
   });
 
   log(`Trich xuat duoc ${extractedMessages.length} tin nhan.`);
+
+  // Hydrate avatar URL → data URL trong-page (URL cần session Teams, hết hạn
+  // sau này) — trước cleanTeamMessages để không bỏ sót avatar.
+  await hydrateSenderAvatars(page, extractedMessages);
 
   // Gán sender="Me" cho tin do chính mình gửi (class fui-ChatMyMessage hoặc
   // tên hiển thị khớp danh xưng "Me" — Teams không luôn gắn class own-message).
@@ -1746,7 +1872,9 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
     };
   });
 
-  const extractedMessages: ExtractedMessage[] = await page.evaluate((args: { groupName: string }) => {
+  const extractedMessages: ExtractedMessage[] = await page.evaluate((args: { groupName: string; avatarHelpersSource: string }) => {
+    // Inject avatar helpers (module-scope source, truyền qua arg).
+    eval(args.avatarHelpersSource);
     const results: ExtractedMessage[] = [];
     let counter = 0;
     const seen = new Set<string>();
@@ -1761,6 +1889,10 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
     );
 
     let lastSender = "";
+    let lastSenderAvatar = "";
+    // lastSenderIsMine (đồng bộ cùng lastSender) — chỉ fallback lastSender khi
+    // bubble hiện tại CÙNG isMine với lastSender. Xem giải thích trong extractMessages.
+    let lastSenderIsMine = false;
 
     for (const el of wrappers) {
       const isMine = el.classList.contains('fui-ChatMyMessage') ||
@@ -1769,10 +1901,31 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
       const nameEl = el.querySelector<HTMLElement>('[data-tid="message-author-name"]');
       let sender = nameEl?.textContent?.trim() || "";
 
+      // Avatar giống hệt extractMessages — nếu không tìm được ảnh thật
+      // (placeholder evergreen-asset…) thì coi như không có, để UI fallback
+      // dicebear thay vì hiển thị ảnh mặc định chung.
+      let senderAvatar = "";
+      const avatarImg = pickSenderAvatarImg(el);
+      if (avatarImg) {
+        senderAvatar = avatarImg.getAttribute('src') || avatarImg.getAttribute('data-src') || "";
+        if (!isUsableAvatarSrc(senderAvatar)) senderAvatar = "";
+      }
+
       if (!sender && lastSender) {
-        sender = lastSender;
+        if (lastSenderIsMine === isMine) {
+          sender = lastSender;
+        } else if (isMine) {
+          sender = "Me";
+        }
       } else if (sender) {
         lastSender = sender;
+        lastSenderIsMine = isMine;
+      }
+
+      if (!senderAvatar && lastSenderAvatar && sender === lastSender) {
+        senderAvatar = lastSenderAvatar;
+      } else if (senderAvatar) {
+        lastSenderAvatar = senderAvatar;
       }
 
       const timeEl = el.querySelector<HTMLTimeElement>("time");
@@ -1856,6 +2009,7 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
       results.push({
         id: `text_${counter}_${Date.now()}`,
         sender,
+        senderAvatar: senderAvatar || undefined,
         content,
         images: undefined,
         timestamp: timestampText,
@@ -1868,9 +2022,13 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
     }
 
     return results;
-  }, { groupName: pageInfo.channelName });
+  }, { groupName: pageInfo.channelName, avatarHelpersSource });
 
   log(`Trich xuat text: ${extractedMessages.length} messages`);
+
+  // Hydrate avatar URL → data URL (extractTextOnly chạy trước early-stop —
+  // nếu không có extractMessages nào chạy thì avatar sẽ là URL hết hạn).
+  await hydrateSenderAvatars(page, extractedMessages);
 
   // Gán sender="Me" cho tin do chính mình gửi (xem cleanTeamMessages).
   cleanTeamMessages(extractedMessages);
@@ -1953,6 +2111,10 @@ export async function incrementalScrollAndExtract(
           : undefined,
         timestamp: m.timestamp as any,
         timestampMs: (m as any).timestampMs,
+        // Giữ isMine từ extract (sẽ true khi sender="Me" nhờ cleanTeamMessages).
+        // Trước đây addToCollection dropout flag này → DB lưu isMine=null cho
+        // mọi tin Teams → UI phải dựa vào sender="Me" mới biết tin của mình.
+        isMine: (m as any).isMine,
       };
       const key = `${cleaned.sender}|${cleaned.timestampMs}|${(cleaned.content || '').slice(0, 30)}`;
       const existing = allMessages.get(key);
@@ -1967,6 +2129,23 @@ export async function incrementalScrollAndExtract(
         // Text-only pass (hasImages=false) drops the avatar — keep the one
         // captured by an earlier image pass.
         allMessages.set(key, { ...existing, senderAvatar: cleaned.senderAvatar });
+      } else if (
+        // Tin đã có trong collection nhưng được extract lại với thông tin
+        // tốt hơn: (a) sender cụ thể (Luan Tran Cao...) thay vì "Me"/"",
+        // (b) isMine=true rõ ràng thay vì null. Vì key dedup chứa sender,
+        // 2 lần extract cùng 1 tin với sender khác nhau tạo 2 key khác nhau
+        // → saveMessages upsert theo messageId (timestampMs+content) nên row
+        // cuối phụ thuộc thứ tự save. Ưu tiên sender cụ thể để lần save sau
+        // không ghi đè sender đúng bằng "Me" (bug: tin Luan "ok anh thấy rồi
+        // nha" bị lưu Me dù DOM nói Luan).
+        (cleaned.sender && cleaned.sender !== "Me" && (!existing.sender || existing.sender === "Me")) ||
+        (cleaned.isMine && !existing.isMine)
+      ) {
+        // Cùng timestampMs+content nhưng sender/isMine tốt hơn → thay thế
+        const better = { ...existing, ...cleaned, sender: cleaned.sender || existing.sender };
+        allMessages.delete(key);
+        const betterKey = `${better.sender}|${better.timestampMs}|${(better.content || '').slice(0, 30)}`;
+        allMessages.set(betterKey, better as any);
       }
     }
   };
@@ -2165,51 +2344,7 @@ export async function incrementalScrollAndExtract(
     .filter((m: any) => m.content || m.images?.length)
     .sort((a: any, b: any) => a.timestampMs - b.timestampMs);
 
-  // ── Hydrate sender avatars ──
-  // Teams avatar URLs (profilepicturev2) require the live browser session
-  // (auth cookies + tokens) — server-side fetch without them returns 401.
-  // Fetching in-page (same origin as the loaded Teams session) succeeds, so
-  // we convert avatars to base64 data URLs which render anywhere.
-  const avatarUrls = [...new Set(finalMessages.map((m) => (m as any).senderAvatar).filter((u): u is string => typeof u === 'string' && u.length > 0))];
-  if (avatarUrls.length > 0) {
-    log(`Hydrating ${avatarUrls.length} unique Teams avatars in-page...`);
-    const avatarCache = new Map<string, string>();
-    for (const url of avatarUrls) {
-      try {
-        const dataUrl = await page.evaluate(async (u: string) => {
-          try {
-            const r = await fetch(u, { credentials: "include", signal: AbortSignal.timeout(15000) });
-            if (!r.ok) return null;
-            const blob = await r.blob();
-            return await new Promise<string | null>((resolve) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result as string);
-              reader.onerror = () => resolve(null);
-              reader.readAsDataURL(blob);
-            });
-          } catch {
-            return null;
-          }
-        }, url);
-        if (dataUrl && dataUrl.startsWith('data:')) {
-          avatarCache.set(url, dataUrl);
-        } else {
-          log(`  avatar fetch failed: ${url.slice(0, 80)}`);
-        }
-      } catch (e) {
-        log(`  avatar fetch error: ${String(e).slice(0, 80)}`);
-      }
-    }
-    let hydrated = 0;
-    for (const m of finalMessages) {
-      const av = (m as any).senderAvatar;
-      if (av && avatarCache.has(av)) {
-        (m as any).senderAvatar = avatarCache.get(av);
-        hydrated++;
-      }
-    }
-    log(`Hydrated ${hydrated} Teams avatars (${avatarCache.size} unique).`);
-  }
+  await hydrateSenderAvatars(page, finalMessages);
 
   const pageInfo = await page.evaluate(() => {
     const channelEl =
