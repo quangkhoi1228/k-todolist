@@ -595,11 +595,16 @@ async function main() {
   }
 
   // ── Sync lock ─────────────────────────────────────────────
-  // Script này dùng CHUNG Chrome profile với sync khác và teams-send —
-  // không bao giờ được chạy 2 script cùng lúc. Queue tập trung
-  // (SYNC_QUEUE_MANAGED=1) đã serialize; chạy tay / qua route thì claim lock.
-  const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
-  const SEND_RUNNING_FILE = path.join(process.cwd(), ".teams-send-running");
+  // Script này dùng CHUNG Chrome profile với sync khác + send — không bao
+  // giờ được chạy 2 script cùng lúc. Queue tập trung (SYNC_QUEUE_MANAGED=1)
+  // đã serialize; chạy tay / qua route thì claim lock.
+  // Lock file tách theo PLATFORM: Teams → .teams-sync-running, Zalo →
+  // .zalo-sync-running (2 platform dùng Chrome profile khác nhau → không
+  // đụng nhau, worker cũng tách riêng).
+  const SYNC_RUNNING_FILE = path.join(process.cwd(),
+    platform === "zalo" ? ".zalo-sync-running" : ".teams-sync-running");
+  const SEND_RUNNING_FILE = path.join(process.cwd(),
+    platform === "zalo" ? ".zalo-send-running" : ".teams-send-running");
 
   function isPidAlive(pid: number): boolean {
     try { process.kill(pid, 0); return true; } catch { return false; }

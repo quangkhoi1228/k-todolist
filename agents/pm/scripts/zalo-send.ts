@@ -31,13 +31,16 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * Lock chung: sync (queue/sync-all/sync-one) và zalo-send dùng CHUNG Chrome
- * profile `.zalo-session/chrome-profile` — 2 Chrome cùng user-data-dir không
- * chạy song song được. zalo-send phải:
- * - Chờ sync đang chạy xong (từng vòng 10s, tối đa 3 phút — KHÔNG 20 phút)
- * - Ghi `.zalo-send-running` để sync biết mà chờ/skip
+ * Lock chung cho ZALO: sync Zalo (queue/sync-all/sync-one) và zalo-send dùng
+ * CHUNG Chrome profile `.zalo-session/chrome-profile` — 2 Chrome cùng
+ * user-data-dir không chạy song song được. zalo-send phải:
+ * - Chờ sync ZALO đang chạy xong (từng vòng 3s, tối đa 3 phút)
+ * - Ghi `.zalo-send-running` để sync Zalo biết mà chờ/skip
+ *
+ * Lưu ý: chỉ check lock ZALO (`.zalo-sync-running`) — Teams sync dùng
+ * profile khác, không cản trở Zalo send.
  */
-const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+const SYNC_RUNNING_FILE = path.join(process.cwd(), ".zalo-sync-running");
 const SEND_RUNNING_FILE = path.join(process.cwd(), ".zalo-send-running");
 
 function pidAlive(pid: number): boolean {

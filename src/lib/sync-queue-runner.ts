@@ -3,10 +3,15 @@
  * khi route API đầu tiên được gọi, vì cần userId từ Clerk).
  *
  * Mỗi `autoSyncInterval` phút (mặc định 30), nếu:
- * - Không mở project nào (queue ưu tiên project đang xem sẽ chiếm Chrome)
+ * - Không mở project nào (queue ưu tiên project đang xem chiếm worker)
  * - Không có job nào đang chạy/đang chờ
  * thì enqueue job sync-all: TẤT CẢ nhóm chat đã add của user, incremental
  * theo watermark (không phải full sync).
+ *
+ * Sync-all tự chia thành 2 job Teams + Zalo vào 2 queue riêng (xem
+ * `docs/dual-platform-sync-queue.md`); 2 worker chạy song song. Khi user
+ * mở project, task project được chèn lên đầu queue (KHÔNG cancel sync-all),
+ * và cooldown 3 phút sau project sync cho sync-all chạy tiếp.
  */
 
 import {

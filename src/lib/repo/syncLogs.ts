@@ -93,6 +93,27 @@ export async function getLogsPaginated(opts: {
   };
 }
 
+/** Log mới nhất của 1 project + chat (dùng cho queue trigger summary — biết saved count). */
+export async function getLatestLogByProjectChat(opts: {
+  projectId: number | string;
+  chatName: string;
+  type?: string;
+}) {
+  const db = getDb();
+  const conditions = [
+    eq(syncLogs.projectId, Number(opts.projectId)),
+    eq(syncLogs.chatName, opts.chatName),
+    opts.type ? eq(syncLogs.type, opts.type) : undefined,
+  ].filter(Boolean);
+  const rows = await db
+    .select()
+    .from(syncLogs)
+    .where(and(...(conditions as any)))
+    .orderBy(desc(syncLogs.createdAt))
+    .limit(1);
+  return rows.length > 0 ? mapLog(rows[0]) : null;
+}
+
 export async function getRecentLogs(opts: { type?: string; userId?: string; limit?: number }) {
   const db = getDb();
   const limit = opts.limit ?? 50;

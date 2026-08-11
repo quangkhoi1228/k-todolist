@@ -14,14 +14,19 @@ import path from "path";
 import fs from "fs";
 
 const RUNNING_FILE = path.join(process.cwd(), ".zalo-automator-running");
-const SYNC_RUNNING_FILE = path.join(process.cwd(), ".teams-sync-running");
+const SYNC_RUNNING_FILE = path.join(process.cwd(), ".zalo-sync-running");
 
-/** Dừng sync nền đang chạy để giải phóng Chrome profile cho login headfull. */
+/** Dừng sync Zalo nền đang chạy để giải phóng Chrome profile cho login headfull.
+ *  Chỉ kill sync ZALO — KHÔNG kill sync Teams (2 platform dùng Chrome profile
+ *  khác nhau, Teams sync không cản trở login Zalo). */
 function stopBackgroundSync() {
   try {
     if (fs.existsSync(SYNC_RUNNING_FILE)) {
-      const pid = parseInt(fs.readFileSync(SYNC_RUNNING_FILE, "utf-8").trim(), 10);
-      if (!isNaN(pid)) {
+      // Lock mới chứa nhiều PID (mỗi script con 1 dòng) — kill tất cả
+      const pids = fs.readFileSync(SYNC_RUNNING_FILE, "utf-8")
+        .split("\n").map(l => l.trim()).filter(Boolean)
+        .map(l => parseInt(l, 10)).filter(p => !isNaN(p));
+      for (const pid of pids) {
         try { process.kill(pid, 9); } catch { /* already dead */ }
       }
       fs.unlinkSync(SYNC_RUNNING_FILE);
