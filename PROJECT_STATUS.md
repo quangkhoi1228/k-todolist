@@ -9,7 +9,7 @@ tags: []
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-11 (flow init → kick-off + role capabilities + bỏ kho quy trình xong; fix agent trả lời tiếng Việt không dấu — thêm ràng buộc "có dấu" vào system prompt + sửa chuỗi hardcode. Verify UI qua Chrome tạm dừng — chỉ mở browser khi user yêu cầu; script `scripts/verify-ui-open.sh` vẫn giữ để dùng khi cần)
+- **Cập nhật lần cuối:** 2026-08-11 (gộp tab Gợi ý: PhaseWorkflowCard từ tab Thông tin dự án chuyển sang tab Gợi ý, xoá toàn bộ UI/list suggestion cũ trong ProjectDetailPanel; user không yêu cầu verify UI)
 - **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
@@ -106,6 +106,7 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - Sync Teams + Zalo bằng Playwright **Chrome profile thật** (`useRealChrome: true`, `createStealthContext`); sync từng chat, sync all groups/projects; health check; sync logs.
 - ISD pipeline: fetch ticket (fetch-isd), refresh statuses, lưu `projectIsdData`; match trạng thái → suggestions.
 - Suggestion actions: mark read/resolve, **Thêm task**, "Sao chép tin nhắn".
+- **Gộp tab Gợi ý — PhaseWorkflowCard thay thế list suggestion cũ** (11/08, code xong, **user không yêu cầu verify UI**): user quyết định **tạm loại bỏ toàn bộ logic gợi ý trong tab Gợi ý** (sẽ bổ sung sau) và **bỏ PhaseWorkflowCard khỏi tab Thông tin dự án**. Kết quả trong `ProjectDetailPanel.tsx`: xoá hết state/handler/JSX suggestion cũ (`projectSuggestions`, `smx`, `tmx`, `runSuggestionAnalysis`, `handleAddSuggestionTask`, `analysingSuggestions`, `suggestionsError`, `expandedSuggestionId`, `addingTaskId`, `taskError`, `taskAddedId`, `analysisAttemptedRef`, `projectChatsRef`, `getGroupAction`, interface `SuggestionRow`, import `useSuggestionsByProject`/`useSuggestionMutations`/`useTaskMutations`); tab Gợi ý giờ chỉ chứa `PhaseWorkflowCard`; tab Thông tin dự án chỉ còn WYSIWYG editor; label tab bỏ badge unread. Data layer (`projectSuggestions` table + API + hooks + `SuggestionsQuickView` global) **giữ nguyên** — chỉ gỡ UI trong tab project detail. `tsc --noEmit` exit 0.
 - **Workflow dự án init → kick-off** (11/08): `projectWorkflows` table + card "Quy trình dự án" trong tab Thông tin dự án — gợi ý mẫu tin nhắn chào Sale (copy), gợi ý nhập thông tin sơ bộ (pre-sale + nhóm external/internal), chuyển phase `kickoff`, gợi ý câu hỏi hỏi Pre-sale/Sale, nhập yêu cầu sơ bộ → **tự sinh task tracking** (`[Kickoff] ...`). Mỗi bước đánh dấu done → update tiến độ. Phase hiển thị badge trên Kanban board (Init/Kick-off). **Check lại 11/08**: tsc + build OK; API test full flow (ensure → step → data → phase → generate tasks → taskIds) chạy đúng, phase đồng bộ vào `projects`; verify browser thật CDP 9223 — project 16 (init): card + hint + nút "Đã gửi" bước 1 hoạt động, nút Chuyển Kick-off chỉ hiện khi đủ 2 bước; project 45 (kickoff): card hiển thị 2 task tracking tự sinh. **Fix nhỏ**: `moveToKickoff` giờ giữ nguyên trạng thái `skipped` của bước đã bỏ qua (trước ghi đè thành done); toast sau lưu requirements gộp luôn số task đã sinh.
 - **Role capabilities + member permissions** (11/08): `CAPABILITY_CATALOG` (10 chức năng) trong `src/lib/roleCapabilities.ts` (file thuần, dùng chung server/client); `projectRoles.capabilities` + `projectMembers.permissions` (jsonb) — UI settings/roles tick chức năng theo role, MemberCard hiển thị + chỉnh chức năng riêng member (ghi đè role). **Đã xoá cơ chế Kho quy trình (businessProcesses)** — table + page + API + hooks + sidebar link đã gỡ.
 
@@ -377,6 +378,8 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 ---
 
 ## 4. Next actions trước mắt
+
+0l. **Bổ sung lại logic gợi ý vào tab Gợi ý** (11/08, user sẽ làm sau) — tạm thời tab Gợi ý chỉ chứa PhaseWorkflowCard; toàn bộ state/handler/UI list suggestion cũ trong `ProjectDetailPanel.tsx` đã bị xoá hẳn, data layer (`projectSuggestions` + API + hooks + SuggestionsQuickView) vẫn giữ nguyên. Khi user muốn thêm lại: render lại list suggestion trong tab Gợi ý (có thể đặt dưới PhaseWorkflowCard), dùng lại `useSuggestionsByProject`/`useSuggestionMutations`.
 
 0j. **Flow init → kick-off vừa làm (11/08, đã verify browser thật + check lại)** — cần user dùng thử trên dự án thật:
    - Mở project (phase Init) → tab Thông tin dự án → card "Quy trình dự án": sao chép tin chào Sale → nhập thông tin sơ bộ (pre-sale, nhóm ext/int) → bấm "Chuyển sang Kick-off" → chọn câu hỏi gửi Pre-sale/Sale → nhập yêu cầu sơ bộ → tự sinh task tracking.

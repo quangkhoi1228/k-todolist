@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
-import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, Target, ChevronDown, ListPlus, MessagesSquare, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal, History, ShieldCheck } from "lucide-react";
+import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, ChevronDown, ListPlus, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal, History, ShieldCheck } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import { SowImportDialog } from "./SowImportDialog";
 import { format } from "date-fns";
@@ -13,8 +13,6 @@ import type { Doc } from "@/lib/types";
 import { CAPABILITY_CATALOG, resolveMemberCapabilities, type RoleCapability } from "@/lib/roleCapabilities";
 import type { SummaryData } from "@/lib/repo/projectSummaries";
 import {
-  useSuggestionsByProject,
-  useSuggestionMutations,
   useChatMutations,
   useGroupMutations,
   useMembersByProject,
@@ -29,7 +27,6 @@ import {
   useProjectMutations,
   useNoteMutations,
   useUploadFile,
-  useTaskMutations,
   useProjectSummaries,
   useProjectSummaryMutations,
   useProjectWorkflow,
@@ -50,23 +47,6 @@ interface ChatMessage {
   isMine?: boolean;
   timestampMs?: number | string | null;
   timestamp?: number | string | null;
-}
-interface SuggestionRow {
-  _id?: string;
-  type?: string;
-  title?: string;
-  description?: string;
-  suggestionData?: string;
-  priority?: string;
-  sourceChatName?: string;
-  sourceMessage?: string;
-  sourceSender?: string;
-  sourceTimestamp?: number;
-  actionLabel?: string;
-  actionUrl?: string;
-  input?: string;
-  reasoning?: string;
-  expectedOutcome?: string;
 }
 
 const DEFAULT_NOTES = `<h2>Thông tin chung</h2>
@@ -155,17 +135,6 @@ function PriorityBadge({ priority }: { priority?: string }) {
 function proxyImageUrl(src: string): string {
   if (src.startsWith("blob:") || src.startsWith("data:") || src.startsWith("storage:")) return src;
   return `/api/proxy-image?url=${encodeURIComponent(src)}`;
-}
-
-/** Lấy groupAction từ suggestionData (vd: add_groups — cần thêm nhóm vào dự án) */
-function getGroupAction(s: SuggestionRow): string | undefined {
-  try {
-    if (s.suggestionData) {
-      const parsed = JSON.parse(s.suggestionData);
-      if (parsed?.groupAction) return parsed.groupAction;
-    }
-  } catch { /* ignore malformed data */ }
-  return undefined;
 }
 
 /** Từ deep link Teams/Zalo → { platform, name } để lưu làm tên nhóm.
@@ -1052,18 +1021,9 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
     }
   }, [isGroupManagerOpen, updateDropdownAnchor]);
 
-  // ─── Suggestions State ────────────────────────
-  const { data: projectSuggestions } = useSuggestionsByProject(project._id ?? null);
-  const smx = useSuggestionMutations();
-  const tmx = useTaskMutations();
+  // ─── Members State ────────────────────────
   const cmx = useChatMutations();
   const gmx = useGroupMutations();
-  const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
-  const [addingTaskId, setAddingTaskId] = useState<string | null>(null);
-  const [taskError, setTaskError] = useState<string | null>(null);
-  const [taskAddedId, setTaskAddedId] = useState<string | null>(null);
-
-  // ─── Members State ────────────────────────
   const { data: projectMembers } = useMembersByProject(project._id ?? null);
   const { data: projectRolesList } = useRoles(userId);
   const mmx = useMemberMutations();
@@ -1090,109 +1050,6 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const { data: savedZaloChatsData } = useScrapedGroups(userId, "zalo");
   const savedTeamsChats = savedTeamsChatsData ?? [];
   const savedZaloChats = savedZaloChatsData ?? [];
-  const [analysingSuggestions, setAnalysingSuggestions] = useState(false);
-  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
-  const projectChatsRef = useRef<ChatMessage[]>([]);
-  // We'll update the ref from the projectChats data below via another effect
-
-  const runSuggestionAnalysis = useCallback(async () => {
-    if (!project._id || !userId) return;
-    setAnalysingSuggestions(true);
-    setSuggestionsError(null);
-    try {
-      const messages = projectChatsRef.current;
-      const res = await fetch("/api/agents/analyse-suggestions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectName: project?.name || "",
-          projectId: project._id,
-          messages,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to analyse suggestions");
-      const data = await res.json();
-      if (data.ok && data.suggestions && data.suggestions.length > 0) {
-        await smx.addSuggestionsBatch({
-          projectId: project._id,
-          userId,
-          suggestions: data.suggestions.map((s: SuggestionRow) => ({
-            type: s.type || "info",
-            title: s.title || "Gợi ý",
-            description: s.description || "",
-            sourceMessage: s.sourceMessage || undefined,
-            sourceSender: s.sourceSender || undefined,
-            sourceChatName: s.sourceChatName || undefined,
-            sourceTimestamp: s.sourceTimestamp || undefined,
-            actionLabel: s.actionLabel || undefined,
-            actionUrl: s.actionUrl || undefined,
-            suggestionData:
-              s.input || s.reasoning || s.expectedOutcome
-                ? JSON.stringify({
-                    input: s.input,
-                    reasoning: s.reasoning,
-                    expectedOutcome: s.expectedOutcome,
-                  })
-                : undefined,
-          })),
-        });
-      }
-    } catch (err) {
-      console.error("[Suggestions] Error:", err);
-      setSuggestionsError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setAnalysingSuggestions(false);
-    }
-  }, [project._id, project?.name, userId, smx]);
-
-  // Thêm suggestion vào tasklist của project
-  const handleAddSuggestionTask = useCallback(async (s: SuggestionRow) => {
-    if (addingTaskId) return;
-    setAddingTaskId(s._id ?? null);
-    setTaskError(null);
-    setTaskAddedId(null);
-    try {
-      let priority: string | undefined;
-      try {
-        if (s.suggestionData) {
-          const parsed = JSON.parse(s.suggestionData);
-          priority = parsed?.priority;
-        }
-      } catch { /* ignore */ }
-      await tmx.createTask({
-        userId,
-        title: s.title,
-        estimatedTime: 0,
-        notes: s.description,
-        project: project._id,
-        status: "todo",
-        priority: priority === "high" ? "high" : priority === "low" ? "low" : "normal",
-      });
-      setTaskAddedId(s._id ?? null);
-    } catch (err) {
-      console.error("[Suggestions] Add task failed:", err);
-      setTaskError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setAddingTaskId(null);
-    }
-  }, [addingTaskId, tmx, userId, project._id]);
-
-  // Auto-analyse when switching to suggestions tab — but ONLY ONCE per project
-  // visit. Without the ref guard, an empty projectSuggestions list + failed LLM
-  // analysis re-triggers this effect forever (state flips → re-render → effect
-  // re-runs → infinite loop → page flickers continuously).
-  const analysisAttemptedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (tab !== "suggestions") return;
-    if (projectSuggestions && projectSuggestions.length > 0) {
-      analysisAttemptedRef.current = project._id;
-      return;
-    }
-    if (analysisAttemptedRef.current === project._id) return;
-    if (analysingSuggestions) return;
-    analysisAttemptedRef.current = project._id;
-    runSuggestionAnalysis();
-  }, [tab, projectSuggestions, analysingSuggestions, runSuggestionAnalysis, project._id]);
 
   const [editorContent, setEditorContent] = useState(() => {
     if (!project.notes) return DEFAULT_NOTES;
@@ -1298,11 +1155,6 @@ ${resourceTicketsLinks}
   // Fetch emails for this project
   const { data: projectEmailsData } = useEmails(userId, { projectId: project._id });
   const projectEmails = projectEmailsData ?? [];
-
-  // Keep ref in sync for suggestions analysis
-  useEffect(() => {
-    projectChatsRef.current = projectChats || [];
-  }, [projectChats]);
 
   const fetchChats = async (platform?: "teams" | "zalo") => {
     if (!userId) return;
@@ -2065,7 +1917,7 @@ ${resourceTicketsLinks}
           }`}
         >
           <Sparkles className="w-3 h-3" />
-          Gợi ý ({projectSuggestions?.filter(s => !s.isRead)?.length || 0})
+          Gợi ý
         </button>
         <button
           type="button"
@@ -2143,25 +1995,6 @@ ${resourceTicketsLinks}
       <div className={`p-3 ${tab === "chats" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
         {tab === "info" ? (
           <div className="space-y-1.5">
-            {/* Phase Workflow (init → kick-off) */}
-            <PhaseWorkflowCard
-              project={{
-                _id: project._id,
-                name: project.name,
-                ticketId: (project as any).ticketId ?? undefined,
-              }}
-              userId={userId ?? undefined}
-              workflow={workflow}
-              loading={workflowLoading}
-              onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
-              onUpdateStep={(stepKey, status) =>
-                wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status })
-              }
-              onGenerateTasks={(items, prefix) =>
-                wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
-              }
-              onSwitchTab={(t) => handleTabChange(t as any)}
-            />
             {/* WYSIWYG Editor — compact */}
             <div className="relative min-h-[120px] max-h-[250px] overflow-y-auto border border-border/50 rounded-lg">
               <WysiwygEditor
@@ -3482,332 +3315,24 @@ ${resourceTicketsLinks}
             </div>
           </div>
         ) : tab === "suggestions" ? (
-          <div className="flex flex-col gap-2 max-h-[500px] overflow-y-auto custom-scrollbar">
-            {/* Header */}
-            <div className="flex items-center justify-between shrink-0 border-b border-border/40 pb-2 mb-1">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-                <span className="text-[12px] font-semibold text-foreground/90">
-                  Gợi ý hành động
-                </span>
-                <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded-full">
-                  {projectSuggestions?.length || 0}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={runSuggestionAnalysis}
-                disabled={analysingSuggestions}
-                className={`text-[10px] px-2 py-1 rounded border transition-all flex items-center gap-1 cursor-pointer ${
-                  analysingSuggestions
-                    ? "bg-muted text-muted-foreground border-border/50"
-                    : "bg-primary/10 text-primary border-primary/20 hover:bg-primary/20"
-                }`}
-              >
-                {analysingSuggestions ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                Phân tích
-              </button>
-            </div>
-
-            {/* Error */}
-            {suggestionsError && (
-              <div className="p-2 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-[11px] text-red-700 dark:text-red-300">
-                {suggestionsError}
-              </div>
-            )}
-
-            {/* Suggestions List */}
-            {projectSuggestions && projectSuggestions.length > 0 ? (
-              <div className="space-y-1.5 pr-1">
-                {projectSuggestions.map((s) => (
-                  <div
-                    key={s._id}
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                      s.isResolved
-                        ? "bg-muted/20 border-border/20 opacity-60"
-                        : !s.isRead
-                          ? "bg-primary/5 border-primary/30 shadow-sm"
-                          : s.type === "warning"
-                            ? "bg-red-50/60 dark:bg-red-500/10 border-red-200 dark:border-red-500/30"
-                            : s.type === "transfer_request"
-                              ? "bg-blue-50/60 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30"
-                              : s.type === "mention"
-                                ? "bg-amber-50/60 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30"
-                                : s.type === "deadline"
-                                  ? "bg-orange-50/60 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/30"
-                                  : s.type === "action_item"
-                                    ? "bg-purple-50/60 dark:bg-purple-500/10 border-purple-200 dark:border-purple-500/30"
-                                    : "bg-card/50 border-border/30"
-                    }`}
-                    onClick={() => {
-                      if (!s.isRead) smx.markSuggestionAsRead(s._id);
-                      setExpandedSuggestionId(expandedSuggestionId === s._id ? null : s._id);
-                    }}
-                  >
-                    <div className="flex items-start gap-2">
-                      <div className="flex flex-col items-center gap-0.5 mt-0.5 shrink-0">
-                        <div className={`w-2 h-2 rounded-full ${
-                          !s.isRead ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
-                        }`} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${
-                            s.type === "warning" ? "bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300"
-                              : s.type === "transfer_request" ? "bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300"
-                              : s.type === "mention" ? "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300"
-                              : s.type === "deadline" ? "bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-300"
-                              : s.type === "action_item" ? "bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300"
-                              : "bg-slate-100 dark:bg-slate-500/20 text-slate-700 dark:text-slate-300"
-                          }`}>
-                            {s.type === "transfer_request" ? "Bàn giao"
-                              : s.type === "mention" ? "Đề cập"
-                              : s.type === "action_item" ? "Hành động"
-                              : s.type === "deadline" ? "Hạn chót"
-                              : s.type === "warning" ? "Cảnh báo"
-                              : "Thông tin"}
-                          </span>
-                          <span className="text-[11px] font-semibold text-foreground">{s.title}</span>
-                        </div>
-                        <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{s.description}</p>
-
-                        {/* Source info */}
-                        {(s.sourceSender || s.sourceChatName) && (
-                          <div className="flex items-center gap-2 mt-1.5">
-                            {s.sourceSender && (
-                              <span className="text-[9px] text-muted-foreground/60 bg-muted/40 px-1.5 py-0.5 rounded">
-                                {s.sourceSender}
-                              </span>
-                            )}
-                            {s.sourceChatName && (
-                              <span className="text-[9px] text-muted-foreground/60 bg-muted/40 px-1.5 py-0.5 rounded">
-                                {s.sourceChatName}
-                              </span>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Reason details (input / reasoning / expected outcome) */}
-                        {(() => {
-                          let reason: { input?: string; reasoning?: string; expectedOutcome?: string } = {};
-                          try {
-                            if (s.suggestionData) {
-                              const parsed = JSON.parse(s.suggestionData);
-                              reason = {
-                                input: parsed?.input,
-                                reasoning: parsed?.reasoning,
-                                expectedOutcome: parsed?.expectedOutcome,
-                              };
-                            }
-                          } catch { /* ignore malformed data */ }
-                          const hasReason = Boolean(reason.input || reason.reasoning || reason.expectedOutcome);
-                          const expanded = expandedSuggestionId === s._id;
-                          return (
-                            <div className="mt-1.5">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setExpandedSuggestionId(expanded ? null : s._id);
-                                }}
-                                className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
-                                  expanded
-                                    ? "bg-primary/10 text-primary border-primary/30"
-                                    : "bg-muted/30 text-muted-foreground border-border/40 hover:bg-muted/50 hover:text-foreground"
-                                }`}
-                              >
-                                <BrainCircuit className="w-2.5 h-2.5" />
-                                {expanded ? "Thu gọn" : "Xem nguyên nhân"}
-                                <ChevronDown className={`w-2.5 h-2.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
-                              </button>
-                              {expanded && (
-                                <div className="mt-1.5 space-y-1.5 rounded-lg border border-border/30 bg-background/60 dark:bg-zinc-900/60 p-2">
-                                  {reason.input && (
-                                    <div className="flex gap-1.5">
-                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
-                                      <div className="min-w-0">
-                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Input</p>
-                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.input}</p>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {reason.reasoning && (
-                                    <div className="flex gap-1.5">
-                                      <BrainCircuit className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" />
-                                      <div className="min-w-0">
-                                        <p className="text-[8px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wide">Suy luận</p>
-                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.reasoning}</p>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {reason.expectedOutcome && (
-                                    <div className="flex gap-1.5">
-                                      <Target className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
-                                      <div className="min-w-0">
-                                        <p className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">Kết quả mong muốn</p>
-                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.expectedOutcome}</p>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {!hasReason && s.sourceMessage && (
-                                    <div className="flex gap-1.5">
-                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
-                                      <div className="min-w-0">
-                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Tin nhắn gốc</p>
-                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{s.sourceMessage}</p>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {!hasReason && !s.sourceMessage && (
-                                    <div className="flex gap-1.5">
-                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
-                                      <div className="min-w-0">
-                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Nguyên nhân</p>
-                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{s.description}</p>
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
-
-                        {/* Actions */}
-                        <div className="flex items-center gap-1.5 mt-2">
-                          {!s.isRead && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                smx.markSuggestionAsRead(s._id);
-                              }}
-                              className="text-[9px] px-2 py-1 rounded-md bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
-                            >
-                              Đã đọc
-                            </button>
-                          )}
-                          {!s.isResolved && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                smx.markSuggestionAsResolved(s._id);
-                              }}
-                              className="text-[9px] px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-500/20 transition-colors cursor-pointer"
-                            >
-                              Đã xử lý
-                            </button>
-                          )}
-                          {s.actionLabel && s.actionUrl && (
-                            <a
-                              href={s.actionUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[9px] px-2 py-1 rounded-md bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors cursor-pointer"
-                            >
-                              {s.actionLabel}
-                            </a>
-                          )}
-                          {/* Thêm vào tasklist */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleAddSuggestionTask(s);
-                            }}
-                            disabled={addingTaskId !== null}
-                            className="text-[9px] px-2 py-1 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 hover:bg-indigo-500/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                            title="Thêm gợi ý này vào danh sách công việc"
-                          >
-                            {addingTaskId === s._id ? (
-                              <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang thêm...</>
-                            ) : taskAddedId === s._id ? (
-                              <><CheckCircle2 className="w-2.5 h-2.5" /> Đã thêm task</>
-                            ) : (
-                              <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
-                            )}
-                          </button>
-                          {/* Thêm nhóm nội bộ & khách hàng — chuyển tới panel quản lý nhóm của dự án */}
-                          {getGroupAction(s) === "add_groups" && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleTabChange("chats");
-                                setIsGroupManagerOpen(true);
-                              }}
-                              className="text-[9px] px-2 py-1 rounded-md bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-500/30 hover:bg-orange-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
-                              title="Mở panel quản lý nhóm của dự án để thêm nhóm nội bộ và nhóm khách hàng"
-                            >
-                              <><Users className="w-2.5 h-2.5" /> Thêm nhóm vào dự án</>
-                            </button>
-                          )}
-                          {/* Gửi tin nhắn qua Teams — mở deep link chat 1:1 với Sale, tin nhắn điền sẵn */}
-                          {(() => {
-                            let teamsDeepLink: string | undefined;
-                            let saleEmail: string | undefined;
-                            try {
-                              if (s.suggestionData) {
-                                const parsed = JSON.parse(s.suggestionData);
-                                teamsDeepLink = parsed?.teamsDeepLink;
-                                saleEmail = parsed?.saleEmail;
-                              }
-                            } catch { /* ignore malformed data */ }
-                            if (!teamsDeepLink) return null;
-                            const deepLink = (() => {
-                              try {
-                                const base = new URL(teamsDeepLink);
-                                base.searchParams.set("message", s.description);
-                                return base.toString();
-                              } catch {
-                                return teamsDeepLink;
-                              }
-                            })();
-                            return (
-                              <a
-                                href={deepLink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-[9px] px-2 py-1 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 hover:bg-sky-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
-                                title={`Mở chat Teams với Sale: ${saleEmail || ""} — tin nhắn được điền sẵn`}
-                              >
-                                <><MessagesSquare className="w-2.5 h-2.5" /> Gửi tin nhắn qua Teams</>
-                              </a>
-                            );
-                          })()}
-                          {taskError && (
-                            <span className={`text-[9px] ml-1 flex items-center gap-1 text-red-600 dark:text-red-400`}>
-                              <AlertTriangle className="w-2.5 h-2.5" />
-                              {taskError}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-40 text-muted-foreground text-center p-4">
-                {analysingSuggestions ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin text-primary/60 mb-2" />
-                    <span className="text-[11px]">Đang phân tích tin nhắn...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5 text-muted-foreground/30 mb-2" />
-                    <span className="text-[11px]">Chưa có gợi ý nào</span>
-                    <span className="text-[10px] text-muted-foreground/50 mt-1">
-                      Nhấn &quot;Phân tích&quot; để AI gợi ý hành động từ tin nhắn Teams
-                    </span>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+          <PhaseWorkflowCard
+            project={{
+              _id: project._id,
+              name: project.name,
+              ticketId: (project as any).ticketId ?? undefined,
+            }}
+            userId={userId ?? undefined}
+            workflow={workflow}
+            loading={workflowLoading}
+            onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
+            onUpdateStep={(stepKey, status) =>
+              wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status })
+            }
+            onGenerateTasks={(items, prefix) =>
+              wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
+            }
+            onSwitchTab={(t) => handleTabChange(t as any)}
+          />
         ) : tab === "emails" ? (
           /* Emails Tab */
           <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
