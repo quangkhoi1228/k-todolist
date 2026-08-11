@@ -1,8 +1,36 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { Copy, Check, Send, Sparkles, MessageCircleQuestion, Target, Plus, X, Trash2, ChevronDown, Rocket, RefreshCw, ExternalLink, ListTodo, RotateCcw } from "lucide-react";
-import type { WorkflowRow, WorkflowRequirement } from "@/lib/repo/projectWorkflows";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
+import { Copy, Check, Send, Sparkles, MessageCircleQuestion, Target, Plus, X, Trash2, ChevronDown, Rocket, RefreshCw, ExternalLink, ListTodo, RotateCcw, Loader2 } from "lucide-react";
+import type { WorkflowRow, WorkflowRequirement, WorkflowGroupRef } from "@/lib/repo/projectWorkflows";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+const TeamsIcon = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className={className}>
+    <path fill="#5059C9" d="M37 15.5A7.5 7.5 0 1 0 22 15.5A7.5 7.5 0 1 0 37 15.5z"/>
+    <path fill="#7B83EB" d="M12 24.5a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0-13 0z"/>
+    <path fill="#5059C9" d="M38 36H24c0-4.4 3.6-8 8-8h2c4.4 0 8 3.6 8 8z"/>
+    <path fill="#7B83EB" d="M26 36H10c0-4.4 3.6-8 8-8h2c4.4 0 8 3.6 8 8z"/>
+    <path fill="#5059C9" d="M21 21h12v12H21z"/>
+    <path fill="#FFF" d="M25 24h1.5v6h1.5v-6H29.5v-1.5h-4.5z"/>
+  </svg>
+);
+
+const ZaloIcon = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className={className}>
+    <path fill="#0068FF" d="M24 4C12.95 4 4 12.06 4 22c0 5.43 2.76 10.3 7.15 13.5l-2.03 6.32c-.31.97.77 1.79 1.63 1.27l7.35-4.43c1.86.38 3.83.59 5.9.59c11.05 0 20-8.06 20-18S35.05 4 24 4z"/>
+    <path fill="#FFF" d="M15 28.5V26l4.5-5.5H15v-2.5h8v2.5L18.5 26h4.5v2.5h-8zm11-7c0-2 2-2 2-2s2 0 2 2v5s0 2-2 2s-2 0-2-2v-5zm2.5 5c0 .5-.5.5-.5.5s-.5 0-.5-.5v-5c0-.5.5-.5.5-.5s.5 0 .5.5v5zm4 2v-7h2.5v7h-2.5z"/>
+  </svg>
+);
+
+/** Một dòng nhóm trong form thông tin sơ bộ (bản local, chưa lưu) */
+interface PendingGroupRow {
+  id: string;
+  name: string;
+  platform: "teams" | "zalo";
+  type: "internal" | "customer";
+}
 
 // ─── Template constants ────────────────────────────────────
 /** Xưng hô theo giới tính: "anh" | "chị" | "anh/chị" (chưa rõ) */
@@ -77,6 +105,10 @@ interface PhaseWorkflowCardProps {
   onUpdateStep: (stepKey: string, status: "done" | "skipped" | null) => Promise<any>;
   onGenerateTasks: (items: Array<{ title: string; detail?: string; priority?: string }>, prefix?: string) => Promise<{ tasks?: any[] }>;
   onSwitchTab?: (tab: string) => void;
+  /** Tải danh sách nhóm Teams/Zalo (thường là list_chats của automator) */
+  fetchChatLists?: (platforms?: ("teams" | "zalo")[]) => Promise<Record<"teams" | "zalo", string[]>>;
+  /** Lưu nhóm đã chọn vào dự án (teamsGroups) — không bắt buộc, nếu có sẽ tự động sync */
+  onSaveGroups?: (groups: WorkflowGroupRef[]) => Promise<void>;
 }
 
 export function PhaseWorkflowCard({
@@ -90,14 +122,22 @@ export function PhaseWorkflowCard({
   onUpdateStep,
   onGenerateTasks,
   onSwitchTab,
+  fetchChatLists,
+  onSaveGroups,
 }: PhaseWorkflowCardProps) {
   const [copied, setCopied] = useState(false);
   const [showPreinfo, setShowPreinfo] = useState(false);
   const [showQuestions, setShowQuestions] = useState(false);
   const [showRequirements, setShowRequirements] = useState(false);
   const [presale, setPresale] = useState("");
-  const [externalGroups, setExternalGroups] = useState("");
-  const [internalGroups, setInternalGroups] = useState("");
+  // ─── Form chọn nhóm (kiểu "Thêm nhóm": nền tảng Teams/Zalo + dropdown gợi ý) ───
+  const [groupRows, setGroupRows] = useState<PendingGroupRow[]>([]);
+  const [chatOptions, setChatOptions] = useState<Record<"teams" | "zalo", string[]>>({ teams: [], zalo: [] });
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [chatsError, setChatsError] = useState<string | null>(null);
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
+  const groupRowsRef = useRef<HTMLDivElement | null>(null);
   const [selectedQuestions, setSelectedQuestions] = useState<string[]>([]);
   const [reqTitle, setReqTitle] = useState("");
   const [reqDetail, setReqDetail] = useState("");
@@ -170,8 +210,6 @@ export function PhaseWorkflowCard({
     if (wfId === undefined) return;
     if (workflow.initData) {
       setPresale(workflow.initData.presale || "");
-      setExternalGroups((workflow.initData.externalGroups || []).join("\n"));
-      setInternalGroups((workflow.initData.internalGroups || []).join("\n"));
     }
     if (Array.isArray(workflow.kickoffQuestions)) {
       setSelectedQuestions(workflow.kickoffQuestions);
@@ -198,7 +236,11 @@ export function PhaseWorkflowCard({
   };
 
   const savePreinfo = async () => {
-    if (!presale.trim() && !externalGroups.trim() && !internalGroups.trim()) {
+    const validRows = groupRows.filter((r) => r.name.trim());
+    const toRef = (r: PendingGroupRow): WorkflowGroupRef => ({ name: r.name.trim(), platform: r.platform });
+    const extGroups = validRows.filter((r) => r.type === "customer").map(toRef);
+    const intGroups = validRows.filter((r) => r.type === "internal").map(toRef);
+    if (!presale.trim() && validRows.length === 0) {
       setError("Vui lòng nhập ít nhất 1 thông tin sơ bộ.");
       return;
     }
@@ -207,8 +249,8 @@ export function PhaseWorkflowCard({
     try {
       const initData = {
         presale: presale.trim(),
-        externalGroups: externalGroups.split("\n").map((s) => s.trim()).filter(Boolean),
-        internalGroups: internalGroups.split("\n").map((s) => s.trim()).filter(Boolean),
+        externalGroups: extGroups,
+        internalGroups: intGroups,
       };
       await onUpdateWorkflow({
         action: "updateWorkflowData",
@@ -216,6 +258,10 @@ export function PhaseWorkflowCard({
         userId,
         patch: { initData },
       });
+      // Đồng bộ nhóm đã chọn vào dự án (teamsGroups) nếu parent cung cấp handler
+      if (onSaveGroups && validRows.length > 0) {
+        await onSaveGroups(validRows.map(toRef));
+      }
       await onUpdateStep("input_preinfo", "done");
       setShowPreinfo(false);
       markStepCollapsed("input_preinfo");
@@ -271,6 +317,86 @@ export function PhaseWorkflowCard({
     ]);
     setReqTitle("");
     setReqDetail("");
+  };
+
+  // ─── Form chọn nhóm: state sync từ workflow + list chats + dropdown portal ───
+  const groupRefs = useMemo(() => {
+    const rows: PendingGroupRow[] = [];
+    const push = (groups: unknown, platform: "teams" | "zalo", type: "internal" | "customer") => {
+      if (!Array.isArray(groups)) return;
+      for (const g of groups) {
+        if (!g) continue;
+        if (typeof g === "string") {
+          const n = g.trim();
+          if (n) rows.push({ id: crypto.randomUUID(), name: n, platform, type });
+        } else if (typeof g === "object" && (g as any).name) {
+          const n = String((g as any).name).trim();
+          if (n) rows.push({ id: crypto.randomUUID(), name: n, platform: (g as any).platform ?? platform, type });
+        }
+      }
+    };
+    push(workflow?.initData?.externalGroups, "teams", "customer");
+    push(workflow?.initData?.internalGroups, "teams", "internal");
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [(workflow as any)?._id]);
+
+  useEffect(() => {
+    setGroupRows(groupRefs);
+    setOpenDropdownId(null);
+    setDropdownAnchor(null);
+  }, [groupRefs]);
+
+  const ensureChatOptions = useCallback(
+    async (platforms?: ("teams" | "zalo")[]) => {
+      if (!fetchChatLists) return;
+      setLoadingChats(true);
+      setChatsError(null);
+      try {
+        const result = await fetchChatLists(platforms);
+        setChatOptions((prev) => ({
+          teams: result.teams ?? prev.teams,
+          zalo: result.zalo ?? prev.zalo,
+        }));
+      } catch (e: any) {
+        setChatsError(e?.message || "Không tải được danh sách nhóm");
+      } finally {
+        setLoadingChats(false);
+      }
+    },
+    [fetchChatLists]
+  );
+
+  const updateDropdownAnchor = useCallback((rowId: string) => {
+    const input = document.querySelector(`[data-preinfo-group-input="${rowId}"]`) as HTMLElement | null;
+    if (!input) return;
+    const rect = input.getBoundingClientRect();
+    setDropdownAnchor({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  }, []);
+
+  const addGroupRow = useCallback(
+    (platform: "teams" | "zalo") => {
+      const newId = crypto.randomUUID();
+      setGroupRows((prev) => [...prev, { id: newId, name: "", platform, type: "customer" }]);
+      setOpenDropdownId(newId);
+      setDropdownAnchor(null);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => updateDropdownAnchor(newId));
+      });
+    },
+    [updateDropdownAnchor]
+  );
+
+  // Khi mở form chọn nhóm lần đầu → tải sẵn danh sách chat
+  useEffect(() => {
+    if (showPreinfo && chatOptions.teams.length === 0 && chatOptions.zalo.length === 0) {
+      ensureChatOptions();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPreinfo]);
+
+  const updateGroupRow = (id: string, patch: Partial<PendingGroupRow>) => {
+    setGroupRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   };
 
   const saveRequirements = async () => {
@@ -548,6 +674,42 @@ export function PhaseWorkflowCard({
                   Nhập pre-sale phụ trách, các nhóm external và internal liên quan để làm đầu vào
                   cho giai đoạn kick-off.
                 </p>
+                {/* Hiển thị tóm tắt nhóm đã chọn (sau khi done) */}
+                {stepStatus("input_preinfo") && (() => {
+                  const summarize = (groups: unknown): string[] => {
+                    if (!Array.isArray(groups)) return [];
+                    return groups.map((g) => {
+                      if (typeof g === "string") return g.trim();
+                      if (g && typeof g === "object" && (g as any).name) return String((g as any).name).trim();
+                      return "";
+                    }).filter(Boolean);
+                  };
+                  const ext = summarize(workflow?.initData?.externalGroups);
+                  const int = summarize(workflow?.initData?.internalGroups);
+                  if (ext.length === 0 && int.length === 0 && !workflow?.initData?.presale) return null;
+                  return (
+                    <div className="ml-[34px] mt-3 rounded-lg bg-muted/50 border border-border/40 p-3 text-sm space-y-1.5">
+                      {workflow?.initData?.presale && (
+                        <p className="flex items-start gap-2 leading-relaxed">
+                          <span className="text-primary mt-0.5 shrink-0">•</span>
+                          <span><b className="font-medium">Pre-sale:</b> {workflow.initData.presale}</span>
+                        </p>
+                      )}
+                      {ext.length > 0 && (
+                        <p className="flex items-start gap-2 leading-relaxed">
+                          <span className="text-primary mt-0.5 shrink-0">•</span>
+                          <span><b className="font-medium">Nhóm khách hàng:</b> {ext.join(", ")}</span>
+                        </p>
+                      )}
+                      {int.length > 0 && (
+                        <p className="flex items-start gap-2 leading-relaxed">
+                          <span className="text-primary mt-0.5 shrink-0">•</span>
+                          <span><b className="font-medium">Nhóm nội bộ:</b> {int.join(", ")}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
                 {!stepStatus("input_preinfo") && (
                   <div className="ml-[34px] mt-3">
                     <button
@@ -568,20 +730,219 @@ export function PhaseWorkflowCard({
                           placeholder="Pre-sale phụ trách (tên / email)"
                           className="w-full h-10 px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
                         />
-                        <textarea
-                          value={externalGroups}
-                          onChange={(e) => setExternalGroups(e.target.value)}
-                          placeholder={"Nhóm external (khách hàng) — mỗi dòng 1 nhóm"}
-                          rows={3}
-                          className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
-                        />
-                        <textarea
-                          value={internalGroups}
-                          onChange={(e) => setInternalGroups(e.target.value)}
-                          placeholder={"Nhóm internal (nội bộ) — mỗi dòng 1 nhóm"}
-                          rows={3}
-                          className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
-                        />
+
+                        {/* Chọn nhóm — giống dialog "Thêm nhóm": nền tảng Teams/Zalo + dropdown gợi ý */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-xs font-medium text-foreground/70">
+                              Nhóm dự án (nội bộ / khách hàng)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => ensureChatOptions()}
+                              disabled={loadingChats}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 cursor-pointer"
+                            >
+                              {loadingChats ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                              Tải danh sách nhóm (Teams + Zalo)
+                            </button>
+                          </div>
+                          {chatsError && (
+                            <p className="text-[11px] text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-lg px-2.5 py-1.5 mb-1.5">
+                              {chatsError}
+                            </p>
+                          )}
+                          <div
+                            ref={groupRowsRef}
+                            className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1"
+                            onScroll={() => openDropdownId && updateDropdownAnchor(openDropdownId)}
+                          >
+                            {groupRows.map((row) => {
+                              const options = row.platform === "zalo" ? chatOptions.zalo : chatOptions.teams;
+                              const matches = options.filter((c) =>
+                                c.toLowerCase().includes(row.name.toLowerCase())
+                              );
+                              return (
+                                <div key={row.id} className="flex gap-2 items-start">
+                                  <div className="w-[110px] shrink-0 space-y-1">
+                                    <label className="text-[10px] font-medium text-foreground/60">Nền tảng</label>
+                                    <Select
+                                      value={row.platform}
+                                      onValueChange={(value) => {
+                                        const platform = value as "teams" | "zalo";
+                                        updateGroupRow(row.id, { platform });
+                                        setOpenDropdownId(row.id);
+                                        updateDropdownAnchor(row.id);
+                                      }}
+                                    >
+                                      <SelectTrigger className="w-full h-[30px] text-xs bg-background border border-border focus:ring-1 focus:ring-primary/50 shadow-none">
+                                        <span className="flex flex-1 items-center gap-1.5 text-left truncate min-w-0">
+                                          {row.platform === "teams" ? (
+                                            <>
+                                              <TeamsIcon className="w-4 h-4" />
+                                              <span>Teams</span>
+                                            </>
+                                          ) : row.platform === "zalo" ? (
+                                            <>
+                                              <ZaloIcon className="w-4 h-4" />
+                                              <span>Zalo</span>
+                                            </>
+                                          ) : (
+                                            "Nền tảng"
+                                          )}
+                                        </span>
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="teams" className="text-xs">
+                                          <div className="flex items-center gap-2">
+                                            <TeamsIcon className="w-4 h-4" />
+                                            <span>Teams</span>
+                                          </div>
+                                        </SelectItem>
+                                        <SelectItem value="zalo" className="text-xs">
+                                          <div className="flex items-center gap-2">
+                                            <ZaloIcon className="w-4 h-4" />
+                                            <span>Zalo</span>
+                                          </div>
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="w-[110px] shrink-0 space-y-1">
+                                    <label className="text-[10px] font-medium text-foreground/60">Loại nhóm</label>
+                                    <Select
+                                      value={row.type}
+                                      onValueChange={(value) => {
+                                        updateGroupRow(row.id, { type: value as "internal" | "customer" });
+                                      }}
+                                    >
+                                      <SelectTrigger className="w-full h-[30px] text-xs bg-background border border-border focus:ring-1 focus:ring-primary/50 shadow-none">
+                                        <span className="flex flex-1 text-left truncate min-w-0">
+                                          {row.type === "customer" ? "Khách hàng" : row.type === "internal" ? "Nội bộ" : "Loại nhóm"}
+                                        </span>
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="customer" className="text-xs">Khách hàng</SelectItem>
+                                        <SelectItem value="internal" className="text-xs">Nội bộ</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="flex-1 space-y-1">
+                                    <label className="text-[10px] font-medium text-foreground/60">Tên nhóm chat</label>
+                                    <input
+                                      type="text"
+                                      data-preinfo-group-input={row.id}
+                                      value={row.name}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        updateGroupRow(row.id, { name: v });
+                                        setOpenDropdownId(row.id);
+                                        updateDropdownAnchor(row.id);
+                                      }}
+                                      onFocus={() => {
+                                        setOpenDropdownId(row.id);
+                                        updateDropdownAnchor(row.id);
+                                      }}
+                                      onBlur={() => setTimeout(() => {
+                                        setOpenDropdownId((cur) => (cur === row.id ? null : cur));
+                                        setDropdownAnchor(null);
+                                      }, 200)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          addGroupRow(row.platform);
+                                        }
+                                      }}
+                                      placeholder={`Tên nhóm ${row.platform === "zalo" ? "Zalo" : "Teams"}...`}
+                                      className="w-full px-2.5 py-1.5 rounded-md bg-background border border-border text-sm outline-none focus:border-primary/50"
+                                    />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setGroupRows((prev) => prev.filter((r) => r.id !== row.id));
+                                      setOpenDropdownId((cur) => (cur === row.id ? null : cur));
+                                      setDropdownAnchor(null);
+                                    }}
+                                    className="mt-5 p-1 text-muted-foreground/40 hover:text-rose-500 transition-colors shrink-0 cursor-pointer"
+                                    title="Xoá dòng này"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {groupRows.length === 0 && (
+                            <p className="text-[11px] text-muted-foreground/60">Chưa có nhóm nào — bấm &quot;Thêm nhóm&quot; để chọn nhóm Teams/Zalo.</p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => addGroupRow("teams")}
+                            className="mt-1.5 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> Thêm nhóm
+                          </button>
+                        </div>
+
+                        {/* Dropdown gợi ý nhóm — portal ra body để thoát containing block */}
+                        {openDropdownId && dropdownAnchor && (() => {
+                          const activeRow = groupRows.find((r) => r.id === openDropdownId);
+                          if (!activeRow) return null;
+                          const options = activeRow.platform === "zalo" ? chatOptions.zalo : chatOptions.teams;
+                          const matches = options.filter((c) =>
+                            c.toLowerCase().includes(activeRow.name.toLowerCase())
+                          );
+                          return createPortal(
+                            <div
+                              className="fixed bg-background border border-border rounded-md shadow-lg max-h-40 overflow-y-auto z-[100] custom-scrollbar"
+                              style={{ top: dropdownAnchor.top, left: dropdownAnchor.left, width: dropdownAnchor.width }}
+                              onMouseDown={(e) => e.preventDefault() /* keep input focus while clicking list */}
+                              onScroll={() => updateDropdownAnchor(openDropdownId)}
+                            >
+                              <div className="sticky top-0 bg-background/95 backdrop-blur px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border/40">
+                                Nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"} ({options.length})
+                              </div>
+                              {matches.length > 0 ? (
+                                matches.map((chat, i) => (
+                                  <div
+                                    key={i}
+                                    onClick={() => {
+                                      updateGroupRow(activeRow.id, { name: chat });
+                                      setOpenDropdownId(null);
+                                      setDropdownAnchor(null);
+                                    }}
+                                    className="px-3 py-1.5 text-sm hover:bg-muted cursor-pointer flex items-center justify-between gap-2"
+                                  >
+                                    <span className="truncate">{chat}</span>
+                                  </div>
+                                ))
+                              ) : options.length === 0 ? (
+                                <div className="px-3 py-3 text-xs text-muted-foreground space-y-2">
+                                  <div>Chưa có danh sách nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"}.</div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); ensureChatOptions([activeRow.platform]); }}
+                                    disabled={loadingChats}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+                                  >
+                                    {loadingChats ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                    Tải danh sách nhóm
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="px-3 py-3 text-xs text-muted-foreground space-y-1">
+                                  <div>Không tìm thấy nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"} nào khớp &quot;{activeRow.name}&quot;.</div>
+                                  <div className="text-[10px] text-muted-foreground/70">
+                                    Đổi Nền tảng sang {activeRow.platform === "zalo" ? "Teams" : "Zalo"} nếu nhóm bạn cần thuộc kênh kia, hoặc gõ tên chính xác để thêm trực tiếp.
+                                  </div>
+                                </div>
+                              )}
+                            </div>,
+                            document.body
+                          );
+                        })()}
+
                         <div className="flex items-center justify-between pt-1">
                           <button
                             type="button"

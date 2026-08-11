@@ -9,10 +9,16 @@ export type WorkflowStepKey =
   | "send_kickoff_questions" // kickoff: đã gửi câu hỏi cho Pre-sale/Sale
   | "input_requirements"; // kickoff: đã nhập yêu cầu sơ bộ dự án
 
+/** Nhóm chat được chọn trong thông tin sơ bộ (giống teamsGroups) — kèm nền tảng để tái dùng sau này */
+export interface WorkflowGroupRef {
+  name: string;
+  platform: "teams" | "zalo";
+}
+
 export interface WorkflowInitData {
   presale?: string; // tên Pre-sale phụ trách
-  externalGroups?: string[]; // nhóm external liên quan
-  internalGroups?: string[]; // nhóm internal liên quan
+  externalGroups?: Array<string | WorkflowGroupRef>; // nhóm external liên quan (tên cũ hoặc {name, platform})
+  internalGroups?: Array<string | WorkflowGroupRef>; // nhóm internal liên quan (tên cũ hoặc {name, platform})
   [key: string]: unknown;
 }
 

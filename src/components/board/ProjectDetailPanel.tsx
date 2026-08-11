@@ -1167,6 +1167,7 @@ ${resourceTicketsLinks}
     setChatFetchError(null);
     try {
       const platforms = platform ? [platform] : (["teams", "zalo"] as const);
+      const results: Record<"teams" | "zalo", string[]> = { teams: [], zalo: [] };
       await Promise.all(platforms.map(async (p) => {
         const res = await fetch(`/api/agents/${p}-automator`, {
           method: "POST",
@@ -1184,6 +1185,7 @@ ${resourceTicketsLinks}
           throw new Error(`[${p === "teams" ? "Teams" : "Zalo"}] ${errMsg}`);
         }
         const chatNames: string[] = data.chats || [];
+        results[p] = chatNames;
         if (p === "teams") {
           setAvailableTeamsChats(chatNames.map((n: string) => ({ name: n, scrapedAt: Date.now() })));
         } else {
@@ -1197,9 +1199,11 @@ ${resourceTicketsLinks}
         }).catch(console.error);
         setLastListedAt((prev) => ({ ...prev, [p]: Date.now() }));
       }));
+      return results;
     } catch (e) {
       console.error(e);
       setChatFetchError(e instanceof Error ? e.message : "Lỗi tải danh sách nhóm");
+      throw e;
     } finally {
       setFetchingChats(false);
     }
@@ -1302,6 +1306,23 @@ ${resourceTicketsLinks}
       id: project._id,
       teamsGroups: newGroups,
     });
+  };
+
+  /**
+   * Lưu nhóm đã chọn từ "Nhập thông tin sơ bộ" (PhaseWorkflowCard) vào dự án:
+   * gộp vào teamsGroups hiện có (bỏ trùng tên) + sync chat ngay cho từng nhóm mới.
+   */
+  const handleSaveWorkflowGroups = async (groups: Array<{ name: string; platform: "teams" | "zalo" }>) => {
+    const existingNames = new Set(activeTeamsGroups.map((g) => g.name));
+    const newOnes = groups.filter((g) => !existingNames.has(g.name.trim()));
+    if (newOnes.length === 0) return;
+    const merged = [
+      ...activeTeamsGroups,
+      ...newOnes.map((g) => ({ name: g.name.trim(), type: "customer" as const, platform: g.platform })),
+    ];
+    setActiveTeamsGroups(merged);
+    await pm.updateProject({ id: project._id, teamsGroups: merged });
+    newOnes.forEach((g) => syncChat(g.name.trim(), g.platform));
   };
 
   // Thêm một dòng nhập nhóm mới vào dialog (Enter ở dòng cuối / nút "Thêm dòng")
@@ -3339,6 +3360,13 @@ ${resourceTicketsLinks}
               wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
             }
             onSwitchTab={(t) => handleTabChange(t as any)}
+            fetchChatLists={(platforms) =>
+              fetchChats(platforms?.[0] as any).then(() => ({
+                teams: availableTeamsChats.map((c) => c.name),
+                zalo: availableZaloChats.map((c) => c.name),
+              }))
+            }
+            onSaveGroups={handleSaveWorkflowGroups}
           />
         ) : tab === "emails" ? (
           /* Emails Tab */
