@@ -9,7 +9,7 @@ tags: []
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-09
+- **Cập nhật lần cuối:** 2026-08-10
 - **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
@@ -344,6 +344,31 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - `src/proxy.ts` + `proxy-image` — proxy image (cần xác nhận role hiện tại).
 - PWA manifest (`manifest.ts`), theme toggle.
 - File docs mô tả quy trình nghiệp vụ: `docs/cloud-project-deployment-process.md`, `docs/fmon-project-action-logic.md` (logic dự án FMON - id 18, vẫn 🔄 vài mục).
+- `docs/dual-platform-sync-queue.md` — plan tách queue theo platform đã **implement xong** (10/08, xem mục 27); chưa verify browser thật.
+
+**27. Tách queue sync theo platform — Teams & Zalo chạy song song (10/08, đã code pass tsc, chưa verify browser):**
+  - **Mục đích**: 2 nền tảng (Teams + Zalo) dùng Chrome profile riêng, không xung đột → chạy song song giảm thời gian sync. Tham khảo `docs/dual-platform-sync-queue.md`.
+  - **Thay đổi kiến trúc** (`src/lib/sync-queue.ts`):
+    - 2 worker độc lập (`teamsWorker` + `zaloWorker`) dùng struct `PlatformWorkerState` (queue/currentJob/currentTask/taskStatuses/refetchTasks/runningChildren/jobStartTime/taskIndexInJob) thay vì biến duy nhất.
+    - `enqueueJob()` tự tách task theo `task.platform` → 2 job (cùng `jobGroupId` cho UI gộp progress).
+    - 2 worker lock riêng: `.sync-queue-teams-worker.lock` + `.sync-queue-zalo-worker.lock`.
+    - Mỗi worker tuần tự nội bộ (1 Chrome profile/platform); Zalo worker **LUÔN sequential** (`canParallel=false`), Teams worker giữ parallel khi có CDP.
+  - **Chống starvation (interleave + cooldown)**:
+    - `setActiveProjectId()` **KHÔNG cancel** sync-all đang chạy — chỉ ghi `activeProjectId`; task project được chèn đầu queue ở `getNextJob()` kế tiếp (sau khi task đang chạy ~15s xong).
+    - `markProjectSyncDone(platform, projectId)` ghi timestamp; 3 phút sau project sync mới được enqueue lại trên cùng platform → sync-all có thời gian chạy tiếp.
+  - **Lock file tách riêng**: `.teams-sync-running` chỉ Teams, `.zalo-sync-running` (MỚI) chỉ Zalo. `isSyncRunning(platform)` chỉ check đúng lock; `isAnySyncRunning()` wrapper check cả 2 cho UI/scheduler.
+  - **Send preemption tách theo platform**: `runTaskWithSendPreemption` chỉ check `.teams-send-running` cho Teams worker, `.zalo-send-running` cho Zalo worker (gửi Zalo không kill Teams sync và ngược lại).
+  - **Files sửa kèm**:
+    - `agents/pm/scripts/zalo-send.ts`: `SYNC_RUNNING_FILE` → `.zalo-sync-running` (trước check nhầm `.teams-sync-running`).
+    - `agents/pm/scripts/sync-single-chat.ts`: `SYNC_RUNNING_FILE` theo `platform` env (Teams → `.teams-sync-running`, Zalo → `.zalo-sync-running`).
+    - `src/app/api/agents/zalo-automator/route.ts`: `stopBackgroundSync` check `.zalo-sync-running` (multi-PID), KHÔNG còn kill Teams sync — Teams sync không ảnh hưởng login Zalo. `teams-automator/route.ts` đã đúng (check `.teams-sync-running`).
+    - `src/components/board/ProjectDetailPanel.tsx`: đọc `currentTasks` (plural — mảng chứa cả Teams + Zalo task đang chạy) để hiển thị spinner nhiều nhóm cùng lúc; vẫn đọc `currentTask` (singular) backward-compat.
+    - `src/lib/sync-queue-runner.ts`: comment cập nhật; scheduler giữ nguyên (dùng `status.running` + `status.queueLength` — giờ gộp 2 worker).
+  - **Backward-compat UI**: `getSyncQueueStatus()` trả cả `running`/`queueLength`/`currentJob`/`currentTask`/`currentJobTasks`/`queuedJobs`/`progress` cũ (gộp 2 worker) + mới `currentTasks`/`teamsWorker`/`zaloWorker` cho UI muốn hiển thị 2 lane.
+  - **Mutex cho summaries** (mục 5.18 của plan): `maybeAutoGenerateSummary` có flag `summaryGenerating[projectId]` tránh 2 worker (Teams + Zalo) trigger cùng project cùng lúc ra 2 version.
+  - `tsc --noEmit` exit 0.
+  - **Chưa verify browser** — cần user mở app, chạy sync với project có cả nhóm Teams + Zalo để xem 2 worker chạy song song (log `[Worker:teams]` + `[Worker:zalo]` bắt đầu gần nhau, task Teams + Zalo chạy đồng thời). Kiểm tra log KHÔNG còn `hủy job sync-all` khi mở project, KHÔNG còn kill nhầm cross-platform. Cooldown: sau project sync 3 phút → log `[Queue] ⏭ Skip ... cooldown còn Xs`.
+
 
 ---
 
@@ -395,10 +420,11 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
      - **Fix false-negative verify**: Zalo OK khi msgCount tăng HOẶC textVisible (không bắt buộc cả 2); Teams OK khi textVisible HOẶC inputCleared.
    - **Kết quả đo**: Zalo 10s tổng (trước 168s); Teams gửi khi sync đang chạy 19s (14:59→15:00 khi sync 40-160s trước). Tin gửi sync vào DB OK (kiểm tra `projectChats` thấy cả 4 tin test).
 
-0h. **Incremental sync nhanh: scroll từng window + detect watermark mỗi lượt** (09/08, đã code, chưa verify thật) —
-   - **Zalo** (`scrollZaloChatContainer`): incremental giờ KHÔNG extract DOM sau mỗi scroll (tốn ~giây vì duyệt avatar/ảnh) — chỉ scroll + đo `maxVisibleTs` từ `bb_msg_id_` (nhẹ, 1 querySelector); gặp message <= watermark DB là `EARLY-STOP` ngay + collect DOM hiện tại rồi dừng. `scrollCount` incremental giảm 20 → 5 (an toàn fallback).
-   - **Teams** (`incrementalScrollAndExtract`): thêm `domHasIncrementalSince()` — sau MỖI scroll đọc `<time datetime>` đầu tiên trong DOM, gặp <= watermark là dừng ngay (không chờ đủ batch); thêm `buildFinalResult()` để return sớm khi early-stop.
-   - Kết quả: incremental chỉ mất vài scroll (không tới 6-10 lần như trước), mỗi lượt chỉ 1-2s thay vì extract tốn hàng chục giây. Chưa verify thật (cần Chrome + session).
+0h. **Incremental sync nhanh: scroll từng window + detect watermark mỗi lượt** (09/08 code — **10/08 tối ưu thêm**) —
+   - **Zalo** (`scrollZaloChatContainer`): incremental giờ KHÔNG extract DOM sau mỗi scroll (tốn ~giây vì duyệt avatar/ảnh) — chỉ scroll + đo `maxVisibleTs` từ `bb_msg_id_` (nhẹ, 1 querySelector); gặp message <= watermark DB là `EARLY-STOP` ngay + collect DOM hiện tại rồi dừng. `scrollCount` incremental giảm 20 → 5 (an toàn fallback). **Tối ưu 10/08**: collect định kỳ mỗi 5 scroll (chứ không mỗi scroll) để giảm call `collectZaloMessagesFromPage` (nặng ~1-2s) từ 5 lần → 1 lần; wait mỗi scroll incremental rút từ `scrollWaitMs+random(500-1500)` (~3s) xuống `600+random(200-600)` (~1s); bottom-stabilize rút từ 6×2s=12s xuống tối đa 3×1s=3s (thoát ngay nếu đáy lần đầu).
+   - **Teams** (`incrementalScrollAndExtract`): thêm `domHasIncrementalSince()` — sau MỖI scroll đọc `<time datetime>` đầu tiên trong DOM, gặp <= watermark là dừng ngay (không chờ đủ batch); thêm `buildFinalResult()` để return sớm khi early-stop. **Tối ưu 10/08**: Step 1 (bottom) incremental rút từ `2s+img-scrollIntoView+5s` (~7s) xuống `800ms` (không cần chờ ảnh lazy-load khi chỉ đo watermark); Step 2 wait mỗi scroll rút từ `scrollWaitMs+random(500-1500)` (~3s) xuống `700+random(200-600)` (~1s).
+   - **sync-single-chat.ts**: sau click chat Teams, wait rút từ 5s → 2s khi incremental (tin mới render text đủ, ảnh tự tải sau). **Log thời gian (10/08)**: thêm log `[SyncOne] ⏱  Teams/Zalo "<tên>" tổng Xs | mở+nav+extract: Ys | save: Zs | extract=N saved=M (incremental|full) lúc HH:MM:SS` ở cuối mỗi sync (cả Teams lẫn Zalo, cả nhánh có tin mới / 0 tin / FAIL) — dễ đối chiếu tốc độ từng nhóm. `sync-queue.ts` `runTask` cũng log `[Sync] ▶ BẮT ĐẦU ... lúc <ISO>` + `[Sync] ✓ KẾT THÚC ... — Xs (xong lúc <ISO>)`.
+   - Kết quả ước tính: incremental Zalo từ ~40s/chat → ~10-15s/chat; Teams từ ~30-40s/chat → ~10-15s/chat (chỉ vài scroll × ~1s thay vì ~3s + ít call extract). **Đã verify thật (10/08)**: Zalo `[FPTCLOUD] - UICVN` incremental EARLY-STOP ngay lập tức (0 tin mới), tổng 15.3s (mở Chrome + navigate chiếm hầu hết); Teams `[Internal] UICVN x FCI` EARLY-STOP tại batch 1, Step 2 chỉ 11s, `Saved 75 new messages to Postgres`.
 
 1. **Verify reload UI project 45** (06/08, cần user login) — mở `http://localhost:3000/projects/45` → tab Chats: **93 tin Teams** hiển thị đủ, **34 tin có block quote `> Sender: quoted`**, **13 tin có ảnh** (8 ảnh base64 hiển thị trực tiếp, 5 ảnh sharepoint qua proxy-image có thể 401 nếu cookie hết hạn), tin mới nhất 10:42 06/08. Không còn tin nào dính `1 Heart reaction.`/`Sender8/6/2026...`.
 2. **Verify animation sync chat** (06/08, cần Chrome CDP port 9222 + user login) — thêm 1 nhóm thật vào project → UI phải hiện spinner "Đang đồng bộ..." trên nhóm + banner ở messages area, sau sync messages mới hiện ngay (invalidate chats/suggestions/logs).
@@ -431,6 +457,7 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - **Browser automation:** phải dùng Chrome thật (channel "chrome" + user-data-dir thật), không Playwright chromium headless mặc định (Teams/Zalo detect bot).
 - **MỘT NGUYÊN TẮC QUAN TRỌNG — profile Chrome (09/08):** Teams và Zalo mỗi bên có **duy nhất 1 profile chính** chứa session đăng nhập: `.teams-session/chrome-profile` và `.zalo-session/chrome-profile`. Mọi tool (sync, healthcheck, list-chats, login, send) PHẢI dùng thẳng profile chính — qua `createStealthContext`/`createZaloStealthContext` (helper đã hỗ trợ CDP + fallback persistent). **KHÔNG BAO GIỜ tạo profile copy mới** (`.health-session/*` trước đây là lỗi — Zalo xem đó là thiết bị thứ 2 → fail "Đổi thiết bị", đá logout; mkdir/cp mới sẽ không có session, healthcheck luôn unauthorized). Nếu thấy script nào tự tạo profile riêng (`prepareProfile`, `cpSync`) — hãy sửa theo 2 health script hiện tại.
 - **CDP profile bind cứng**: Chrome mở với `--remote-debugging-port` chỉ dùng 1 user-data-dir. Hiện tại Teams hay mở CDP 9222 với profile `.teams-session/chrome-profile` → sync/zalo health khi `USE_CDP=1` sẽ connect nhầm vào profile đó mà KHÔNG có session Zalo. Khi cần Zalo qua CDP: mở Chrome riêng với `--user-data-dir=.zalo-session/chrome-profile`.
+- **Fix Zalo đá logout khi queue/route set USE_CDP=1 (10/08):** gốc rễ session Zalo bị "Đổi thiết bị" đá logout — `spawnTask` (sync-queue.ts) + route `zalo-automator`, `sync-groups` set `USE_CDP=1` cho task Zalo → `createZaloStealthContext` connect CDP 9222 (profile Teams, không có cookies Zalo) → Zalo cố login → bị đá logout session trong profile chính. **Fix**: task Zalo LUÔN `USE_CDP=0` (dùng persistent profile `.zalo-session` riêng, không bao giờ connect CDP); task Teams giữ `USE_CDP=1` (CDP 9222 = profile Teams OK). Sửa ở `spawnTask` (sync-queue.ts), `zalo-automator/route.ts` (list_chats + start), `sync-groups/route.ts` (platform=zalo). `zalo-send`/`zalo-health` vốn không set `USE_CDP` → an toàn.
 - **Healthcheck "Failed to create a ProcessSingleton" (09/08, đã fix):** lỗi xảy ra khi healthcheck cố `launchPersistentContext` trên profile Teams/Zalo đang bị Chrome khác giữ (sync/send đang chạy, hoặc Chrome `--keep-open` còn sót). Fix gồm 3 lớp:
   1. `teams-automator/route.ts` healthcheck giờ **bật `USE_CDP=1`** (giống list_chats) — nếu Chrome CDP đang chạy thì connect vào đó, không mở Chrome thứ 2 cùng profile. (Zalo route KHÔNG bật vì CDP 9222 thường là Chrome Teams — sẽ connect nhầm profile.)
   2. `teams-health.ts` / `zalo-health.ts` thêm `isProfileInUse()` (pgrep profileDir + kill(pid,0)): profile bị giữ → **chờ tối đa 15s** (sync 2 phút rảnh liên tục) rồi trả `{status:"busy"}` thay vì crash; còn bắt lỗi `ProcessSingleton` trong catch → cũng trả `busy`.

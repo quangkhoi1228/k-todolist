@@ -65,8 +65,11 @@ export async function POST(req: NextRequest) {
       USER_ID: userId,
       PLATFORM: platform,
       HEADLESS: headless ? "true" : "false",
-      // Dùng Chrome thật (CDP) — Teams chặn Playwright profile
-      USE_CDP: process.env.USE_CDP ?? "1",
+      // CDP 9222 thường là Chrome user mở với profile TEAMS.
+      // Zalo connect vào CDP đó → profile Teams không có cookies Zalo →
+      // Zalo đá logout "Đổi thiết bị". Zalo LUÔN dùng persistent profile
+      // riêng (.zalo-session), không connect CDP.
+      USE_CDP: platform === "zalo" ? "0" : (process.env.USE_CDP ?? "1"),
       CDP_PORT: process.env.CDP_PORT ?? "9222",
     };
 

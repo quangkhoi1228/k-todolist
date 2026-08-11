@@ -118,6 +118,16 @@ async function log(type: string, message: string, details?: string) {
   }
 }
 
+/** Format duration ms → chuỗi dễ đọc ("12.3s" hoặc "1.25ph"). */
+function fmtDuration(ms: number): string {
+  return ms >= 60_000 ? `${(ms / 60_000).toFixed(2)}ph` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** Timestamp ISO ngắn (HH:MM:SS). */
+function tsNow(): string {
+  return new Date().toISOString().slice(11, 19);
+}
+
 // ─── Parallel-sync tab handling ─────────────────────────────
 // Với queue song song (CDP mode), mỗi script con phải dùng TAB RIÊNG của nó
 // trên Chrome thật — không dùng tab có sẵn (2 script dùng chung tab sẽ giẫm
@@ -284,6 +294,12 @@ async function searchTeamsChat(page: import("playwright").Page, chatName: string
 
 async function syncTeams(syncName: string) {
   const syncMode = await resolveSyncMode();
+  // ⏱️ Đo thời gian từng giai đoạn sync để đối chiếu tốc độ.
+  const tFunctionStart = Date.now();
+  let tExtract: number | null = null;
+  let tSave: number | null = null;
+  let extractedCount = 0;
+  let savedCount = 0;
   const config = {
     ...DEFAULT_CONFIG,
     headless: process.env.HEADLESS !== "false",
@@ -368,13 +384,17 @@ async function syncTeams(syncName: string) {
     }
 
     console.log(`[SyncOne] Clicked chat "${syncName}". Waiting for render...`);
-    await page.waitForTimeout(5000);
+    // Incremental: tin mới thường đã render sau click, không cần chờ 5s như
+    // full sync (full cần chờ cho ảnh lazy-load). 2s đủ cho Teams render text.
+    await page.waitForTimeout(syncMode.incremental ? 2_000 : 5_000);
 
     // ── INCREMENTAL SCROLL-AND-EXTRACT ──
     // Uses incrementalScrollAndExtract which captures messages periodically
     // during scroll-up to work around Teams virtual DOM (which only keeps
     // ~100-200 messages rendered at a time).
     const result = await incrementalScrollAndExtract(page, { ...config, chatName: syncName });
+    tExtract = Date.now();
+    extractedCount = result.totalMessages;
     console.log(`[SyncOne] Extracted ${result.totalMessages} messages total, ${result.messages.filter(m => m.images?.length).length} with images.`);
 
     // Save the deep link to this chat group (Teams v2 hash URL)
@@ -398,7 +418,13 @@ async function syncTeams(syncName: string) {
         messages: cleanedMessages,
       });
       console.log(`[SyncOne] Saved ${saved.saved} new messages to Postgres.`);
+      tSave = Date.now();
+      savedCount = saved.saved;
+      const totalDuration = tSave - tFunctionStart;
+      const extractDuration = tExtract !== null ? tExtract - tFunctionStart : 0;
+      const saveDuration = tExtract !== null && tSave !== null ? tSave - tExtract : 0;
       await log("sync_end", `Đã lưu ${saved.saved} tin nhắn mới từ "${syncName}"`, JSON.stringify({ extracted: finalMessages.length, saved: saved.saved }));
+      console.log(`[SyncOne] ⏱  Teams "${syncName}" tổng ${fmtDuration(totalDuration)} | mở+nav+extract: ${fmtDuration(extractDuration)} | save: ${fmtDuration(saveDuration)} | extract=${extractedCount} saved=${savedCount}${syncMode.incremental ? " (incremental)" : " (full)"} lúc ${tsNow()}`);
 
       // Monitor new messages for PM actions
       if (saved.saved > 0) {
@@ -406,11 +432,13 @@ async function syncTeams(syncName: string) {
       }
     } else {
       await log("sync_end", `Không có tin nhắn mới từ "${syncName}"`);
+      console.log(`[SyncOne] ⏱  Teams "${syncName}" tổng ${fmtDuration(Date.now() - tFunctionStart)} | extract=${extractedCount} saved=0${syncMode.incremental ? " (incremental)" : " (full)"} — 0 tin mới lúc ${tsNow()}`);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[SyncOne] Fatal error:", err);
     await log("sync_error", `Lỗi: ${errMsg}`, JSON.stringify({ error: errMsg }));
+    console.log(`[SyncOne] ⏱  Teams "${syncName}" FAIL sau ${fmtDuration(Date.now() - tFunctionStart)} lúc ${tsNow()}`);
   } finally {
     // CDP: đóng TAB riêng của mình thôi — Chrome thật + tab khác (script
     // khác đang sync song song) phải sống. Không CDP: đóng cả browser.
@@ -420,6 +448,12 @@ async function syncTeams(syncName: string) {
 
 async function syncZalo(syncName: string) {
   const syncMode = await resolveSyncMode();
+  // ⏱️ Đo thời gian từng giai đoạn sync Zalo.
+  const tFunctionStart = Date.now();
+  let tExtract: number | null = null;
+  let tSave: number | null = null;
+  let extractedCount = 0;
+  let savedCount = 0;
   // Init mode: fetch up to ~200 old messages
   // Regular mode: fetch only newest messages (~40 scrolls)
   // Incremental mode: scroll tối đa 20 lần, dừng sớm khi gặp mốc đã sync.
@@ -487,6 +521,8 @@ async function syncZalo(syncName: string) {
       ? (collected[0] as any).groupName || syncName
       : syncName;
     const result = await finalizeZaloMessages(page, { ...config, groupName: syncName }, displayGroupName, collected);
+    tExtract = Date.now();
+    extractedCount = result.totalMessages;
 
     console.log(`[SyncOne] Extracted ${result.totalMessages} messages from Zalo "${syncName}".`);
     await log("sync_progress", `Trích xuất ${result.totalMessages} tin nhắn Zalo từ "${syncName}"`);
@@ -516,7 +552,13 @@ async function syncZalo(syncName: string) {
         messages: cleanedMessages,
       });
       console.log(`[SyncOne] Saved ${saved.saved} new Zalo messages to Postgres.`);
+      tSave = Date.now();
+      savedCount = saved.saved;
+      const totalDuration = tSave - tFunctionStart;
+      const extractDuration = tExtract !== null ? tExtract - tFunctionStart : 0;
+      const saveDuration = tExtract !== null && tSave !== null ? tSave - tExtract : 0;
       await log("sync_end", `Đã lưu ${saved.saved} tin nhắn Zalo mới từ "${syncName}"`, JSON.stringify({ extracted: result.totalMessages, saved: saved.saved }));
+      console.log(`[SyncOne] ⏱  Zalo "${syncName}" tổng ${fmtDuration(totalDuration)} | mở+nav+extract: ${fmtDuration(extractDuration)} | save: ${fmtDuration(saveDuration)} | extract=${extractedCount} saved=${savedCount}${syncMode.incremental ? " (incremental)" : " (full)"} lúc ${tsNow()}`);
 
       // Monitor new messages for PM actions
       if (saved.saved > 0) {
@@ -524,11 +566,13 @@ async function syncZalo(syncName: string) {
       }
     } else {
       await log("sync_end", `Không có tin nhắn Zalo mới từ "${syncName}"`);
+      console.log(`[SyncOne] ⏱  Zalo "${syncName}" tổng ${fmtDuration(Date.now() - tFunctionStart)} | extract=${extractedCount} saved=0${syncMode.incremental ? " (incremental)" : " (full)"} — 0 tin mới lúc ${tsNow()}`);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[SyncOne] Fatal Zalo error:", err);
     await log("sync_error", `Lỗi Zalo: ${errMsg}`, JSON.stringify({ error: errMsg }));
+    console.log(`[SyncOne] ⏱  Zalo "${syncName}" FAIL sau ${fmtDuration(Date.now() - tFunctionStart)} lúc ${tsNow()}`);
   } finally {
     // CDP: đóng TAB riêng của mình thôi — Chrome thật + tab khác phải sống.
     await closeOwnPageOrBrowser(page, browser, context);

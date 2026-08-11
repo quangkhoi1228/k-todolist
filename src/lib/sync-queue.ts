@@ -620,8 +620,14 @@ async function runJobParallel(job: SyncJob) {
 
 async function runTask(task: ChatTask): Promise<void> {
   const startedAt = Date.now();
+  // Log rõ thời điểm bắt đầu/kết thúc + duration để đối chiếu tốc độ sync.
+  console.log(`[Sync] ▶ BẮT ĐẦU ${taskInfo(task)} lúc ${new Date(startedAt).toISOString()}`);
   await spawnTask(task);
-  console.log(`[Sync] ✓ Xong task ${taskInfo(task)} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`);
+  const durationMs = Date.now() - startedAt;
+  const durationStr = durationMs >= 60_000
+    ? `${(durationMs / 60_000).toFixed(2)}ph`
+    : `${(durationMs / 1000).toFixed(1)}s`;
+  console.log(`[Sync] ✓ KẾT THÚC ${taskInfo(task)} — ${durationStr} (xong lúc ${new Date().toISOString()})`);
 
   // Task yêu cầu "full" bị rơi vào lúc task incremental đang chạy —
   // đã gộp vào refetchTasks lúc enqueue, giờ chạy lại full rồi mới để
@@ -648,7 +654,7 @@ function spawnTask(task: ChatTask): Promise<void> {
     PLATFORM: task.platform,
     HEADLESS: "true",
     SYNC_MODE: task.syncMode || "incremental",
-    USE_CDP: process.env.USE_CDP ?? "1",
+    USE_CDP: task.platform === "zalo" ? "0" : (process.env.USE_CDP ?? "1"),
     CDP_PORT: process.env.CDP_PORT ?? "9222",
     // Đã được queue quản lý — script không tự claim lock.
     // (Trong CDP mode script mở tab riêng — xem shouldUseOwnTab trong script.)

@@ -995,7 +995,7 @@ export async function scrollZaloChatContainer(
     clientHeight: number;
   }
   let prevMaxTs = -1;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     // Send preemption: nhường Chrome ngay khi send bấm gửi.
     if (isSendWaiting()) {
       log(`[Zalo] Send đang chờ — dừng bottom-stabilize sớm (attempt ${attempt}).`);
@@ -1003,15 +1003,20 @@ export async function scrollZaloChatContainer(
       return collected;
     }
     await page.evaluate(scrollToBottom);
-    await page.waitForTimeout(2_000);
+    await page.waitForTimeout(1_000);
     const state = (await page.evaluate(getBottomState)) as BottomState;
+    // Đã ở đáy ngay lần đầu → không cần lặp thêm (tránh 5 lần chờ thừa)
+    if (state.atBottom && attempt === 0 && state.maxTs > 0) {
+      log(`[Zalo] Da o cuoi chat ngay lan dau: maxTs=${state.maxTs}.`);
+      break;
+    }
     const settled = state.atBottom && state.maxTs <= prevMaxTs && prevMaxTs > 0;
     if (settled) {
       log(`[Zalo] Da o cuoi chat (bottom ổn định): maxTs=${state.maxTs} sau ${attempt + 1} lan.`);
       break;
     }
-    if (attempt === 5) {
-      log(`[Zalo] Bottom chua on dinh sau 6 lan (scrollTop=${state.scrollTop}/${state.scrollHeight}, maxTs=${state.maxTs}) — tiep tuc voi vung DOM hien tai.`);
+    if (attempt === 2) {
+      log(`[Zalo] Bottom chua on dinh sau 3 lan (scrollTop=${state.scrollTop}/${state.scrollHeight}, maxTs=${state.maxTs}) — tiep tuc voi vung DOM hien tai.`);
     }
     prevMaxTs = state.maxTs;
   }
@@ -1061,6 +1066,10 @@ export async function scrollZaloChatContainer(
   }
 
   let scrollsDone = 0;
+  // Incremental: collect định kỳ để không mất do ReactVirtualized unmount,
+  // nhưng KHÔNG collect mỗi scroll (nặng ~1-2s). Chỉ đo watermark (nhẹ ~ms)
+  // mỗi window; khi chạm watermark → collect window đó 1 lần rồi dừng.
+  const INCREMENTAL_COLLECT_EVERY = 5;
   while (scrollsDone < totalScrolled) {
     const chunkStart = scrollsDone;
     const chunkEnd = Math.min(chunkStart + CHUNK_SCROLLS, totalScrolled);
@@ -1070,10 +1079,17 @@ export async function scrollZaloChatContainer(
       // profile), dừng scroll sớm để nhường Chrome cho lệnh gửi — việc còn
       // lại sẽ do vòng sync tiếp theo (2 phút) lo sau.
       if (isSendWaiting()) {
-        log(`[Zalo] PHÁT HIỆN send đang chờ — dừng scroll sớm tại ${scrollsDone + 1}/${totalScrolled} để nhường Chrome.`);
+        log(`[Zalo] PHÁ́T HIỆN send đang chờ — dừng scroll sớm tại ${scrollsDone + 1}/${totalScrolled} để nhường Chrome.`);
         return collected;
       }
-      
+
+      const isIncremental = config.incrementalSince !== undefined && config.incrementalSince > 0;
+      // Incremental rút ngắn wait: chỉ cần DOM render window mới enough để đo
+      // watermark — không cần chờ ảnh/avatar load đầy đủ như full sync.
+      const waitMs = isIncremental
+        ? 600 + randomInt(200, 600)
+        : config.scrollWaitMs + randomInt(500, 1500);
+
       await page.evaluate(`
         const __getZaloScrollContainer = ${getScrollContainer.toString()};
         (function() {
@@ -1082,9 +1098,10 @@ export async function scrollZaloChatContainer(
           container.scrollBy({ top: -Math.round(vh * 0.8) });
         })();
       `);
-      await page.waitForTimeout(config.scrollWaitMs + randomInt(500, 1500));
+      await page.waitForTimeout(waitMs);
 
-      if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+      if (isIncremental) {
+        // Chỉ đo watermark (nhẹ: 1 querySelectorAll, ~ms) — KHÔNG collect DOM
         const tsInfo = await page.evaluate(() => {
           let maxTs = -1;
           let minTs = Infinity;
@@ -1099,17 +1116,23 @@ export async function scrollZaloChatContainer(
           return { maxTs, minTs: minTs === Infinity ? -1 : minTs };
         });
 
-        // Nếu cả màn hình đều là tin cũ -> Dừng (nhưng hiếm khi xảy ra vì minTs màn trước chưa chạm mốc)
-        if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince) {
+        // Cả window đều là tin cũ → đã chạm vùng đã sync: collect 1 lần rồi dừng
+        if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince!) {
            log(`[Incremental] EARLY-STOP at scroll ${i + 1}: max visible timestamp ${tsInfo.maxTs} <= watermark ${config.incrementalSince}`);
+           pushUnique(await collectZaloMessagesFromPage(page, config));
            return collected;
         }
-        
-        // Bắt buộc phải extract vì có tin nhắn mới (chưa bị continue bỏ qua)
-        pushUnique(await collectZaloMessagesFromPage(page, config));
-        
-        if (tsInfo.minTs > 0 && tsInfo.minTs <= config.incrementalSince) {
+
+        // Collect định kỳ (mỗi INCREMENTAL_COLLECT_EVERY scroll) để không mất
+        // tin mới do ReactVirtualized unmount khi scroll lên xa
+        if ((scrollsDone + 1) % INCREMENTAL_COLLECT_EVERY === 0) {
+          pushUnique(await collectZaloMessagesFromPage(page, config));
+        }
+
+        // Có tin cũ xuất hiện ở đáy window → sắp chạm watermark → collect rồi dừng
+        if (tsInfo.minTs > 0 && tsInfo.minTs <= config.incrementalSince!) {
            log(`[Incremental] EARLY-STOP at scroll ${i + 1}: min visible timestamp ${tsInfo.minTs} <= watermark ${config.incrementalSince}`);
+           pushUnique(await collectZaloMessagesFromPage(page, config));
            return collected;
         }
       } else {

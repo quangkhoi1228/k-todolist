@@ -2029,18 +2029,27 @@ export async function incrementalScrollAndExtract(
   }
 
   log("[Incremental] Extracting newest messages at bottom with images...");
-  await page.waitForTimeout(2_000);
-  await page.evaluate(() => {
-    document.querySelectorAll<HTMLImageElement>('img').forEach(img => {
-      img.scrollIntoView({ block: "center", inline: "nearest" });
+  const isIncremental = config.incrementalSince !== undefined && config.incrementalSince > 0;
+  if (isIncremental) {
+    // Incremental: không cần chờ ảnh lazy-load đầy đủ (tin mới thường đã render
+    // text). Rút ngắn wait để tốc độ thuần tăng — ảnh sẽ tự tải khi user mở chat.
+    await page.waitForTimeout(800);
+    const bottomResult = await extractMessages(page, config, true);
+    addToCollection(bottomResult.messages, true);
+  } else {
+    await page.waitForTimeout(2_000);
+    await page.evaluate(() => {
+      document.querySelectorAll<HTMLImageElement>('img').forEach(img => {
+        img.scrollIntoView({ block: "center", inline: "nearest" });
+      });
     });
-  });
-  await page.waitForTimeout(5_000);
-  const bottomResult = await extractMessages(page, config, true);
-  addToCollection(bottomResult.messages, true);
-  log(`[Incremental] Bottom done: ${bottomResult.messages.length} msgs, ${bottomResult.messages.filter(m => m.images?.length).length} with images. Unique: ${allMessages.size}`);
+    await page.waitForTimeout(5_000);
+    const bottomResult = await extractMessages(page, config, true);
+    addToCollection(bottomResult.messages, true);
+  }
+  log(`[Incremental] Bottom done: ${allMessages.size} unique msgs.`);
 
-  if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
+  if (isIncremental) {
     if (await domHasIncrementalSince()) {
        log(`[Incremental] EARLY-STOP after Step 1: found message <= watermark ${config.incrementalSince}. All new messages are on the first page.`);
        return await buildFinalResult();
@@ -2084,7 +2093,10 @@ export async function incrementalScrollAndExtract(
         if (scrollInfo.before === scrollInfo.after) {
           log(`[Incremental] Scroll ${scrollNum}: NO MOVEMENT (before=${scrollInfo.before}, vh=${scrollInfo.vh}, scrollHeight=${scrollInfo.scrollHeight})`);
         }
-        await page.waitForTimeout(config.scrollWaitMs + randomInt(500, 1500));
+        // Incremental rút ngắn wait: chỉ cần DOM render window mới enough để
+        // đo watermark — không cần chờ ảnh đầy đủ. Full sync giữ wait cũ.
+        const isInc = config.incrementalSince !== undefined && config.incrementalSince > 0;
+        await page.waitForTimeout(isInc ? 700 + randomInt(200, 600) : config.scrollWaitMs + randomInt(500, 1500));
 
         // Incremental fast-detect mỗi lượt scroll: chỉ đọc timestamp của message
         // mới nhất trong DOM — gặp message <= watermark là đã chạm vùng đã lưu,

@@ -132,8 +132,10 @@ export async function POST(req: NextRequest) {
       const scriptPath = path.join(process.cwd(), "agents/pm/scripts/zalo-list-chats.ts");
       const headless = body.headless !== false;
 
-      // Pass full env so Playwright/Chrome get system vars (TMPDIR, DYLD_*, etc.)
-      const env = { ...process.env, USE_CDP: process.env.USE_CDP ?? "1", CDP_PORT: process.env.CDP_PORT ?? "9222" };
+      // Zalo LUÔN dùng persistent profile riêng (.zalo-session), KHÔNG CDP.
+      // CDP 9222 thường là Chrome profile Teams — Zalo connect vào đó bị
+      // "Đổi thiết bị" đá logout session Zalo chính.
+      const env = { ...process.env, USE_CDP: "0" };
 
       try {
         const headlessFlag = headless ? "--headless" : "";
@@ -183,9 +185,10 @@ export async function POST(req: NextRequest) {
       ...process.env,
       ZALO_GROUP_NAME: groupName || "",
       PLATFORM: "zalo",
-      // Dùng Chrome thật (CDP) — tránh bị chặn
-      USE_CDP: process.env.USE_CDP ?? "1",
-      CDP_PORT: process.env.CDP_PORT ?? "9222",
+      // Zalo LUÔN dùng persistent profile riêng (.zalo-session), KHÔNG CDP.
+      // CDP 9222 thường là Chrome profile Teams — Zalo connect vào đó bị
+      // "Đổi thiết bị" đá logout session Zalo chính.
+      USE_CDP: "0",
     };
 
     const opts: Record<string, unknown> = {
