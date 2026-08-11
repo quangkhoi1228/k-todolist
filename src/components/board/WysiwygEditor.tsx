@@ -14,7 +14,6 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-// @ts-ignore
 import ImageExt from "@tiptap/extension-image";
 import LinkExt from "@tiptap/extension-link";
 import { NodeSelection } from "@tiptap/pm/state";
@@ -305,7 +304,10 @@ export function WysiwygEditor({ content, onChange, placeholder, onImageUpload }:
     }
   }, [editor, onImageUpload]);
 
-  handleImageFileRef.current = handleImageFile;
+  // Keep latest handleImageFile in a ref (read by drag/paste handlers registered once)
+  useEffect(() => {
+    handleImageFileRef.current = handleImageFile;
+  }, [handleImageFile]);
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

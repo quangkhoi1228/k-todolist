@@ -51,6 +51,7 @@ export const projects = pgTable(
     ticketId: text("ticketId"),
     isdStatus: text("isdStatus"),
     isdUpdatedAt: real("isdUpdatedAt"),
+    phase: text("phase").notNull().default("init"), // "init" | "kickoff" — giai đoạn workflow dự án
     createdAt: real("createdAt").notNull().default(0),
   },
   (t) => [index("projects_by_user").on(t.userId)]
@@ -311,6 +312,7 @@ export const projectRoles = pgTable(
     name: text("name").notNull(),
     color: text("color"),
     order: real("order"),
+    capabilities: jsonb("capabilities"), // array of {key,label,enabled,note?} — chức năng role được phép thực hiện
     createdAt: real("createdAt").notNull(),
   },
   (t) => [index("roles_by_user").on(t.userId)]
@@ -328,6 +330,7 @@ export const projectMembers = pgTable(
     roleId: integer("roleId"), // FK roles.id
     roleName: text("roleName").notNull(),
     source: text("source").notNull(), // isd|manual
+    permissions: jsonb("permissions"), // array of {key,label,enabled,note?} — ghi đè capabilities của role cho riêng member
     createdAt: real("createdAt").notNull(),
   },
   (t) => [
@@ -391,28 +394,6 @@ export const files = pgTable(
   (t) => [index("files_by_user").on(t.userId)]
 );
 
-// ─── businessProcesses (kho quy trình nghiệp vụ — nguồn tham khảo cho gợi ý) ─────
-export const businessProcesses = pgTable(
-  "businessProcesses",
-  {
-    id: bigserial("id", { mode: "number" }).primaryKey(),
-    userId: text("userId").notNull(),
-    name: text("name").notNull(), // tên quy trình (vd: "Kickoff dự án FPT Cloud")
-    category: text("category"), // phân loại (vd: "kickoff", "sow", "handover", "general")
-    description: text("description").notNull(), // mô tả ngắn quy trình
-    steps: jsonb("steps").notNull(), // array of {order, title, description, action?, owner?, duration?}
-    triggers: jsonb("triggers"), // array of trigger conditions (từ khoá/hoàn cảnh kích hoạt)
-    outcome: text("outcome"), // kết quả mong đợi khi hoàn thành quy trình
-    isActive: boolean("isActive").notNull().default(true),
-    createdAt: real("createdAt").notNull(),
-    updatedAt: real("updatedAt").notNull(),
-  },
-  (t) => [
-    index("bp_by_user").on(t.userId),
-    index("bp_by_user_active").on(t.userId, t.isActive),
-  ]
-);
-
 // ─── taskTemplates (task list mẫu — render task list theo template) ─────────
 export const taskTemplates = pgTable(
   "taskTemplates",
@@ -431,5 +412,51 @@ export const taskTemplates = pgTable(
   (t) => [
     index("tt_by_user").on(t.userId),
     index("tt_by_user_active").on(t.userId, t.isActive),
+  ]
+);
+
+// ─── projectSummaries (bản tóm tắt dự án theo version — hiện trạng + next actions) ─────
+export const projectSummaries = pgTable(
+  "projectSummaries",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    projectId: integer("projectId").notNull(),
+    userId: text("userId").notNull(),
+    version: integer("version").notNull(), // tăng dần theo project (bắt đầu 1)
+    trigger: text("trigger").notNull(), // auto | manual
+    summaryText: text("summaryText").notNull(), // payload markdown
+    summaryData: jsonb("summaryData").notNull(), // snapshot cấu trúc cho UI
+    createdAt: real("createdAt").notNull(),
+  },
+  (t) => [
+    index("summaries_by_project").on(t.projectId),
+    index("summaries_by_user").on(t.userId),
+  ]
+);
+
+// ─── projectWorkflows (flow init → kick-off: dữ liệu + tiến độ từng bước) ─────
+export const projectWorkflows = pgTable(
+  "projectWorkflows",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    projectId: integer("projectId").notNull(),
+    userId: text("userId").notNull(),
+    phase: text("phase").notNull().default("init"), // "init" | "kickoff"
+    // Dữ liệu nhập theo từng bước: { stepKey: "done" | "skipped" | undefined }
+    steps: jsonb("steps").notNull().default({}),
+    // Input ban đầu của dự án (nhập khi init): presale, external groups, internal groups
+    initData: jsonb("initData"),
+    // Input yêu cầu sơ bộ dự án (nhập khi kick-off)
+    requirements: jsonb("requirements"),
+    // Các câu hỏi kick-off đã gửi (snapshot để tracking)
+    kickoffQuestions: jsonb("kickoffQuestions"),
+    // Link task tracking đã tự sinh
+    taskIds: jsonb("taskIds"),
+    updatedAt: real("updatedAt").notNull(),
+    createdAt: real("createdAt").notNull(),
+  },
+  (t) => [
+    index("wf_by_project").on(t.projectId),
+    index("wf_by_user").on(t.userId),
   ]
 );

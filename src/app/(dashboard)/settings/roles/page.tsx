@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useRoles, useRoleUsageCounts, useRoleMutations } from "@/hooks/useDomain";
+import { CAPABILITY_CATALOG, type RoleCapability } from "@/lib/roleCapabilities";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,6 +21,7 @@ import {
   AlertTriangle,
   Users,
   Palette,
+  ShieldCheck,
 } from "lucide-react";
 
 const ROLE_COLORS = [
@@ -44,10 +46,14 @@ export default function RolesSettingsPage() {
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("#10b981");
   const [editOrder, setEditOrder] = useState(0);
+  const [editCapabilities, setEditCapabilities] = useState<RoleCapability[]>([]);
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState("#10b981");
+  const [newCapabilities, setNewCapabilities] = useState<RoleCapability[]>(
+    CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false }))
+  );
 
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
@@ -63,6 +69,14 @@ export default function RolesSettingsPage() {
     setEditName(role.name);
     setEditColor(role.color || "#10b981");
     setEditOrder(role.order ?? 0);
+    setEditCapabilities(
+      Array.isArray(role.capabilities) && role.capabilities.length > 0
+        ? CAPABILITY_CATALOG.map((c) => {
+            const found = role.capabilities.find((rc: any) => rc.key === c.key);
+            return { ...c, enabled: found ? !!found.enabled : !!c.enabled };
+          })
+        : CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false }))
+    );
   }, []);
 
   const handleSaveEdit = useCallback(async () => {
@@ -71,9 +85,10 @@ export default function RolesSettingsPage() {
       name: editName.trim(),
       color: editColor,
       order: editOrder,
+      capabilities: editCapabilities,
     });
     setEditingRole(null);
-  }, [editingRole, editName, editColor, editOrder, rm]);
+  }, [editingRole, editName, editColor, editOrder, editCapabilities, rm]);
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim() || !userId) return;
@@ -82,11 +97,13 @@ export default function RolesSettingsPage() {
       name: newName.trim(),
       color: newColor,
       order: (roles ?? []).length,
+      capabilities: newCapabilities,
     });
     setNewName("");
     setNewColor("#10b981");
+    setNewCapabilities(CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false })));
     setIsCreateOpen(false);
-  }, [newName, newColor, userId, rm, roles]);
+  }, [newName, newColor, userId, rm, roles, newCapabilities]);
 
   const handleDelete = useCallback(
     async (roleId: string) => {
@@ -99,6 +116,14 @@ export default function RolesSettingsPage() {
     },
     [rm]
   );
+
+  const toggleCapability = useCallback((key: string, list: RoleCapability[], set: (v: RoleCapability[]) => void) => {
+    set(
+      list.map((c) =>
+        c.key === key ? { ...c, enabled: !c.enabled } : c
+      )
+    );
+  }, []);
 
   const isDefaultRole = (name: string) =>
     ["Sale", "Pre-sale", "Tech Infras", "Project Manager"].includes(name);
@@ -165,6 +190,50 @@ export default function RolesSettingsPage() {
                         title={c.name}
                       />
                     ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-muted-foreground mb-1 block">
+                    Chức năng role được thực hiện
+                  </label>
+                  <div className="max-h-40 overflow-y-auto rounded-lg border border-border/50 bg-background/60 divide-y divide-border/40">
+                    {CAPABILITY_CATALOG.map((c) => {
+                      const item = newCapabilities.find((nc) => nc.key === c.key);
+                      const enabled = item?.enabled ?? false;
+                      return (
+                        <button
+                          key={c.key}
+                          type="button"
+                          onClick={() =>
+                            setNewCapabilities((prev) =>
+                              prev.map((p) =>
+                                p.key === c.key ? { ...p, enabled: !enabled } : p
+                              )
+                            )
+                          }
+                          className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-colors cursor-pointer ${
+                            enabled ? "bg-primary/5" : "hover:bg-muted/40"
+                          }`}
+                        >
+                          <span
+                            className={`w-3 h-3 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                              enabled
+                                ? "bg-emerald-500 border-emerald-500 text-white"
+                                : "border-border bg-transparent"
+                            }`}
+                          >
+                            {enabled && (
+                              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4">
+                                <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </span>
+                          <span className={`text-[10px] ${enabled ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                            {c.label}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -284,6 +353,47 @@ export default function RolesSettingsPage() {
                             </Button>
                           </div>
                         </div>
+                        <div>
+                          <label className="text-[9px] font-semibold text-muted-foreground mb-1 block flex items-center gap-1">
+                            <ShieldCheck className="w-3 h-3" />
+                            Chức năng role được thực hiện
+                          </label>
+                          <div className="grid grid-cols-1 gap-0.5 max-h-36 overflow-y-auto rounded-md border border-border/40 bg-background/60 divide-y divide-border/30">
+                            {CAPABILITY_CATALOG.map((c) => {
+                              const item = editCapabilities.find((ec) => ec.key === c.key);
+                              const enabled = item?.enabled ?? false;
+                              return (
+                                <button
+                                  key={c.key}
+                                  type="button"
+                                  onClick={() =>
+                                    toggleCapability(c.key, editCapabilities, setEditCapabilities)
+                                  }
+                                  className={`w-full flex items-center gap-1.5 px-1.5 py-1 text-left transition-colors cursor-pointer ${
+                                    enabled ? "bg-primary/5" : "hover:bg-muted/40"
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-2.5 h-2.5 rounded border flex items-center justify-center shrink-0 ${
+                                      enabled
+                                        ? "bg-emerald-500 border-emerald-500 text-white"
+                                        : "border-border bg-transparent"
+                                    }`}
+                                  >
+                                    {enabled && (
+                                      <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4">
+                                        <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                                      </svg>
+                                    )}
+                                  </span>
+                                  <span className={`text-[9px] ${enabled ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                                    {c.label}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
                     ) : (
                       <div className="flex items-center justify-between">
@@ -306,6 +416,25 @@ export default function RolesSettingsPage() {
                             >
                               {usageCount} thành viên
                             </span>
+                            {(() => {
+                              const caps = Array.isArray(role.capabilities)
+                                ? role.capabilities
+                                : [];
+                              const enabledCount = caps.filter((c: any) => c.enabled).length;
+                              if (caps.length === 0) return null;
+                              return (
+                                <span
+                                  className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1"
+                                  title={caps
+                                    .filter((c: any) => c.enabled)
+                                    .map((c: any) => c.label)
+                                    .join(", ")}
+                                >
+                                  <ShieldCheck className="w-2.5 h-2.5" />
+                                  {enabledCount}/{caps.length} chức năng
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
                       </div>

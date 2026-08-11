@@ -1,6 +1,11 @@
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { projectRoles, projectMembers } from "../db";
+import {
+  CAPABILITY_CATALOG,
+  defaultCapabilitiesFor,
+  type RoleCapability,
+} from "../roleCapabilities";
 
 function mapRole(r: any): any {
   return {
@@ -9,6 +14,8 @@ function mapRole(r: any): any {
     _creationTime: r.createdAt ?? 0,
   };
 }
+
+export type { RoleCapability };
 
 export async function getRoles(userId: string) {
   const db = getDb();
@@ -58,8 +65,18 @@ export async function seedDefaultRoles(userId: string) {
         name: role.name,
         color: role.color,
         order: i,
+        capabilities: defaultCapabilitiesFor(role.name),
         createdAt: now,
       });
+    } else {
+      // Backfill capabilities cho role mặc định đã tồn tại từ trước (chưa có capabilities)
+      const existingRole = existing.find((r) => r.name === role.name);
+      if (existingRole && !existingRole.capabilities) {
+        await db
+          .update(projectRoles)
+          .set({ capabilities: defaultCapabilitiesFor(role.name) })
+          .where(eq(projectRoles.id, existingRole.id));
+      }
     }
   }
 }
@@ -69,6 +86,7 @@ export async function createRole(args: {
   name: string;
   color?: string;
   order?: number;
+  capabilities?: RoleCapability[];
 }) {
   const db = getDb();
   const res = await db
@@ -78,6 +96,7 @@ export async function createRole(args: {
       name: args.name,
       color: args.color ?? null,
       order: args.order ?? null,
+      capabilities: args.capabilities ?? CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false })),
       createdAt: Date.now(),
     })
     .returning();
@@ -88,12 +107,14 @@ export async function updateRole(id: number | string, updates: {
   name?: string;
   color?: string;
   order?: number;
+  capabilities?: RoleCapability[];
 }) {
   const db = getDb();
   const patch: any = {};
   if (updates.name !== undefined) patch.name = updates.name;
   if (updates.color !== undefined) patch.color = updates.color;
   if (updates.order !== undefined) patch.order = updates.order;
+  if (updates.capabilities !== undefined) patch.capabilities = updates.capabilities;
   await db.update(projectRoles).set(patch).where(eq(projectRoles.id, Number(id)));
 }
 

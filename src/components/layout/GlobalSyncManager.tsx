@@ -36,6 +36,17 @@ export function GlobalSyncManager() {
       isPollingRef.current = true;
       void (async () => {
         try {
+          // Không auto-sync project đã archive / đã xoá
+          let archived = false;
+          try {
+            const projRes = await fetch(
+              `/api/data/projects?action=getProject&id=${encodeURIComponent(activeProjectId)}`
+            );
+            const projData = await projRes.json();
+            archived = !!(projData && (projData.archived || projData.deletedAt));
+          } catch { /* nếu không lấy được thì vẫn sync */ }
+          if (archived) return;
+
           // Mỗi 2 phút enqueue 1 lần (server queue gom/ưu tiên job này)
           const last = lastEnqueuedRef.current[`p:${activeProjectId}`] || 0;
           if (Date.now() - last < 120_000) return;

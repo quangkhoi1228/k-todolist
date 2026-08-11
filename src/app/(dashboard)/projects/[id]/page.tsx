@@ -236,12 +236,12 @@ export default function ProjectDetailPage() {
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
   const [showDetail, setShowDetail] = useState(true);
   const searchParams = useSearchParams();
-  const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members">("info");
+  const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries">("info");
 
   // Điều hướng từ suggestion "Thêm nhóm" (SuggestionsQuickView) — mở sẵn tab Chats
   useEffect(() => {
     const t = searchParams.get("tab");
-    if (t === "chats" || t === "suggestions" || t === "emails" || t === "members" || t === "notes" || t === "summary" || t === "history") {
+    if (t === "chats" || t === "suggestions" || t === "emails" || t === "members" || t === "notes" || t === "summary" || t === "history" || t === "summaries") {
       setDetailTab(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

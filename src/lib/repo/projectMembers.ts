@@ -1,6 +1,10 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { projectMembers } from "../db";
+import { resolveMemberCapabilities, type RoleCapability } from "../roleCapabilities";
+
+export { resolveMemberCapabilities };
+export type { RoleCapability };
 
 function mapMember(m: any): any {
   return {
@@ -29,6 +33,7 @@ export async function addMember(args: {
   roleId?: number | string;
   roleName: string;
   source: string;
+  permissions?: RoleCapability[];
 }) {
   const db = getDb();
   const res = await db
@@ -41,6 +46,7 @@ export async function addMember(args: {
       roleId: args.roleId !== undefined ? Number(args.roleId) : null,
       roleName: args.roleName,
       source: args.source,
+      permissions: args.permissions ?? null,
       createdAt: Date.now(),
     })
     .returning();
@@ -52,6 +58,7 @@ export async function updateMember(id: number | string, updates: {
   email?: string;
   roleId?: number | string;
   roleName?: string;
+  permissions?: RoleCapability[] | null;
 }) {
   const db = getDb();
   const patch: any = {};
@@ -59,6 +66,7 @@ export async function updateMember(id: number | string, updates: {
   if (updates.email !== undefined) patch.email = updates.email;
   if (updates.roleId !== undefined) patch.roleId = Number(updates.roleId);
   if (updates.roleName !== undefined) patch.roleName = updates.roleName;
+  if (updates.permissions !== undefined) patch.permissions = updates.permissions;
   await db.update(projectMembers).set(patch).where(eq(projectMembers.id, Number(id)));
 }
 

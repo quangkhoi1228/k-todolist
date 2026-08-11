@@ -311,6 +311,46 @@ export function useSuggestionMutations() {
   }), [invalidate]);
 }
 
+// ─── Project Workflow (init → kick-off) ────────────────────
+export function useProjectWorkflow(projectId?: string | null) {
+  const key = projectId ? `workflow:${projectId}` : null;
+  return useData<any>(
+    key,
+    key ? () => apiGet("/project-workflows", { action: "getWorkflowByProject", projectId }) : null
+  );
+}
+
+export function useProjectWorkflowMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    ensureWorkflow: async (body: any) => {
+      const res = await apiPost("/project-workflows", { action: "ensureWorkflow", ...body });
+      await invalidate(["workflow:"]);
+      return res;
+    },
+    updateWorkflowStep: async (body: any) => {
+      const res = await apiPost("/project-workflows", { action: "updateWorkflowStep", ...body });
+      await invalidate(["workflow:"]);
+      return res;
+    },
+    updateWorkflowPhase: async (body: any) => {
+      const res = await apiPost("/project-workflows", { action: "updateWorkflowPhase", ...body });
+      await invalidate(["workflow:", "projects:", "project:"]);
+      return res;
+    },
+    updateWorkflowData: async (body: any) => {
+      const res = await apiPost("/project-workflows", { action: "updateWorkflowData", ...body });
+      await invalidate(["workflow:"]);
+      return res;
+    },
+    generateTrackingTasks: async (body: any) => {
+      const res = await apiPost("/project-workflows", { action: "generateTrackingTasks", ...body });
+      await invalidate(["tasks", "tasksByProject"]);
+      return res;
+    },
+  }), [invalidate]);
+}
+
 // ─── Chats (projectChats) ──────────────────────────────────
 export function useMessagesByProject(projectId?: string | null, chatNames?: string[]) {
   const key = projectId ? `chats:${projectId}:${JSON.stringify(chatNames ?? [])}` : null;
@@ -734,61 +774,6 @@ export function useUploadFile() {
   }, []);
 }
 
-// ─── Business Processes (kho quy trình) ────────────────────
-export function useBusinessProcesses(userId?: string | null, includeInactive = false) {
-  const key = userId ? `business-processes:${userId}:${includeInactive ? "all" : "active"}` : null;
-  return useData<any[]>(
-    key,
-    key
-      ? () =>
-          apiGet("/business-processes", {
-            action: "getBusinessProcesses",
-            userId,
-            includeInactive: includeInactive ? "true" : "false",
-          })
-      : null
-  );
-}
-
-export function useSearchBusinessProcesses(userId?: string | null, keywords?: string[], category?: string, limit = 5) {
-  const stableKeywords = keywords?.join(",") ?? "";
-  const key = userId ? `business-processes:search:${userId}:${category ?? "*"}:${stableKeywords}:${limit}` : null;
-  return useData<any[]>(
-    key,
-    key
-      ? () =>
-          apiGet("/business-processes", {
-            action: "searchBusinessProcesses",
-            userId,
-            keywords: stableKeywords,
-            category,
-            limit: String(limit),
-          })
-      : null
-  );
-}
-
-export function useBusinessProcessMutations() {
-  const invalidate = useInvalidate();
-  return useMemo(() => ({
-    createBusinessProcess: async (body: any) => {
-      const res = await apiPost("/business-processes", { action: "createBusinessProcess", ...body });
-      await invalidate(["business-processes"]);
-      return res;
-    },
-    updateBusinessProcess: async (body: any) => {
-      const res = await apiPost("/business-processes", { action: "updateBusinessProcess", ...body });
-      await invalidate(["business-processes"]);
-      return res;
-    },
-    deleteBusinessProcess: async (body: any) => {
-      const res = await apiPost("/business-processes", { action: "deleteBusinessProcess", ...body });
-      await invalidate(["business-processes"]);
-      return res;
-    },
-  }), [invalidate]);
-}
-
 // ─── Task Templates (task list mẫu — render task list theo template) ────────
 export function useTaskTemplates(userId?: string | null, includeInactive = false) {
   const key = userId ? `task-templates:${userId}:${includeInactive ? "all" : "active"}` : null;
@@ -821,6 +806,37 @@ export function useTaskTemplateMutations() {
     deleteTaskTemplate: async (body: any) => {
       const res = await apiPost("/task-templates", { action: "deleteTaskTemplate", ...body });
       await invalidate(["task-templates"]);
+      return res;
+    },
+  }), [invalidate]);
+}
+
+// ─── Project Summaries (bản tóm tắt dự án theo version) ─────────
+export function useProjectSummaries(projectId?: string | null, limit = 20) {
+  const key = projectId ? `summaries:project:${projectId}` : null;
+  return useData<any[]>(
+    key,
+    key ? () => apiGet("/project-summaries", { action: "getSummariesByProject", projectId, limit }) : null
+  );
+}
+
+export function useProjectSummaryMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    // Sinh + lưu version tóm tắt (LLM gate qua route agents; manual trigger từ UI)
+    generateSummary: async (body: { projectId: string; userId: string; trigger?: string }) => {
+      const res = await apiPost("/agents/generate-project-summary", {
+        action: "generate",
+        projectId: body.projectId,
+        userId: body.userId,
+        trigger: body.trigger === "manual" ? "manual" : "auto",
+      });
+      await invalidate(["summaries:", "logs:"]);
+      return res;
+    },
+    deleteSummary: async (body: { id: string }) => {
+      const res = await apiPost("/project-summaries", { action: "deleteSummary", ...body });
+      await invalidate(["summaries:"]);
       return res;
     },
   }), [invalidate]);

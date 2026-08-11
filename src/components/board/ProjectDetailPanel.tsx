@@ -4,12 +4,14 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
-import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, Target, ChevronDown, ListPlus, MessagesSquare, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal } from "lucide-react";
+import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, Target, ChevronDown, ListPlus, MessagesSquare, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal, History, ShieldCheck } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import { SowImportDialog } from "./SowImportDialog";
 import { format } from "date-fns";
 import { WysiwygEditor } from "./WysiwygEditor";
 import type { Doc } from "@/lib/types";
+import { CAPABILITY_CATALOG, resolveMemberCapabilities, type RoleCapability } from "@/lib/roleCapabilities";
+import type { SummaryData } from "@/lib/repo/projectSummaries";
 import {
   useSuggestionsByProject,
   useSuggestionMutations,
@@ -28,11 +30,44 @@ import {
   useNoteMutations,
   useUploadFile,
   useTaskMutations,
+  useProjectSummaries,
+  useProjectSummaryMutations,
+  useProjectWorkflow,
+  useProjectWorkflowMutations,
 } from "@/hooks/useDomain";
 import { useInvalidate } from "@/hooks/useData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { IsdFlowDiagram } from "./IsdFlowDiagram";
+import { PhaseWorkflowCard } from "./PhaseWorkflowCard";
+
+// ─── Entity shapes (dữ liệu từ API — vì hooks trả any[] nên khai báo tại đây) ───
+interface ChatMessage {
+  _id?: string;
+  chatName?: string;
+  sender?: string | null;
+  content?: string | null;
+  isMine?: boolean;
+  timestampMs?: number | string | null;
+  timestamp?: number | string | null;
+}
+interface SuggestionRow {
+  _id?: string;
+  type?: string;
+  title?: string;
+  description?: string;
+  suggestionData?: string;
+  priority?: string;
+  sourceChatName?: string;
+  sourceMessage?: string;
+  sourceSender?: string;
+  sourceTimestamp?: number;
+  actionLabel?: string;
+  actionUrl?: string;
+  input?: string;
+  reasoning?: string;
+  expectedOutcome?: string;
+}
 
 const DEFAULT_NOTES = `<h2>Thông tin chung</h2>
 <p>Mô tả tổng quan về dự án, mục tiêu, phạm vi...</p>
@@ -50,13 +85,15 @@ interface ProjectDetailPanelProps {
     name: string;
     color?: string;
     notes?: string | null;
+    archived?: boolean | null;
+    deletedAt?: number | null;
+    teamsGroups?: Array<{ name: string; type: "internal" | "customer"; platform?: "teams" | "zalo" | string; url?: string }>;
   };
-  tab?: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members";
-  onTabChange?: (tab: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members") => void;
+  tab?: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries";
+  onTabChange?: (tab: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries") => void;
 }
 
-const STATUS_LABELS: Record<string, { label: string; color: string; short: string }> = {
-  todo: { label: "Chưa thực hiện", color: "text-neutral-500", short: "Todo" },
+const STATUS_LABELS: Record<string, { label: string; color: string; short: string }> = {  todo: { label: "Chưa thực hiện", color: "text-neutral-500", short: "Todo" },
   processing: { label: "Đang xử lý", color: "text-blue-500", short: "Đang XL" },
   pending: { label: "Tạm dừng", color: "text-amber-500", short: "Tạm dừng" },
   done: { label: "Đã hoàn thành", color: "text-emerald-500", short: "Done" },
@@ -121,7 +158,7 @@ function proxyImageUrl(src: string): string {
 }
 
 /** Lấy groupAction từ suggestionData (vd: add_groups — cần thêm nhóm vào dự án) */
-function getGroupAction(s: any): string | undefined {
+function getGroupAction(s: SuggestionRow): string | undefined {
   try {
     if (s.suggestionData) {
       const parsed = JSON.parse(s.suggestionData);
@@ -186,6 +223,14 @@ function ChatImage({ src, alt, className, onClick }: { src: string; alt: string;
   const isLocalFileUrl = validSrc.startsWith("/api/data/files/") || validSrc.startsWith("/api/files/");
   const isHttp = validSrc.startsWith("http://") || validSrc.startsWith("https://");
   const isValidUrl = isHttp || isDataUrl || isStorageUrl || isLocalFileUrl;
+
+  const handleClick = useCallback(() => {
+    // Open via proxy if original was blocked, else use original URL
+    const url = (useProxy || failedProxy) ? proxyImageUrl(validSrc) : validSrc;
+    window.open(url, '_blank');
+    onClick?.();
+  }, [validSrc, useProxy, failedProxy, onClick]);
+
   if (!isValidUrl) {
     console.warn(`[ChatImage] Invalid URL skipped: "${src}"`);
     return null;
@@ -199,7 +244,7 @@ function ChatImage({ src, alt, className, onClick }: { src: string; alt: string;
         alt={alt}
         className={className}
         loading="lazy"
-        onClick={() => { window.open(validSrc, '_blank'); onClick?.(); }}
+        onClick={handleClick}
       />
     );
   }
@@ -207,17 +252,7 @@ function ChatImage({ src, alt, className, onClick }: { src: string; alt: string;
   // Always try the original URL first (CDN might still serve it).
   // If it fails, fall back to the proxy which will attempt server-side
   // fetch with stored auth cookies to get a fresh token.
-  const shouldProxy = useProxy;
-  const currentSrc = shouldProxy ? proxyImageUrl(validSrc) : validSrc;
-
-  console.log(`[ChatImage] Rendering: ${currentSrc.slice(0, 100)} (shouldProxy=${shouldProxy}, failedProxy=${failedProxy})`);
-
-  const handleClick = useCallback(() => {
-    // Open via proxy if original was blocked, else use original URL
-    const url = (shouldProxy || failedProxy) ? proxyImageUrl(validSrc) : validSrc;
-    window.open(url, '_blank');
-    onClick?.();
-  }, [validSrc, useProxy, failedProxy, onClick]);
+  const currentSrc = useProxy ? proxyImageUrl(validSrc) : validSrc;
 
   if (failedProxy) {
     return (
@@ -494,20 +529,33 @@ function MemberCard({
   member: Doc<"projectMembers">;
   roles: Doc<"projectRoles">[];
   roleColor?: string;
-  onUpdate: (id: string, data: { roleId?: string | null; roleName?: string }) => Promise<void>;
+  onUpdate: (id: string, data: { roleId?: string | null; roleName?: string; permissions?: RoleCapability[] | null }) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [editRoleId, setEditRoleId] = useState(member.roleId || "");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [editPermissions, setEditPermissions] = useState<RoleCapability[] | null>(null);
+
+  const memberRole = roles.find((r) => r._id === member.roleId);
+  const resolvedCaps = memberRole
+    ? resolveMemberCapabilities(memberRole, member.permissions)
+    : CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false }));
+  const hasPermissionOverride = Array.isArray(member.permissions) && member.permissions.length > 0;
+  const enabledCaps = resolvedCaps.filter((c) => c.enabled);
 
   const handleSaveRole = async () => {
     const selectedRole = roles.find((r) => r._id === editRoleId);
-    await onUpdate(member._id, {
-      roleId: editRoleId || (undefined as any),
+    const patch: { roleId?: string | null; roleName?: string; permissions?: RoleCapability[] | null } = {
+      roleId: editRoleId || null,
       roleName: selectedRole?.name || "Chưa phân công",
-    });
+    };
+    // Permissions cá nhân chỉ giữ khi member có ghi đè (không phụ thuộc role được chọn)
+    if (editPermissions !== null || hasPermissionOverride) {
+      patch.permissions = editPermissions !== null ? editPermissions : member.permissions;
+    }
+    await onUpdate(member._id, patch);
     setEditing(false);
   };
 
@@ -526,7 +574,7 @@ function MemberCard({
   const avatarColor = roleColor || "#6b7280";
 
   return (
-    <div className="flex items-center gap-2.5 p-2.5 rounded-xl border border-border/30 bg-card/50 hover:bg-muted/10 transition-colors group">
+    <div className="flex items-start gap-2.5 p-2.5 rounded-xl border border-border/30 bg-card/50 hover:bg-muted/10 transition-colors group">
       {/* Avatar */}
       <div
         className="w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0"
@@ -538,7 +586,7 @@ function MemberCard({
         {initials}
       </div>
 
-      {/* Info */}
+      {/* Info + functions */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-semibold text-foreground truncate">
@@ -549,9 +597,104 @@ function MemberCard({
               ISD
             </span>
           )}
+          {hasPermissionOverride && (
+            <span
+              className="text-[8px] px-1 py-0.5 rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium shrink-0"
+              title="Member này có chức năng riêng ghi đè lên role"
+            >
+              Ghi đè
+            </span>
+          )}
         </div>
         {member.email && (
           <p className="text-[9px] text-muted-foreground/70 truncate">{member.email}</p>
+        )}
+
+        {/* Chức năng member thực hiện được (từ role + ghi đè member) */}
+        {!editing && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {enabledCaps.length > 0 ? (
+              enabledCaps.slice(0, 4).map((c) => (
+                <span
+                  key={c.key}
+                  className="text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200/40 dark:border-emerald-500/20"
+                >
+                  {c.label}
+                </span>
+              ))
+            ) : (
+              <span className="text-[8px] text-muted-foreground/50">
+                Chưa có chức năng nào
+              </span>
+            )}
+            {enabledCaps.length > 4 && (
+              <span className="text-[8px] text-muted-foreground/60 px-1">+{enabledCaps.length - 4} nữa</span>
+            )}
+          </div>
+        )}
+
+        {/* Editor permissions cá nhân */}
+        {editing && editPermissions !== null && editRoleId && (
+          <div className="mt-2 space-y-0.5 rounded-lg border border-border/40 bg-background/60 p-1.5 max-h-32 overflow-y-auto">
+            <p className="text-[8px] font-semibold text-muted-foreground mb-1 flex items-center gap-1">
+              <ShieldCheck className="w-2.5 h-2.5" />
+              Chức năng riêng của member (bỏ trống = theo role)
+            </p>
+            {CAPABILITY_CATALOG.map((c) => {
+              const item = editPermissions.find((p) => p.key === c.key);
+              const enabled = item?.enabled ?? false;
+              return (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() =>
+                    setEditPermissions((prev) =>
+                      (prev || []).map((p) =>
+                        p.key === c.key ? { ...p, enabled: !enabled } : p
+                      )
+                    )
+                  }
+                  className={`w-full flex items-center gap-1.5 px-1.5 py-0.5 text-left transition-colors cursor-pointer rounded ${
+                    enabled ? "bg-primary/5" : "hover:bg-muted/40"
+                  }`}
+                >
+                  <span
+                    className={`w-2.5 h-2.5 rounded border flex items-center justify-center shrink-0 ${
+                      enabled
+                        ? "bg-emerald-500 border-emerald-500 text-white"
+                        : "border-border bg-transparent"
+                    }`}
+                  >
+                    {enabled && (
+                      <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4">
+                        <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className={`text-[8px] ${enabled ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                    {c.label}
+                  </span>
+                </button>
+              );
+            })}
+            <div className="flex items-center justify-between pt-1 border-t border-border/30 mt-1">
+              {hasPermissionOverride || editPermissions.some((p) => p.enabled) ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setEditPermissions(
+                      CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false }))
+                    )
+                  }
+                  className="text-[8px] text-muted-foreground hover:text-foreground px-1 py-0.5 cursor-pointer"
+                >
+                  Xoá ghi đè (theo role)
+                </button>
+              ) : (
+                <span />
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -560,8 +703,19 @@ function MemberCard({
         <div className="flex items-center gap-1 shrink-0">
           <select
             value={editRoleId}
-            onChange={(e) => setEditRoleId(e.target.value)}
-            className="h-6 px-1.5 text-[9px] rounded-lg bg-muted border border-border/50 text-foreground outline-none max-w-[100px]"
+            onChange={(e) => {
+              const rid = e.target.value;
+              setEditRoleId(rid);
+              if (rid) {
+                // Prefill permissions từ role được chọn (chỉ làm base, user có thể chỉnh)
+                const role = roles.find((r) => r._id === rid);
+                const base = role
+                  ? resolveMemberCapabilities(role, null).map((c) => ({ ...c }))
+                  : CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false }));
+                setEditPermissions(base);
+              }
+            }}
+            className="h-6 px-1.5 text-[9px] rounded-lg bg-muted border border-border/50 text-foreground outline-none max-w-[110px]"
             autoFocus
           >
             <option value="">Chưa phân công</option>
@@ -601,10 +755,17 @@ function MemberCard({
             type="button"
             onClick={() => {
               setEditRoleId(member.roleId || "");
+              setEditPermissions(
+                Array.isArray(member.permissions) && member.permissions.length > 0
+                  ? member.permissions.map((p: RoleCapability) => ({ ...p }))
+                  : (memberRole
+                      ? resolveMemberCapabilities(memberRole, null).map((c) => ({ ...c }))
+                      : CAPABILITY_CATALOG.map((c) => ({ ...c, enabled: false })))
+              );
               setEditing(true);
             }}
             className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/30 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
-            title="Đổi vai trò"
+            title="Sửa vai trò / chức năng"
           >
             <Edit3 className="w-3 h-3" />
           </button>
@@ -648,9 +809,173 @@ function MemberCard({
   );
 }
 
+// ─── Summary Content View — render bản tóm tắt dự án từ summaryData ────────
+function SummaryContentView({
+  data,
+  latest,
+  expanded = false,
+  handleDeleteSummary,
+}: {
+  data: SummaryData;
+  latest: { _id?: string } | null;
+  expanded?: boolean;
+  handleDeleteSummary?: (id: string) => void;
+}) {
+  const basic = (data?.basic || {}) as Record<string, unknown>;
+  const status = (data?.status || {}) as Record<string, unknown>;
+  const nextActions = (data?.nextActions || []) as Array<Record<string, unknown>>;
+  const unresolved = (data?.unresolvedActions || []) as Array<Record<string, unknown>>;
+  const internal = (data?.members?.internal || []) as Array<Record<string, unknown>>;
+  const customer = (data?.members?.customer || []) as Array<Record<string, unknown>>;
+  const recent = (data?.recentActivity || []) as Array<Record<string, unknown>>;
+  const compact = !expanded;
+
+  // Ep kiểu truy cập field — dữ liệu từ JSONB (có thể thiếu field)
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+  const bool = (v: unknown): boolean => !!v;
+
+  return (
+    <div className="px-3 py-2.5 space-y-2">
+      {/* Thông tin cơ bản */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+        <div className="col-span-2">
+          <span className="text-muted-foreground">Dự án: </span>
+          <span className="font-semibold text-foreground">{str(basic.name) || "—"}</span>
+        </div>
+        {str(basic.ticketId) && (
+          <div><span className="text-muted-foreground">Ticket: </span><span className="font-medium">{str(basic.ticketId)}</span></div>
+        )}
+        {str(basic.isdStatus) && (
+          <div><span className="text-muted-foreground">Trạng thái ISD: </span><span className="font-medium">{str(basic.isdStatus)}</span></div>
+        )}
+        {str(basic.priority) && (
+          <div><span className="text-muted-foreground">Ưu tiên: </span><span className="font-medium">{str(basic.priority)}</span></div>
+        )}
+        {str(basic.assignee) && (
+          <div><span className="text-muted-foreground">Assignee: </span><span className="font-medium">{str(basic.assignee)}</span></div>
+        )}
+        {str(basic.summary) && (
+          <div className="col-span-2 text-muted-foreground/80 italic line-clamp-2">{str(basic.summary).slice(0, 200)}</div>
+        )}
+      </div>
+
+      {/* Hiện trạng */}
+      <div className="bg-muted/30 rounded-lg px-2.5 py-2 flex items-center gap-3 text-[10px]">
+        <div>
+          <span className="text-muted-foreground">Tiến độ: </span>
+          <span className="font-semibold text-foreground">
+            {num((status.taskStats as Record<string, unknown> | undefined)?.done)}/{num((status.taskStats as Record<string, unknown> | undefined)?.total)} ({num(status.donePct)}%)
+          </span>
+        </div>
+        {num(status.overdue) > 0 && (
+          <div className="text-amber-500 font-medium">⚠ {num(status.overdue)} task quá hạn</div>
+        )}
+        {str(status.currentStep) && (
+          <div className="text-muted-foreground ml-auto">Workflow: <span className="font-medium text-foreground">{str(status.currentStep)}</span></div>
+        )}
+        {compact && num(status.overdueTasksCount) > 0 && (
+          <div className="ml-auto text-amber-500/80">
+            {(status.overdueTasks as Array<Record<string, unknown>> | undefined)?.map((t, i: number) => (
+              <div key={i}>• {str(t.title)}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Next actions */}
+      {nextActions.length > 0 && (
+        <div>
+          <h5 className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Next actions</h5>
+          <div className="space-y-0.5">
+            {nextActions.slice(0, compact ? 4 : 10).map((t, i: number) => (
+              <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                <span className={`shrink-0 text-[8px] px-1 py-px rounded ${
+                  bool(t.overdue) ? "bg-rose-500/10 text-rose-500" : "bg-muted text-muted-foreground"
+                }`}>{bool(t.overdue) ? "Quá hạn" : str(t.status) || "todo"}</span>
+                <span className="text-foreground/90 truncate">{str(t.title)}</span>
+                {str(t.pic) && <span className="text-muted-foreground/60 shrink-0">({str(t.pic)})</span>}
+                {num(t.endDate) > 0 && <span className="text-muted-foreground/50 ml-auto shrink-0">{format(new Date(num(t.endDate)), "dd/MM")}</span>}
+              </div>
+            ))}
+            {compact && nextActions.length > 4 && <div className="text-[9px] text-muted-foreground/60">+{nextActions.length - 4} nữa...</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Gợi ý chưa xử lý */}
+      {unresolved.length > 0 && (
+        <div>
+          <h5 className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Gợi ý chưa xử lý</h5>
+          <div className="space-y-0.5">
+            {unresolved.slice(0, compact ? 3 : 8).map((u, i: number) => (
+              <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                <AlertTriangle className="w-2.5 h-2.5 text-amber-500 shrink-0" />
+                <span className="text-foreground/90 truncate">{str(u.title)}</span>
+                {str(u.sourceChatName) && <span className="text-muted-foreground/50 shrink-0">({str(u.sourceChatName)})</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Members */}
+      <div className="grid grid-cols-2 gap-2 text-[10px]">
+        <div className="bg-blue-500/5 border border-blue-500/10 rounded-lg px-2 py-1.5">
+          <div className="text-[9px] font-semibold text-blue-500 uppercase tracking-wide mb-0.5">Nội bộ ({internal.length})</div>
+          {internal.length === 0 ? (
+            <div className="text-muted-foreground/50">chưa có</div>
+          ) : (
+            internal.slice(0, compact ? 3 : 8).map((m, i: number) => (
+              <div key={i} className="truncate">{str(m.name)}{str(m.role) ? <span className="text-muted-foreground/60"> ({str(m.role)})</span> : null}</div>
+            ))
+          )}
+        </div>
+        <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-lg px-2 py-1.5">
+          <div className="text-[9px] font-semibold text-emerald-500 uppercase tracking-wide mb-0.5">Khách hàng ({customer.length})</div>
+          {customer.length === 0 ? (
+            <div className="text-muted-foreground/50">chưa có</div>
+          ) : (
+            customer.slice(0, compact ? 3 : 8).map((m, i: number) => (
+              <div key={i} className="truncate">{str(m.name)}{str(m.role) ? <span className="text-muted-foreground/60"> ({str(m.role)})</span> : null}</div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Hoạt động gần đây */}
+      {recent.length > 0 && (
+        <div>
+          <h5 className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Hoạt động gần đây</h5>
+          <div className="space-y-0.5 max-h-[70px] overflow-hidden">
+            {recent.slice(0, compact ? 3 : 6).map((m, i: number) => (
+              <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                <span className={`shrink-0 text-[8px] px-1 py-px rounded ${bool(m.isMine) ? "bg-blue-500/10 text-blue-500" : "bg-muted text-muted-foreground"}`}>
+                  {bool(m.isMine) ? "Me" : (str(m.sender) || "?").slice(0, 12)}
+                </span>
+                <span className="text-foreground/80 truncate">{str(m.content)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {handleDeleteSummary && latest?._id && (
+        <button
+          type="button"
+          onClick={() => handleDeleteSummary(latest._id as string)}
+          className="flex items-center gap-1 text-[9px] text-muted-foreground/60 hover:text-rose-500"
+        >
+          <Trash2 className="w-2.5 h-2.5" /> Xoá version này
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnTabChange }: ProjectDetailPanelProps) {
   const { userId } = useAuth();
-  const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members">("info");
+  const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries">("info");
   const tab = propTab ?? localTab;
   const handleTabChange = propOnTabChange ?? setLocalTab;
   const searchParams = useSearchParams();
@@ -665,7 +990,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   }, [searchParams]);
 
 // ─── Chats State ───────────────────────────────────
-  const [activeTeamsGroups, setActiveTeamsGroups] = useState<{name: string, type: "internal" | "customer", platform?: string, url?: string}[]>((project as any).teamsGroups || []);
+  const [activeTeamsGroups, setActiveTeamsGroups] = useState<{name: string, type: "internal" | "customer", platform?: string, url?: string}[]>(project.teamsGroups || []);
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
   // Danh sách nhóm đang được nhập trong dialog — cho phép thêm nhiều nhóm Teams/Zalo cùng lúc
   const [pendingGroups, setPendingGroups] = useState<{id: string; name: string; type: "internal" | "customer"; platform: "teams" | "zalo"}[]>([]);
@@ -697,7 +1022,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
 
   // ─── Sync chat groups & selection when project changes ─────
   useEffect(() => {
-    const groups = ((project as any).teamsGroups || []) as {name: string; type: "internal" | "customer"; platform?: string; url?: string}[];
+    const groups = (project.teamsGroups || []) as {name: string; type: "internal" | "customer"; platform?: string; url?: string}[];
     // Deduplicate by name to prevent duplicates
     const seen = new Set<string>();
     const deduped = groups.filter(g => {
@@ -743,6 +1068,17 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const { data: projectRolesList } = useRoles(userId);
   const mmx = useMemberMutations();
 
+  // ─── Project Summaries State (bản tóm tắt dự án theo version) ─────
+  const { data: summaries, isLoading: summariesLoading, mutate: mutateSummaries } = useProjectSummaries(project._id ?? null);
+  const ssmx = useProjectSummaryMutations();
+  const [summarySaving, setSummarySaving] = useState(false);
+  const [selectedSummaryId, setSelectedSummaryId] = useState<string | null>(null);
+  const [summaryMarkdown, setSummaryMarkdown] = useState(false);
+
+  // ─── Project Workflow State (init → kick-off) ─────
+  const { data: workflow, isLoading: workflowLoading } = useProjectWorkflow(project._id ?? null);
+  const wfmx = useProjectWorkflowMutations();
+
   // ─── Members UI State ─────────────────────
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberName, setNewMemberName] = useState("");
@@ -756,7 +1092,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const savedZaloChats = savedZaloChatsData ?? [];
   const [analysingSuggestions, setAnalysingSuggestions] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
-  const projectChatsRef = useRef<any[]>([]);
+  const projectChatsRef = useRef<ChatMessage[]>([]);
   // We'll update the ref from the projectChats data below via another effect
 
   const runSuggestionAnalysis = useCallback(async () => {
@@ -780,7 +1116,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
         await smx.addSuggestionsBatch({
           projectId: project._id,
           userId,
-          suggestions: data.suggestions.map((s: any) => ({
+          suggestions: data.suggestions.map((s: SuggestionRow) => ({
             type: s.type || "info",
             title: s.title || "Gợi ý",
             description: s.description || "",
@@ -810,9 +1146,9 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   }, [project._id, project?.name, userId, smx]);
 
   // Thêm suggestion vào tasklist của project
-  const handleAddSuggestionTask = useCallback(async (s: any) => {
+  const handleAddSuggestionTask = useCallback(async (s: SuggestionRow) => {
     if (addingTaskId) return;
-    setAddingTaskId(s._id);
+    setAddingTaskId(s._id ?? null);
     setTaskError(null);
     setTaskAddedId(null);
     try {
@@ -832,7 +1168,7 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
         status: "todo",
         priority: priority === "high" ? "high" : priority === "low" ? "low" : "normal",
       });
-      setTaskAddedId(s._id);
+      setTaskAddedId(s._id ?? null);
     } catch (err) {
       console.error("[Suggestions] Add task failed:", err);
       setTaskError(err instanceof Error ? err.message : "Unknown error");
@@ -1017,20 +1353,20 @@ ${resourceTicketsLinks}
     if (userId) {
       if (savedTeamsChats.length > 0) {
         setAvailableTeamsChats(
-          savedTeamsChats.map((g: any) => ({ name: g.name, scrapedAt: g.scrapedAt }))
+          savedTeamsChats.map((g) => ({ name: g.name, scrapedAt: g.scrapedAt }))
         );
-        setLastListedAt((prev: any) => ({
+        setLastListedAt((prev) => ({
           ...prev,
-          teams: Math.max(...savedTeamsChats.map((g: any) => g.scrapedAt || 0)),
+          teams: Math.max(...savedTeamsChats.map((g) => g.scrapedAt || 0)),
         }));
       }
       if (savedZaloChats.length > 0) {
         setAvailableZaloChats(
-          savedZaloChats.map((g: any) => ({ name: g.name, scrapedAt: g.scrapedAt }))
+          savedZaloChats.map((g) => ({ name: g.name, scrapedAt: g.scrapedAt }))
         );
-        setLastListedAt((prev: any) => ({
+        setLastListedAt((prev) => ({
           ...prev,
-          zalo: Math.max(...savedZaloChats.map((g: any) => g.scrapedAt || 0)),
+          zalo: Math.max(...savedZaloChats.map((g) => g.scrapedAt || 0)),
         }));
       }
     }
@@ -1146,7 +1482,7 @@ ${resourceTicketsLinks}
   };
 
   // ─── Sync helper: gọi sync-single-chat cho 1 nhóm + hiển thị animation trạng thái ───
-  const invalidateRef = useRef<((patterns: string[]) => Promise<any>) | null>(null);
+  const invalidateRef = useRef<((patterns: string[]) => Promise<unknown>) | null>(null);
   invalidateRef.current = useInvalidate();
   const invalidateAfterSync = useCallback(() => {
     invalidateRef.current?.(["chats:", "suggestions:", "logs:"]);
@@ -1176,15 +1512,26 @@ ${resourceTicketsLinks}
 
         const st = syncStateRef.current;
         const running = !!data.running;
-        const cur = data.currentTask as { projectId?: string; chatName?: string; platform?: string } | null;
+        // 2 worker (Teams + Zalo) có thể chạy song song — gộp cả currentTasks
+        // (plural, mới) và currentTask (singular, backward-compat) để hiển
+        // thị spinner cho đúng từng nhóm ở CẢ 2 platform.
+        type CurTask = { projectId?: string; chatName?: string; platform?: string };
+        const curTaskList = (Array.isArray((data as any).currentTasks) ? (data as any).currentTasks as CurTask[] : []) as CurTask[];
+        const curSingle = data.currentTask ? [data.currentTask as CurTask] : [];
+        const currents = curTaskList.concat(curSingle);
 
         if (running) {
           st.lastQueueWasRunning = true;
           // Nhóm của project này đang chạy → hiện spinner cho đúng nhóm đó
-          if (cur?.projectId === project._id && cur.chatName) {
-            const busy = new Set<string>([cur.chatName]);
+          const busy = new Set<string>();
+          for (const cur of currents) {
+            if (cur?.projectId === project._id && cur.chatName) {
+              busy.add(cur.chatName);
+            }
+          }
+          if (busy.size > 0) {
             const prev = queuedSyncGroupsRef.current;
-            if (prev.size !== 1 || !prev.has(cur.chatName)) {
+            if (prev.size !== busy.size || Array.from(busy).some(n => !prev.has(n))) {
               queuedSyncGroupsRef.current = busy;
               setQueuedSyncGroups(busy);
             }
@@ -1254,8 +1601,8 @@ ${resourceTicketsLinks}
     if (saved !== null) {
       setAutoReloadIntervalConfig(Number(saved));
     }
-    const handleConfigChange = (e: any) => {
-      setAutoReloadIntervalConfig(e.detail);
+    const handleConfigChange = (e: Event) => {
+      setAutoReloadIntervalConfig((e as CustomEvent).detail);
     };
     window.addEventListener("projectChatReloadIntervalChanged", handleConfigChange);
     return () => window.removeEventListener("projectChatReloadIntervalChanged", handleConfigChange);
@@ -1283,7 +1630,9 @@ ${resourceTicketsLinks}
 
   useEffect(() => {
     if (!project?._id || autoReloadIntervalConfig === 0) return;
-    
+    // Không auto-reload/sync khi project đã archive hoặc xoá
+    if (project.archived || project.deletedAt) return;
+
     setAutoReloadCountdown(autoReloadIntervalConfig);
     const intervalId = setInterval(() => {
       setAutoReloadCountdown((prev) => {
@@ -1313,6 +1662,9 @@ ${resourceTicketsLinks}
   // Chọn nhóm chat mới → đánh dấu chưa scroll + scroll xuống cuối ngay (data
   // thường đã có sẵn trong projectChats); nếu data chưa về thì effect dưới
   // sẽ scroll bổ sung khi tin nhắn tải xong.
+  // Lưu ý: deps phải gồm cả `tab` — khi chuyển từ tab khác sang tab Chats,
+  // container messages vừa mount (ref trước đó null) nên effect không chạy
+  // được; thêm `tab` để effect chạy lại đúng lúc container đã có.
   useEffect(() => {
     if (!selectedChatGroup) return;
     messagesScrolledRef.current = null;
@@ -1325,28 +1677,44 @@ ${resourceTicketsLinks}
     const raf = requestAnimationFrame(scrollToBottom);
     const t1 = setTimeout(scrollToBottom, 250);
     const t2 = setTimeout(scrollToBottom, 800);
+    const t3 = setTimeout(scrollToBottom, 1500);
     return () => {
       cancelAnimationFrame(raf);
       clearTimeout(t1);
       clearTimeout(t2);
+      clearTimeout(t3);
     };
-  }, [selectedChatGroup]);
+  }, [selectedChatGroup, tab]);
 
-  // Tin nhắn tải về muộn (SWR fetch) → lần đầu có data cho nhóm vừa chọn thì
-  // scroll xuống cuối (không làm lại mỗi khi data đổi → không giật giữa chừng).
+  // Tin nhắn tải về muộn (SWR fetch) hoặc queue sync xong → nếu user chưa tự
+  // scroll lên (vẫn đang ở/near đáy) thì scroll xuống cuối để hiển thị tin mới
+  // nhất; đánh dấu đã scroll lần đầu cho nhóm để tránh scroll giật khi user
+  // chủ động cuộn lên đọc tin cũ.
   useEffect(() => {
     if (!selectedChatGroup) return;
     const el = messagesScrollRef.current;
-    if (!el || messagesScrolledRef.current === selectedChatGroup) return;
-    const hasMsgs = (projectChats || []).some((m: any) => m.chatName === selectedChatGroup);
+    if (!el) return;
+    const hasMsgs = (projectChats || []).some((m) => m.chatName === selectedChatGroup);
     if (!hasMsgs) return;
-    messagesScrolledRef.current = selectedChatGroup;
-    el.scrollTop = el.scrollHeight;
-    const t = setTimeout(() => {
+    // Lần đầu có data cho nhóm này → scroll xuống cuối
+    if (messagesScrolledRef.current !== selectedChatGroup) {
+      messagesScrolledRef.current = selectedChatGroup;
       el.scrollTop = el.scrollHeight;
-    }, 300);
-    return () => clearTimeout(t);
-  }, [selectedChatGroup, projectChats]);
+      const t = setTimeout(() => {
+        el.scrollTop = el.scrollHeight;
+      }, 300);
+      return () => clearTimeout(t);
+    }
+    // Đã scroll lần đầu → chỉ auto-scroll tiếp nếu user vẫn đang ở/near đáy
+    // (không giật khi user đã cuộn lên đọc tin cũ).
+    const atBottom = Math.abs(el.scrollTop - (el.scrollHeight - el.clientHeight)) < 80;
+    if (atBottom) {
+      const t = setTimeout(() => {
+        el.scrollTop = el.scrollHeight;
+      }, 150);
+      return () => clearTimeout(t);
+    }
+  }, [selectedChatGroup, projectChats, tab]);
 
   const nmx = useNoteMutations();
 
@@ -1550,6 +1918,31 @@ ${resourceTicketsLinks}
     return lines.join("\n");
   }, [summaryEntries, nextActions, stats]);
 
+  // ─── Project Summaries handlers ─────────────────────────
+  const handleSaveSummary = useCallback(async () => {
+    if (!userId || summarySaving) return;
+    setSummarySaving(true);
+    try {
+      await ssmx.generateSummary({ projectId: project._id, userId, trigger: "manual" });
+      await mutateSummaries();
+    } catch (err) {
+      console.error("[Summary] Save version error:", err);
+    } finally {
+      setSummarySaving(false);
+    }
+  }, [userId, summarySaving, project._id, ssmx, mutateSummaries]);
+
+  const handleDeleteSummary = useCallback(async (id: string) => {
+    if (!confirm("Xoá bản tóm tắt này?")) return;
+    try {
+      await ssmx.deleteSummary({ id });
+      await mutateSummaries();
+      if (selectedSummaryId === id) setSelectedSummaryId(null);
+    } catch (err) {
+      console.error("[Summary] Delete version error:", err);
+    }
+  }, [ssmx, mutateSummaries, selectedSummaryId]);
+
   const handleImageUpload = useCallback(async (file: File): Promise<string> => {
     return new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -1660,7 +2053,7 @@ ${resourceTicketsLinks}
           }`}
         >
           <MessageSquare className="w-3 h-3" />
-          Chats ({projectChats?.length || 0})
+          Chats ({activeTeamsGroups.length || 0})
         </button>
         <button
           type="button"
@@ -1710,6 +2103,18 @@ ${resourceTicketsLinks}
           <Users className="w-3 h-3" />
           Members ({projectMembers?.length || 0})
         </button>
+        <button
+          type="button"
+          onClick={() => handleTabChange("summaries")}
+          className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
+            tab === "summaries"
+              ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+          }`}
+        >
+          <Save className="w-3 h-3" />
+          Tóm tắt {summaries && summaries.length > 0 ? `(${summaries.length})` : ""}
+        </button>
         <DropdownMenu>
           <DropdownMenuTrigger
             className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
@@ -1724,7 +2129,7 @@ ${resourceTicketsLinks}
           <DropdownMenuContent align="end" className="w-48 text-[11px]">
             <DropdownMenuItem onClick={() => handleTabChange("summary")} className="cursor-pointer gap-2">
               <BarChart3 className="w-3 h-3" />
-              Summary
+              Summary JIRA
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleTabChange("history")} className="cursor-pointer gap-2">
               <ListTodo className="w-3 h-3" />
@@ -1738,6 +2143,25 @@ ${resourceTicketsLinks}
       <div className={`p-3 ${tab === "chats" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
         {tab === "info" ? (
           <div className="space-y-1.5">
+            {/* Phase Workflow (init → kick-off) */}
+            <PhaseWorkflowCard
+              project={{
+                _id: project._id,
+                name: project.name,
+                ticketId: (project as any).ticketId ?? undefined,
+              }}
+              userId={userId ?? undefined}
+              workflow={workflow}
+              loading={workflowLoading}
+              onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
+              onUpdateStep={(stepKey, status) =>
+                wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status })
+              }
+              onGenerateTasks={(items, prefix) =>
+                wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
+              }
+              onSwitchTab={(t) => handleTabChange(t as any)}
+            />
             {/* WYSIWYG Editor — compact */}
             <div className="relative min-h-[120px] max-h-[250px] overflow-y-auto border border-border/50 rounded-lg">
               <WysiwygEditor
@@ -1933,6 +2357,121 @@ ${resourceTicketsLinks}
               Click vào preview để copy nhanh, hoặc dùng nút Copy to JIRA
             </p>
           </div>
+        ) : tab === "summaries" ? (
+          /* Tóm tắt dự án — bản tóm tắt theo version (auto từ AI + manual) */
+          <div className="space-y-3 max-h-[250px] overflow-y-auto pr-1">
+            {/* Header + nút Lưu version */}
+            <div className="flex items-center gap-2 bg-gradient-to-br from-primary/5 to-primary/[0.02] border border-primary/20 rounded-xl px-3 py-2.5">
+              <Save className="w-3.5 h-3.5 text-primary" />
+              <div className="flex-1 min-w-0">
+                <h3 className="text-xs font-semibold text-foreground">Tóm tắt dự án</h3>
+                <p className="text-[9px] text-muted-foreground">
+                  {summaries?.length
+                    ? `${summaries.length} version — cập nhật tự động khi có biến động đáng chú ý`
+                    : "Chưa có bản tóm tắt nào — AI sẽ tạo khi có tin mới quan trọng"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveSummary}
+                disabled={summarySaving || !userId}
+                className="flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 transition-opacity"
+              >
+                {summarySaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                Lưu version
+              </button>
+            </div>
+
+            {summariesLoading && !summaries ? (
+              <div className="flex items-center justify-center py-6 text-muted-foreground text-[11px] gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang tải...
+              </div>
+            ) : !summaries || summaries.length === 0 ? (
+              <div className="text-center py-8 px-4 border border-dashed border-border/40 rounded-xl">
+                <BrainCircuit className="w-6 h-6 mx-auto mb-2 text-muted-foreground/40" />
+                <p className="text-[11px] text-muted-foreground">
+                  Bấm <span className="font-semibold text-foreground">Lưu version</span> để tạo bản tóm tắt đầu tiên
+                </p>
+                <p className="text-[9px] text-muted-foreground/60 mt-1">
+                  Hoặc đợi AI tự tạo sau khi sync chat có tin mới quan trọng
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Bản mới nhất */}
+                {(() => {
+                  const latest = summaries[0];
+                  const data = latest?.summaryData || {};
+                  return (
+                    <div className="border border-border/40 rounded-xl overflow-hidden bg-card/60">
+                      <div className="flex items-center gap-2 px-3 py-2 bg-muted/40 border-b border-border/30">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-primary/10 text-primary">v{latest.version}</span>
+                        <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded ${
+                          latest.trigger === "manual" ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                        }`}>
+                          {latest.trigger === "manual" ? "Tay" : "Tự động"}
+                        </span>
+                        <span className="text-[9px] text-muted-foreground">
+                          {latest.createdAt ? format(new Date(latest.createdAt), "dd/MM HH:mm") : ""}
+                        </span>
+                        <div className="flex-1" />
+                        <button
+                          type="button"
+                          onClick={() => setSummaryMarkdown(!summaryMarkdown)}
+                          className="text-[9px] font-medium text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                        >
+                          {summaryMarkdown ? "Xem tiêu đề" : "Xem markdown"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedSummaryId(selectedSummaryId === latest._id ? null : latest._id)}
+                          className="text-[9px] font-medium text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                        >
+                          {selectedSummaryId === latest._id ? "Thu gọn" : "Chi tiết"}
+                        </button>
+                      </div>
+                      {summaryMarkdown ? (
+                        <pre className="whitespace-pre-wrap text-[10px] leading-relaxed text-foreground/80 px-3 py-2.5 max-h-[180px] overflow-y-auto font-mono">
+                          {latest.summaryText || "—"}
+                        </pre>
+                      ) : (
+                        <SummaryContentView data={data} latest={latest} expanded={selectedSummaryId === latest._id} handleDeleteSummary={handleDeleteSummary} />
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Lịch sử version */}
+                {summaries.length > 1 && (
+                  <div className="border border-border/30 rounded-xl overflow-hidden">
+                    <div className="px-3 py-1.5 bg-muted/30 border-b border-border/20 flex items-center gap-1.5">
+                      <History className="w-3 h-3 text-muted-foreground" />
+                      <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Lịch sử version</h4>
+                    </div>
+                    <div className="divide-y divide-border/20">
+                      {summaries.slice(1).map((v) => (
+                        <details key={v._id} className="group">
+                          <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/30 text-left">
+                            <ChevronRight className="w-3 h-3 text-muted-foreground group-open:rotate-90 transition-transform" />
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-muted text-muted-foreground">v{v.version}</span>
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                              v.trigger === "manual" ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                            }`}>{v.trigger === "manual" ? "Tay" : "Tự động"}</span>
+                            <span className="text-[9px] text-muted-foreground ml-auto">
+                              {v.createdAt ? format(new Date(v.createdAt), "dd/MM HH:mm") : ""}
+                            </span>
+                          </summary>
+                          <div className="px-3 pb-3">
+                            <SummaryContentView data={v.summaryData || {}} latest={v} expanded={selectedSummaryId === v._id} handleDeleteSummary={handleDeleteSummary} />
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         ) : tab === "history" ? (
           /* History Tab — timeline view */
           <div className="space-y-3 max-h-[250px] overflow-y-auto pr-1">
@@ -2037,7 +2576,7 @@ ${resourceTicketsLinks}
                       >
                         {pendingGroups.map((row) => {
                           const chatList = row.platform === "zalo" ? availableZaloChats : availableTeamsChats;
-                          const matches = chatList.filter((c: any) =>
+                          const matches = chatList.filter((c) =>
                             c.name.toLowerCase().includes(row.name.toLowerCase())
                           );
                           return (
@@ -2149,7 +2688,7 @@ ${resourceTicketsLinks}
                         const activeRow = pendingGroups.find((r) => r.id === openDropdownId);
                         if (!activeRow) return null;
                         const chatList = activeRow.platform === "zalo" ? availableZaloChats : availableTeamsChats;
-                        const matches = chatList.filter((c: any) =>
+                        const matches = chatList.filter((c) =>
                           c.name.toLowerCase().includes(activeRow.name.toLowerCase())
                         );
                         // Portal ra document.body để thoát khỏi containing block của Radix Dialog
@@ -2165,7 +2704,7 @@ ${resourceTicketsLinks}
                               Nhóm {activeRow.platform === "zalo" ? "Zalo" : "Teams"} ({chatList.length})
                             </div>
                             {matches.length > 0 ? (
-                              matches.map((chat: any, i: number) => (
+                              matches.map((chat, i: number) => (
                                 <div
                                   key={i}
                                   onClick={() => {
@@ -2348,7 +2887,7 @@ ${resourceTicketsLinks}
                     </span>
                   </div>
                   <div className="space-y-0.5 max-h-40 overflow-y-auto custom-scrollbar pr-1">
-                    {savedTeamsChats.map((g: any) => {
+                    {savedTeamsChats.map((g) => {
                       const isAdded = activeTeamsGroups.some((ag) => ag.name === g.name);
                       return (
                         <div key={`t-${g._id ?? g.name}`} className="group flex items-center gap-1 pr-1.5">
@@ -2383,7 +2922,7 @@ ${resourceTicketsLinks}
                         </div>
                       );
                     })}
-                    {savedZaloChats.map((g: any) => {
+                    {savedZaloChats.map((g) => {
                       const isAdded = activeTeamsGroups.some((ag) => ag.name === g.name);
                       return (
                         <div key={`z-${g._id ?? g.name}`} className="group flex items-center gap-1 pr-1.5">
@@ -2480,7 +3019,7 @@ ${resourceTicketsLinks}
                 {showSyncLogs && (
                   <div className="mt-1 space-y-0.5 max-h-32 overflow-y-auto custom-scrollbar">
                     {syncLogs && syncLogs.length > 0 ? (
-                      syncLogs.map((log: any) => {
+                      syncLogs.map((log) => {
                         const logIcon = log.type === "sync_start" ? "▶️"
                           : log.type === "sync_end" ? "✅"
                           : log.type === "sync_error" ? "❌"
@@ -2524,7 +3063,7 @@ ${resourceTicketsLinks}
                   {selectedChatGroup || "Chọn nhóm chat"}
                 </span>
                 <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded-full">
-                  {projectChats?.filter((m: any) => m.chatName === selectedChatGroup)?.length || 0
+                  {projectChats?.filter((m) => m.chatName === selectedChatGroup)?.length || 0
                   } tin nhắn
                 </span>
 
@@ -2608,7 +3147,7 @@ ${resourceTicketsLinks}
                 <div className="shrink-0 mb-2 px-3 py-2 rounded-lg border border-primary/20 bg-primary/5 flex items-center gap-2">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
                   <span className="text-[11px] font-medium text-primary">
-                    Đang đồng bộ chat "{selectedChatGroup}" — đang mở Teams/Zalo để lấy tin nhắn mới...
+                    Đang đồng bộ chat &quot;{selectedChatGroup}&quot; — đang mở Teams/Zalo để lấy tin nhắn mới...
                   </span>
                 </div>
               )}
@@ -2628,9 +3167,9 @@ ${resourceTicketsLinks}
               ) : (
                 (() => {
                   const q = chatSearch.trim().toLowerCase();
-                  let chatMessages = projectChats.filter((m: any) => m.chatName === selectedChatGroup);
+                  let chatMessages = projectChats.filter((m) => m.chatName === selectedChatGroup);
                   if (q) {
-                    chatMessages = chatMessages.filter((m: any) =>
+                    chatMessages = chatMessages.filter((m) =>
                       (m.sender || "").toLowerCase().includes(q) ||
                       (m.content || "").toLowerCase().includes(q) ||
                       (m.timestamp || "").toLowerCase().includes(q)
@@ -2658,16 +3197,16 @@ ${resourceTicketsLinks}
                   }
                   return (
                     <>
-                      {chatMessages.map((msg: any, idx: number) => {
+                      {chatMessages.map((msg, idx: number) => {
                     const prev = idx > 0 ? chatMessages[idx - 1] : undefined;
                     const next = idx < chatMessages.length - 1 ? chatMessages[idx + 1] : undefined;
                     
-                    const getMsgTs = (m: any) => {
+                    const getMsgTs = (m: ChatMessage | undefined) => {
                       if (!m) return 0;
                       if (m.timestampMs !== undefined && m.timestampMs !== null) return Number(m.timestampMs);
                       const t = Number(m.timestamp);
                       if (!isNaN(t) && t > 1000000000000) return t;
-                      const d = new Date(m.timestamp);
+                      const d = new Date(Number(m.timestamp));
                       if (!isNaN(d.getTime())) return d.getTime();
                       return 0;
                     };
@@ -3262,7 +3801,7 @@ ${resourceTicketsLinks}
                     <Sparkles className="w-5 h-5 text-muted-foreground/30 mb-2" />
                     <span className="text-[11px]">Chưa có gợi ý nào</span>
                     <span className="text-[10px] text-muted-foreground/50 mt-1">
-                      Nhấn "Phân tích" để AI gợi ý hành động từ tin nhắn Teams
+                      Nhấn &quot;Phân tích&quot; để AI gợi ý hành động từ tin nhắn Teams
                     </span>
                   </>
                 )}
@@ -3280,7 +3819,7 @@ ${resourceTicketsLinks}
                   Email từ dự án này
                 </h3>
                 <EmailComposeDialog
-                  projectId={project._id as any}
+                  projectId={project._id}
                   defaultSubject={`[${project.name}] `}
                   trigger={
                     <button

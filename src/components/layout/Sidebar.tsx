@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, Bot, MessageSquare, Sparkles, Headset, ChevronLeft, ChevronRight, Mail, Cog, Workflow } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, Bot, MessageSquare, Sparkles, Headset, ChevronLeft, ChevronRight, Mail, Cog } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/ui/Logo";
@@ -111,11 +111,6 @@ export default function Sidebar() {
         <Link href="/omni" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 transition-all duration-300 cursor-pointer group mt-2">
           <Headset className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-blue-500 transition-colors" />
           <span className="truncate">Omni Platform</span>
-        </Link>
-
-        <Link href="/business-processes" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group">
-          <Workflow className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
-          <span className="truncate">Kho quy trình</span>
         </Link>
 
         <Link href="/settings/roles" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group">

@@ -479,6 +479,20 @@ function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }:
       <span className="text-[10px] font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded leading-none shrink-0">
         {totalTasks}
       </span>
+
+      {/* Phase badge (init / kickoff) */}
+      {project._id !== "none" && project.phase && (
+        <span
+          className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none shrink-0 ${
+            project.phase === "kickoff"
+              ? "bg-violet-500/15 text-violet-600 dark:text-violet-400"
+              : "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+          }`}
+          title={project.phase === "kickoff" ? "Dự án đang ở giai đoạn Kick-off" : "Dự án mới — đang ở giai đoạn Init"}
+        >
+          {project.phase === "kickoff" ? "Kick-off" : "Init"}
+        </span>
+      )}
       
       {/* Actions */}
       {project._id === "none" ? (

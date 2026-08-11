@@ -25,6 +25,7 @@ export interface ProjectRow {
   ticketId: string | null;
   isdStatus: string | null;
   isdUpdatedAt: number | null;
+  phase: string | null;
 }
 
 export interface InsertProject {
@@ -109,6 +110,7 @@ export async function updateProject(id: number | string, updates: {
   archived?: boolean;
   ticketId?: string;
   teamsGroups?: TeamGroup[];
+  phase?: string;
 }) {
   const db = getDb();
   const pid = Number(id);
@@ -118,6 +120,7 @@ export async function updateProject(id: number | string, updates: {
   if (updates.archived !== undefined) patch.archived = updates.archived;
   if (updates.ticketId !== undefined) patch.ticketId = updates.ticketId;
   if (updates.teamsGroups !== undefined) patch.teamsGroups = updates.teamsGroups;
+  if (updates.phase !== undefined) patch.phase = updates.phase;
   await db.update(projects).set(patch).where(eq(projects.id, pid));
 }
 
