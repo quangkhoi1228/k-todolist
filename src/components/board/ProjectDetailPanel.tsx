@@ -31,6 +31,7 @@ import {
   useProjectSummaryMutations,
   useProjectWorkflow,
   useProjectWorkflowMutations,
+  useIsdByProject,
 } from "@/hooks/useDomain";
 import { useInvalidate } from "@/hooks/useData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -1038,6 +1039,10 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   // ─── Project Workflow State (init → kick-off) ─────
   const { data: workflow, isLoading: workflowLoading } = useProjectWorkflow(project._id ?? null);
   const wfmx = useProjectWorkflowMutations();
+  // Thông tin Sale (reporter ISD) — dùng cho tin nhắn chào + deep link Teams
+  const { data: isdData } = useIsdByProject(project._id ?? null);
+  const isdSaleName = isdData?.reporter || isdData?.requester || isdData?.creator || "";
+  const isdSaleEmail = isdData?.reporterEmail || isdData?.requesterEmail || isdData?.creatorEmail || "";
 
   // ─── Members UI State ─────────────────────
   const [showAddMember, setShowAddMember] = useState(false);
@@ -3322,11 +3327,13 @@ ${resourceTicketsLinks}
               ticketId: (project as any).ticketId ?? undefined,
             }}
             userId={userId ?? undefined}
+            saleName={isdSaleName || undefined}
+            saleEmail={isdSaleEmail || undefined}
             workflow={workflow}
             loading={workflowLoading}
             onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
             onUpdateStep={(stepKey, status) =>
-              wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status })
+              wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status: status ?? null })
             }
             onGenerateTasks={(items, prefix) =>
               wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })

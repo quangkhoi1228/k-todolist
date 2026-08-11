@@ -1,14 +1,43 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Copy, Check, Send, Sparkles, MessageCircleQuestion, Target, Plus, X, Trash2, ChevronDown, Rocket, RefreshCw, ExternalLink, ListTodo } from "lucide-react";
+import { Copy, Check, Send, Sparkles, MessageCircleQuestion, Target, Plus, X, Trash2, ChevronDown, Rocket, RefreshCw, ExternalLink, ListTodo, RotateCcw } from "lucide-react";
 import type { WorkflowRow, WorkflowRequirement } from "@/lib/repo/projectWorkflows";
 
 // ─── Template constants ────────────────────────────────────
-export const GREET_SALE_TEMPLATE = (ticketId?: string | null) =>
-  `Chào anh/chị Sale ơi, em Khôi PM mới nhận ticket này${
-    ticketId ? ` (https://servicedesk.fci.vn/browse/${ticketId})` : ""
-  }. Vì đây là dự án mới nên em đang cần sync thông tin từ anh/chị về yêu cầu và phạm vi dự án để chuẩn bị triển khai cho đúng. Nhờ anh/chị giúp em thêm các thông tin sơ bộ: pre-sale phụ trách, nhóm nội bộ và nhóm khách hàng liên quan nhé ạ.`;
+/** Xưng hô theo giới tính: "anh" | "chị" | "anh/chị" (chưa rõ) */
+type SaleGender = "anh" | "chị" | "anh/chị";
+
+/**
+ * Mẫu tin nhắn chào Sale — nhận tên Sale + giới tính để xưng hô chính xác.
+ * @param saleName Tên Sale (reporter ISD); bỏ trống → dùng "Sale"
+ * @param gender   "anh" | "chị" | "anh/chị" (mặc định "anh/chị" khi chưa rõ)
+ */
+export const GREET_SALE_TEMPLATE = (
+  saleName?: string | null,
+  gender: SaleGender = "anh/chị",
+  ticketId?: string | null
+) => {
+  const name = saleName?.trim() ? saleName.trim() : "Sale";
+  const you = gender === "anh/chị" ? "anh/chị" : gender;
+  const ticketPart = ticketId ? ` (https://servicedesk.fci.vn/browse/${ticketId})` : "";
+  return `Chào ${you} ${name}, em Khôi PM CDC ạ. Em mới được giao phụ trách ticket này${ticketPart} ạ. Dự án mới nên em chưa có nhiều thông tin, nhờ ${you} bớt chút thời gian chia sẻ giúp em về yêu cầu, pre-sale phụ trách và add giúp em vào các nhóm nội bộ/khách hàng nhé ạ. Em cảm ơn ${you} nhiều!`;
+};
+
+/**
+ * Bản tin nhắn thuần text (không link) — dùng prefill deep link Teams,
+ * vì link ticket trong `message` param có thể bị Teams render thành văn bản thô.
+ */
+export const GREET_SALE_TEMPLATE_TEXT = (
+  saleName?: string | null,
+  gender: SaleGender = "anh/chị",
+  ticketId?: string | null
+) => {
+  const name = saleName?.trim() ? saleName.trim() : "Sale";
+  const you = gender === "anh/chị" ? "anh/chị" : gender;
+  const ticketPart = ticketId ? ` (ticket ${ticketId})` : "";
+  return `Chào ${you} ${name}, em Khôi PM CDC ạ. Em mới được giao phụ trách ticket này${ticketPart} ạ. Dự án mới nên em chưa có nhiều thông tin, nhờ ${you} bớt chút thời gian chia sẻ giúp em về yêu cầu, pre-sale phụ trách và add giúp em vào các nhóm nội bộ/khách hàng nhé ạ. Em cảm ơn ${you} nhiều!`;
+};
 
 export const KICKOFF_QUESTION_TEMPLATES: Array<{ id: string; title: string }> = [
   {
@@ -36,11 +65,16 @@ export const REQUIREMENT_INPUT_HINT =
 interface PhaseWorkflowCardProps {
   project: { _id: string; name: string; ticketId?: string | null };
   userId?: string;
+  /** Tên Sale (reporter ISD) — dùng để xưng hô đúng giới tính trong tin nhắn chào */
+  saleName?: string | null;
+  /** Email Sale (reporter ISD) — nút deep link Teams mở chat 1:1 với đúng người */
+  saleEmail?: string | null;
   workflow: WorkflowRow | null | undefined;
   loading?: boolean;
   onAction?: (step: string) => void;
   onUpdateWorkflow: (body: any) => Promise<any>;
-  onUpdateStep: (stepKey: string, status: "done" | "skipped") => Promise<any>;
+  /** Cập nhật trạng thái bước; status null → xoá (trở về chưa xử lý) */
+  onUpdateStep: (stepKey: string, status: "done" | "skipped" | null) => Promise<any>;
   onGenerateTasks: (items: Array<{ title: string; detail?: string; priority?: string }>, prefix?: string) => Promise<{ tasks?: any[] }>;
   onSwitchTab?: (tab: string) => void;
 }
@@ -48,6 +82,8 @@ interface PhaseWorkflowCardProps {
 export function PhaseWorkflowCard({
   project,
   userId,
+  saleName,
+  saleEmail,
   workflow,
   loading,
   onUpdateWorkflow,
@@ -71,8 +107,61 @@ export function PhaseWorkflowCard({
   const [taskToast, setTaskToast] = useState<string | null>(null);
   const taskToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ─── Collapse từng bước: bước done sẽ auto collapse, bước đang làm mặc định mở ───
+  const [collapsedSteps, setCollapsedSteps] = useState<Record<string, boolean>>({});
+
+  // Bước được đánh dấu done (từ nút "Đã gửi"/"Đã lưu" hoặc "Bỏ qua") → collapse gọn lại
+  const markStepCollapsed = (key: string) =>
+    setCollapsedSteps((prev) => ({ ...prev, [key]: true }));
+
+  /** Toggle done ↔ chưa done: done → xoá status (trở về chưa xử lý, mở lại step); chưa done → done + collapse */
+  const toggleStepDone = async (key: string) => {
+    const status = stepStatus(key);
+    if (status) {
+      await onUpdateStep(key, null);
+    } else {
+      await onUpdateStep(key, "done");
+      markStepCollapsed(key);
+    }
+  };
+
+  // ─── Thông tin Sale (từ ISD) + xưng hô theo giới tính ───
+  /** Detect giới tính từ tên Việt Nam (giới hạn mẫu thường gặp, không gọi LLM ở client). */
+  const detectGenderByName = (rawName?: string | null): SaleGender => {
+    const name = (rawName || "").trim();
+    if (!name) return "anh/chị";
+    const lower = name.toLowerCase();
+
+    // Quy tắc rõ ràng nhất: "Thị"/"Thi" ở giữa → nữ
+    if (/\bth[ịi]\b/.test(lower) && !/\bth[ịi]ch\b/.test(lower)) return "chị";
+    // Tên đệm rõ giới tính
+    if (/\b(?:văn|hữu|đức|quang|minh|tuấn|hùng|long|nam|khánh|duy|hoàng)\b/.test(lower)) return "anh";
+    if (/\b(?:thị|thu|hồng|ngọc|lan|hương|linh|ngân|trang|thảo|nhung|hằng|phương|mai|oanh|hà)\b/.test(lower)) return "chị";
+    // Tên chính (từ cuối) thường gặp
+    const firstName = (name.split(/\s+/).pop() || "").toLowerCase();
+    if (firstName === "trang" || firstName === "lan" || firstName === "thảo" || firstName === "hương" || firstName === "ngân" || firstName === "nhung" || firstName === "oanh" || firstName === "hồng" || firstName === "mai" || firstName === "thu" || firstName === "linh" || firstName === "ngọc" || firstName === "hà" || firstName === "phương" || firstName === "hằng" || firstName === "minh") return "chị";
+    if (firstName === "hùng" || firstName === "long" || firstName === "nam" || firstName === "tuấn" || firstName === "đức" || firstName === "quang" || firstName === "văn" || firstName === "hữu" || firstName === "duy" || firstName === "khánh" || firstName === "hoàng") return "anh";
+    return "anh/chị";
+  };
+
+  // Lazy init từ saleName (đã có ISD data) + cập nhật khi ISD load muộn
+  const [saleGender, setSaleGender] = useState<SaleGender>(() => detectGenderByName(saleName));
+
+  useEffect(() => {
+    setSaleGender(detectGenderByName(saleName));
+  }, [saleName]);
+
+  const greetMessage = GREET_SALE_TEMPLATE(saleName, saleGender, project.ticketId);
+  const greetMessageText = GREET_SALE_TEMPLATE_TEXT(saleName, saleGender, project.ticketId);
+
+  /** Deep link Teams mở chat 1:1 với Sale (users=<email>) + tự điền tin nhắn vào ô soạn thảo */
+  const teamsDeepLink = saleEmail?.trim()
+    ? `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(saleEmail.trim())}&message=${encodeURIComponent(greetMessageText)}`
+    : undefined;
+
   const phase = workflow?.phase ?? "init";
   const steps = (workflow?.steps ?? {}) as Record<string, string>;
+  const stepStatus = (key: string) => steps[key] || null;
 
   // Load dữ liệu từ workflow khi mở
   useEffect(() => {
@@ -103,7 +192,7 @@ export function PhaseWorkflowCard({
   };
 
   const copyGreet = async () => {
-    await navigator.clipboard.writeText(GREET_SALE_TEMPLATE(project.ticketId));
+    await navigator.clipboard.writeText(greetMessage);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -129,6 +218,7 @@ export function PhaseWorkflowCard({
       });
       await onUpdateStep("input_preinfo", "done");
       setShowPreinfo(false);
+      markStepCollapsed("input_preinfo");
       showToast("Đã lưu thông tin sơ bộ. Bạn có thể chuyển sang Kick-off khi sẵn sàng.");
     } catch (e: any) {
       setError(e?.message || "Lưu thất bại");
@@ -159,6 +249,7 @@ export function PhaseWorkflowCard({
       });
       await onUpdateStep("send_kickoff_questions", "done");
       setShowQuestions(false);
+      markStepCollapsed("send_kickoff_questions");
       showToast("Đã lưu câu hỏi kick-off. Dùng nút Gửi tin nhắn ở tab Chats để trao đổi với Pre-sale/Sale.");
     } catch (e: any) {
       setError(e?.message || "Lưu thất bại");
@@ -198,6 +289,7 @@ export function PhaseWorkflowCard({
       });
       await onUpdateStep("input_requirements", "done");
       setShowRequirements(false);
+      markStepCollapsed("input_requirements");
       // Tự sinh task tracking từ yêu cầu
       const res = await onGenerateTasks(
         reqs.map((r) => ({ title: r.title, detail: r.detail, priority: r.priority })),
@@ -252,8 +344,6 @@ export function PhaseWorkflowCard({
       </div>
     );
   }
-
-  const stepStatus = (key: string) => steps[key] || null;
 
   return (
     <div className="rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-transparent to-transparent p-5 space-y-4 shadow-sm">
@@ -310,7 +400,11 @@ export function PhaseWorkflowCard({
                 : "border-border/60 bg-background/60 shadow-sm"
             }`}
           >
-            <div className="flex items-center gap-2.5">
+            <div
+              className="flex items-center gap-2.5 cursor-pointer select-none"
+              onClick={() => setCollapsedSteps((prev) => ({ ...prev, greet_sale: !prev.greet_sale }))}
+              title={collapsedSteps.greet_sale ? "Mở rộng bước này" : "Thu gọn bước này"}
+            >
               <span
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
                   stepStatus("greet_sale")
@@ -323,44 +417,83 @@ export function PhaseWorkflowCard({
               <span className="text-sm font-semibold text-foreground flex-1">
                 Gửi tin nhắn chào Sale
               </span>
-              {stepStatus("greet_sale") === "done" && (
-                <span className="text-xs text-emerald-500 font-medium">Đã gửi</span>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
-              Mẫu tin nhắn chào sale, nhờ cung cấp thông tin sơ bộ dự án.
-            </p>
-            <div className="mt-3 ml-[34px] rounded-lg bg-muted/50 border border-border/40 p-3 text-sm text-foreground/80 leading-relaxed max-h-32 overflow-y-auto">
-              {GREET_SALE_TEMPLATE(project.ticketId)}
-            </div>
-            <div className="flex flex-wrap gap-2 mt-3 ml-[34px]">
-              <button
-                type="button"
-                onClick={copyGreet}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
-              >
-                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                {copied ? "Đã chép" : "Sao chép tin nhắn"}
-              </button>
-              <button
-                type="button"
-                onClick={() => onSwitchTab?.("chats")}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
-              >
-                <Send className="w-4 h-4" />
-                Đến tab Chats
-              </button>
-              {!stepStatus("greet_sale") && (
+              {stepStatus("greet_sale") === "done" ? (
                 <button
                   type="button"
-                  onClick={() => onUpdateStep("greet_sale", "done")}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 transition-colors cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleStepDone("greet_sale");
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                  title="Chưa gửi? Nhấn để quay lại trạng thái chưa xử lý"
                 >
-                  <Check className="w-4 h-4" />
-                  Đã gửi
+                  <RotateCcw className="w-3 h-3" />
+                  Hoàn tác
                 </button>
+              ) : (
+                stepStatus("greet_sale") === "skipped" && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleStepDone("greet_sale");
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                    title="Bỏ qua đã huỷ — nhấn để quay lại trạng thái chưa xử lý"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Hoàn tác
+                  </button>
+                )
               )}
+              <ChevronDown
+                className={`w-4 h-4 text-muted-foreground/60 transition-transform shrink-0 ${
+                  collapsedSteps.greet_sale ? "" : "rotate-180"
+                }`}
+              />
             </div>
+            {!collapsedSteps.greet_sale && (
+              <>
+                <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
+                  Mẫu tin nhắn chào sale, nhờ cung cấp thông tin sơ bộ dự án.
+                </p>
+                <div className="mt-3 ml-[34px] rounded-lg bg-muted/50 border border-border/40 p-3 text-sm text-foreground/80 leading-relaxed max-h-32 overflow-y-auto">
+                  {greetMessage}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3 ml-[34px]">
+                  <button
+                    type="button"
+                    onClick={copyGreet}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+                  >
+                    {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    {copied ? "Đã chép" : "Sao chép tin nhắn"}
+                  </button>
+                  {teamsDeepLink && (
+                    <a
+                      href={teamsDeepLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 hover:bg-sky-500/20 transition-colors cursor-pointer"
+                      title={`Mở chat Teams với Sale: ${saleEmail} — tin nhắn được điền sẵn vào ô soạn thảo`}
+                    >
+                      <Send className="w-4 h-4" />
+                      Gửi tin nhắn qua Teams
+                    </a>
+                  )}
+                  {!stepStatus("greet_sale") && (
+                    <button
+                      type="button"
+                      onClick={() => toggleStepDone("greet_sale")}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 transition-colors cursor-pointer"
+                    >
+                      <Check className="w-4 h-4" />
+                      Đã gửi
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Step 2: Pre-info */}
@@ -371,7 +504,11 @@ export function PhaseWorkflowCard({
                 : "border-border/60 bg-background/60 shadow-sm"
             }`}
           >
-            <div className="flex items-center gap-2.5">
+            <div
+              className="flex items-center gap-2.5 cursor-pointer select-none"
+              onClick={() => setCollapsedSteps((prev) => ({ ...prev, input_preinfo: !prev.input_preinfo }))}
+              title={collapsedSteps.input_preinfo ? "Mở rộng bước này" : "Thu gọn bước này"}
+            >
               <span
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
                   stepStatus("input_preinfo")
@@ -384,69 +521,90 @@ export function PhaseWorkflowCard({
               <span className="text-sm font-semibold text-foreground flex-1">
                 Nhập thông tin sơ bộ
               </span>
-              {stepStatus("input_preinfo") === "done" && (
-                <span className="text-xs text-emerald-500 font-medium">Đã lưu</span>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
-              Nhập pre-sale phụ trách, các nhóm external và internal liên quan để làm đầu vào
-              cho giai đoạn kick-off.
-            </p>
-            {!stepStatus("input_preinfo") && (
-              <div className="ml-[34px] mt-3">
+              {stepStatus("input_preinfo") ? (
                 <button
                   type="button"
-                  onClick={() => setShowPreinfo(!showPreinfo)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleStepDone("input_preinfo");
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                  title="Nhấn để quay lại trạng thái chưa xử lý"
                 >
-                  <Target className="w-4 h-4" />
-                  Nhập thông tin sơ bộ
-                  <ChevronDown className={`w-4 h-4 transition-transform ${showPreinfo ? "rotate-180" : ""}`} />
+                  <RotateCcw className="w-3 h-3" />
+                  Hoàn tác
                 </button>
-                {showPreinfo && (
-                  <div className="mt-3 space-y-3">
-                    <input
-                      type="text"
-                      value={presale}
-                      onChange={(e) => setPresale(e.target.value)}
-                      placeholder="Pre-sale phụ trách (tên / email)"
-                      className="w-full h-10 px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
-                    />
-                    <textarea
-                      value={externalGroups}
-                      onChange={(e) => setExternalGroups(e.target.value)}
-                      placeholder={"Nhóm external (khách hàng) — mỗi dòng 1 nhóm"}
-                      rows={3}
-                      className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
-                    />
-                    <textarea
-                      value={internalGroups}
-                      onChange={(e) => setInternalGroups(e.target.value)}
-                      placeholder={"Nhóm internal (nội bộ) — mỗi dòng 1 nhóm"}
-                      rows={3}
-                      className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
-                    />
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        type="button"
-                        onClick={savePreinfo}
-                        disabled={saving}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                        Lưu thông tin
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStep("input_preinfo", "skipped")}
-                        className="text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer px-3 py-2"
-                      >
-                        Bỏ qua
-                      </button>
-                    </div>
+              ) : (
+                <ChevronDown
+                  className={`w-4 h-4 text-muted-foreground/60 transition-transform shrink-0 ${
+                    collapsedSteps.input_preinfo ? "" : "rotate-180"
+                  }`}
+                />
+              )}
+            </div>
+            {!collapsedSteps.input_preinfo && (
+              <>
+                <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
+                  Nhập pre-sale phụ trách, các nhóm external và internal liên quan để làm đầu vào
+                  cho giai đoạn kick-off.
+                </p>
+                {!stepStatus("input_preinfo") && (
+                  <div className="ml-[34px] mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowPreinfo(!showPreinfo)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
+                    >
+                      <Target className="w-4 h-4" />
+                      Nhập thông tin sơ bộ
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showPreinfo ? "rotate-180" : ""}`} />
+                    </button>
+                    {showPreinfo && (
+                      <div className="mt-3 space-y-3">
+                        <input
+                          type="text"
+                          value={presale}
+                          onChange={(e) => setPresale(e.target.value)}
+                          placeholder="Pre-sale phụ trách (tên / email)"
+                          className="w-full h-10 px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
+                        />
+                        <textarea
+                          value={externalGroups}
+                          onChange={(e) => setExternalGroups(e.target.value)}
+                          placeholder={"Nhóm external (khách hàng) — mỗi dòng 1 nhóm"}
+                          rows={3}
+                          className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
+                        />
+                        <textarea
+                          value={internalGroups}
+                          onChange={(e) => setInternalGroups(e.target.value)}
+                          placeholder={"Nhóm internal (nội bộ) — mỗi dòng 1 nhóm"}
+                          rows={3}
+                          className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
+                        />
+                        <div className="flex items-center justify-between pt-1">
+                          <button
+                            type="button"
+                            onClick={savePreinfo}
+                            disabled={saving}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                            Lưu thông tin
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onUpdateStep("input_preinfo", "skipped")}
+                            className="text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer px-3 py-2"
+                          >
+                            Bỏ qua
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
 
@@ -482,7 +640,11 @@ export function PhaseWorkflowCard({
                 : "border-border/60 bg-background/60 shadow-sm"
             }`}
           >
-            <div className="flex items-center gap-2.5">
+            <div
+              className="flex items-center gap-2.5 cursor-pointer select-none"
+              onClick={() => setCollapsedSteps((prev) => ({ ...prev, send_kickoff_questions: !prev.send_kickoff_questions }))}
+              title={collapsedSteps.send_kickoff_questions ? "Mở rộng bước này" : "Thu gọn bước này"}
+            >
               <span
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
                   stepStatus("send_kickoff_questions")
@@ -495,82 +657,103 @@ export function PhaseWorkflowCard({
               <span className="text-sm font-semibold text-foreground flex-1">
                 Gửi câu hỏi cho Pre-sale / Sale
               </span>
-              {stepStatus("send_kickoff_questions") === "done" && (
-                <span className="text-xs text-emerald-500 font-medium">Đã lưu</span>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
-              Gợi ý câu hỏi thu thập thông tin dự án từ Pre-sale và Sale trước khi triển khai.
-            </p>
-            {!stepStatus("send_kickoff_questions") && (
-              <div className="ml-[34px] mt-3">
+              {stepStatus("send_kickoff_questions") ? (
                 <button
                   type="button"
-                  onClick={() => setShowQuestions(!showQuestions)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleStepDone("send_kickoff_questions");
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                  title="Nhấn để quay lại trạng thái chưa xử lý"
                 >
-                  <MessageCircleQuestion className="w-4 h-4" />
-                  Chọn câu hỏi gửi
-                  <ChevronDown className={`w-4 h-4 transition-transform ${showQuestions ? "rotate-180" : ""}`} />
+                  <RotateCcw className="w-3 h-3" />
+                  Hoàn tác
                 </button>
-                {showQuestions && (
-                  <div className="mt-3 space-y-2">
-                    {KICKOFF_QUESTION_TEMPLATES.map((q) => {
-                      const checked = selectedQuestions.includes(q.title);
-                      return (
-                        <button
-                          key={q.id}
-                          type="button"
-                          onClick={() => toggleQuestion(q.title)}
-                          className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left rounded-xl border transition-colors cursor-pointer ${
-                            checked
-                              ? "border-primary/40 bg-primary/5"
-                              : "border-border/40 hover:bg-muted/40"
-                          }`}
-                        >
-                          <span
-                            className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 mt-0.5 ${
-                              checked
-                                ? "bg-primary border-primary text-white"
-                                : "border-border bg-transparent"
-                            }`}
+              ) : (
+                <ChevronDown
+                  className={`w-4 h-4 text-muted-foreground/60 transition-transform shrink-0 ${
+                    collapsedSteps.send_kickoff_questions ? "" : "rotate-180"
+                  }`}
+                />
+              )}
+            </div>
+            {!collapsedSteps.send_kickoff_questions && (
+              <>
+                <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
+                  Gợi ý câu hỏi thu thập thông tin dự án từ Pre-sale và Sale trước khi triển khai.
+                </p>
+                {!stepStatus("send_kickoff_questions") && (
+                  <div className="ml-[34px] mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowQuestions(!showQuestions)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
+                    >
+                      <MessageCircleQuestion className="w-4 h-4" />
+                      Chọn câu hỏi gửi
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showQuestions ? "rotate-180" : ""}`} />
+                    </button>
+                    {showQuestions && (
+                      <div className="mt-3 space-y-2">
+                        {KICKOFF_QUESTION_TEMPLATES.map((q) => {
+                          const checked = selectedQuestions.includes(q.title);
+                          return (
+                            <button
+                              key={q.id}
+                              type="button"
+                              onClick={() => toggleQuestion(q.title)}
+                              className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left rounded-xl border transition-colors cursor-pointer ${
+                                checked
+                                  ? "border-primary/40 bg-primary/5"
+                                  : "border-border/40 hover:bg-muted/40"
+                              }`}
+                            >
+                              <span
+                                className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 mt-0.5 ${
+                                  checked
+                                    ? "bg-primary border-primary text-white"
+                                    : "border-border bg-transparent"
+                                }`}
+                              >
+                                {checked && <Check className="w-3 h-3" />}
+                              </span>
+                              <span className="text-sm text-foreground/90 leading-relaxed">{q.title}</span>
+                            </button>
+                          );
+                        })}
+                        <div className="flex items-center justify-between pt-2">
+                          <button
+                            type="button"
+                            onClick={saveQuestions}
+                            disabled={saving}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
                           >
-                            {checked && <Check className="w-3 h-3" />}
-                          </span>
-                          <span className="text-sm text-foreground/90 leading-relaxed">{q.title}</span>
-                        </button>
-                      );
-                    })}
-                    <div className="flex items-center justify-between pt-2">
-                      <button
-                        type="button"
-                        onClick={saveQuestions}
-                        disabled={saving}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                        Lưu câu hỏi
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStep("send_kickoff_questions", "skipped")}
-                        className="text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer px-3 py-2"
-                      >
-                        Bỏ qua
-                      </button>
-                    </div>
+                            {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                            Lưu câu hỏi
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onUpdateStep("send_kickoff_questions", "skipped")}
+                            className="text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer px-3 py-2"
+                          >
+                            Bỏ qua
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            )}
-            {stepStatus("send_kickoff_questions") === "done" && (
-              <div className="mt-3 ml-[34px] space-y-1.5">
-                {(workflow?.kickoffQuestions || []).map((q, i) => (
-                  <p key={i} className="text-sm text-muted-foreground/80 leading-relaxed flex items-start gap-2">
-                    <span className="text-primary mt-1">•</span> {q}
-                  </p>
-                ))}
-              </div>
+                {stepStatus("send_kickoff_questions") === "done" && (
+                  <div className="mt-3 ml-[34px] space-y-1.5">
+                    {(workflow?.kickoffQuestions || []).map((q, i) => (
+                      <p key={i} className="text-sm text-muted-foreground/80 leading-relaxed flex items-start gap-2">
+                        <span className="text-primary mt-1">•</span> {q}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -582,7 +765,11 @@ export function PhaseWorkflowCard({
                 : "border-border/60 bg-background/60 shadow-sm"
             }`}
           >
-            <div className="flex items-center gap-2.5">
+            <div
+              className="flex items-center gap-2.5 cursor-pointer select-none"
+              onClick={() => setCollapsedSteps((prev) => ({ ...prev, input_requirements: !prev.input_requirements }))}
+              title={collapsedSteps.input_requirements ? "Mở rộng bước này" : "Thu gọn bước này"}
+            >
               <span
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
                   stepStatus("input_requirements")
@@ -595,99 +782,120 @@ export function PhaseWorkflowCard({
               <span className="text-sm font-semibold text-foreground flex-1">
                 Nhập yêu cầu sơ bộ dự án
               </span>
-              {stepStatus("input_requirements") === "done" && (
-                <span className="text-xs text-emerald-500 font-medium">Đã lưu</span>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
-              Yêu cầu sơ bộ là input của dự án — sau khi lưu, hệ thống tự sinh task tracking
-              cho từng yêu cầu.
-            </p>
-            {!stepStatus("input_requirements") && (
-              <div className="ml-[34px] mt-3">
+              {stepStatus("input_requirements") ? (
                 <button
                   type="button"
-                  onClick={() => setShowRequirements(!showRequirements)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleStepDone("input_requirements");
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                  title="Nhấn để quay lại trạng thái chưa xử lý"
                 >
-                  <Target className="w-4 h-4" />
-                  Nhập yêu cầu sơ bộ
-                  <ChevronDown className={`w-4 h-4 transition-transform ${showRequirements ? "rotate-180" : ""}`} />
+                  <RotateCcw className="w-3 h-3" />
+                  Hoàn tác
                 </button>
-                {showRequirements && (
-                  <div className="mt-3 space-y-3">
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={reqTitle}
-                        onChange={(e) => setReqTitle(e.target.value)}
-                        placeholder="Tiêu đề yêu cầu (bắt buộc)"
-                        className="flex-1 h-10 px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
-                      />
-                      <button
-                        type="button"
-                        onClick={addRequirement}
-                        disabled={!reqTitle.trim()}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40"
-                      >
-                        <Plus className="w-4 h-4" />
-                        Thêm
-                      </button>
-                    </div>
-                    <textarea
-                      value={reqDetail}
-                      onChange={(e) => setReqDetail(e.target.value)}
-                      placeholder="Chi tiết / mô tả yêu cầu (không bắt buộc)"
-                      rows={3}
-                      className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
-                    />
-                    {reqs.length > 0 && (
-                      <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                        {reqs.map((r) => (
-                          <div
-                            key={r.id}
-                            className="flex items-start gap-2.5 rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
+              ) : (
+                <ChevronDown
+                  className={`w-4 h-4 text-muted-foreground/60 transition-transform shrink-0 ${
+                    collapsedSteps.input_requirements ? "" : "rotate-180"
+                  }`}
+                />
+              )}
+            </div>
+            {!collapsedSteps.input_requirements && (
+              <>
+                <p className="text-sm text-muted-foreground mt-2 leading-relaxed ml-[34px]">
+                  Yêu cầu sơ bộ là input của dự án — sau khi lưu, hệ thống tự sinh task tracking
+                  cho từng yêu cầu.
+                </p>
+                {!stepStatus("input_requirements") && (
+                  <div className="ml-[34px] mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowRequirements(!showRequirements)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-border/50 hover:bg-muted/50 transition-colors cursor-pointer"
+                    >
+                      <Target className="w-4 h-4" />
+                      Nhập yêu cầu sơ bộ
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showRequirements ? "rotate-180" : ""}`} />
+                    </button>
+                    {showRequirements && (
+                      <div className="mt-3 space-y-3">
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={reqTitle}
+                            onChange={(e) => setReqTitle(e.target.value)}
+                            placeholder="Tiêu đề yêu cầu (bắt buộc)"
+                            className="flex-1 h-10 px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
+                          />
+                          <button
+                            type="button"
+                            onClick={addRequirement}
+                            disabled={!reqTitle.trim()}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40"
                           >
-                            <span className="flex-1 text-sm text-foreground/90 leading-relaxed">
-                              <span className="font-medium block mb-0.5">{r.title}</span>
-                              {r.detail && (
-                                <span className="block text-muted-foreground/80">{r.detail}</span>
-                              )}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setReqs((prev) => prev.filter((x) => x.id !== r.id))
-                              }
-                              className="p-1.5 rounded-md text-muted-foreground/50 hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0 mt-0.5"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            <Plus className="w-4 h-4" />
+                            Thêm
+                          </button>
+                        </div>
+                        <textarea
+                          value={reqDetail}
+                          onChange={(e) => setReqDetail(e.target.value)}
+                          placeholder="Chi tiết / mô tả yêu cầu (không bắt buộc)"
+                          rows={3}
+                          className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
+                        />
+                        {reqs.length > 0 && (
+                          <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                            {reqs.map((r) => (
+                              <div
+                                key={r.id}
+                                className="flex items-start gap-2.5 rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
+                              >
+                                <span className="flex-1 text-sm text-foreground/90 leading-relaxed">
+                                  <span className="font-medium block mb-0.5">{r.title}</span>
+                                  {r.detail && (
+                                    <span className="block text-muted-foreground/80">{r.detail}</span>
+                                  )}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setReqs((prev) => prev.filter((x) => x.id !== r.id))
+                                  }
+                                  className="p-1.5 rounded-md text-muted-foreground/50 hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0 mt-0.5"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
+                        <div className="flex items-center justify-between pt-1">
+                          <button
+                            type="button"
+                            onClick={saveRequirements}
+                            disabled={saving || reqs.length === 0}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                            Lưu & sinh task tracking
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onUpdateStep("input_requirements", "skipped")}
+                            className="text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer px-3 py-2"
+                          >
+                            Bỏ qua
+                          </button>
+                        </div>
                       </div>
                     )}
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        type="button"
-                        onClick={saveRequirements}
-                        disabled={saving || reqs.length === 0}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                        Lưu & sinh task tracking
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStep("input_requirements", "skipped")}
-                        className="text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer px-3 py-2"
-                      >
-                        Bỏ qua
-                      </button>
-                    </div>
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
 
