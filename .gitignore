@@ -57,3 +57,8 @@ teams-messages.json
 .teams-sync-running
 teams-monitor-config.json
 .health-session
+
+# Runtime sync queue state
+.sync-queue-*.json
+.sync-queue-*.lock
+.sync-queue-*worker*.lock
