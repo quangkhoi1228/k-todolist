@@ -54,6 +54,7 @@ Phân tích các loại gợi ý sau:
 6. **warning** - Cảnh báo: vấn đề phát sinh, risk, conflict, chậm tiến độ.
 
 QUAN TRỌNG: Chỉ đưa ra gợi ý khi thực sự cần thiết, không spam.
+QUAN TRỌNG: Tất cả nội dung text (title, description, input, reasoning, expectedOutcome, actionLabel) PHẢI viết tiếng Việt CÓ DẤU đầy đủ. NGHIÊM CẤM viết tiếng Việt không dấu.
 Output phải là JSON array (không markdown, không code block):
 [
   {

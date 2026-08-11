@@ -80,6 +80,9 @@ export async function POST(req: NextRequest) {
 Phan tich yeu cau cua PM va xac dinh y dinh (intent).
 
 QUAN TRONG: Ban phai tra loi bang tieng Viet CO DAU DAY DU.
+- Moi cau tra loi (truong "reply") BAT BUOC viet tieng Viet co dau day du (vd "Xin chào", "Tôi có thể giúp gì", "Dự án", "đang được quản lý").
+- NGHIEM CAM tra loi tieng Viet khong dau, khong viet tat kieu "Toi co the giup", "du an", "ban muon lam gi".
+- Neu nguoi dung hoi bang tieng Viet khong dau, van phai tra loi tieng Viet CO DAU.
 
 Cac intent:
 1. "create_project" - PM muon tao du an moi
@@ -94,7 +97,7 @@ Chi tiet:
 - "xem ticket" + ISD-xxxxx => action=lookup_ticket
 - "chuyen den" / "den du an" / "tim du an" => action=goto_project, projectQuery="ten hoac ma"
 
-Output CHI la JSON, VD: { "action": "chat", "ticketId": null, "projectQuery": null, "reply": "Xin chào!", "confidence": 1.0 }`;
+Output CHI la JSON, VD: { "action": "chat", "ticketId": null, "projectQuery": null, "reply": "Xin chào! Tôi có thể giúp gì cho bạn?", "confidence": 1.0 }`;
 
     const historyMessages = (history || []).map((msg: { role: string; content: string }) => ({
       role: msg.role === "agent" ? "assistant" : msg.role === "user" ? "user" : "system",

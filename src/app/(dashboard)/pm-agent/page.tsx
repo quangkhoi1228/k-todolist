@@ -37,27 +37,27 @@ export default function PMAgentPage() {
         {sortedSessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-16">
             <Bot className="w-12 h-12 text-muted-foreground/20 mb-4" />
-            <p className="text-xs font-bold text-foreground/80">Chao mung den voi PM Agent!</p>
+            <p className="text-xs font-bold text-foreground/80">Chào mừng đến với PM Agent!</p>
             <p className="text-[10px] text-muted-foreground/60 mt-1 mb-6 max-w-xs">
-              Toi co the giup ban tiep nhan ticket ISD, tao du an moi, quan ly nhan su, 
-              va theo doi tien do trien khai.
+              Tôi có thể giúp bạn tiếp nhận ticket ISD, tạo dự án mới, quản lý nhân sự, 
+              và theo dõi tiến độ triển khai.
             </p>
             <div className="flex flex-col gap-2">
               <Link href="/pm-agent/chat">
                 <Button size="sm" className="h-8 text-xs rounded-lg cursor-pointer">
                   <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
-                  Bat dau tro chuyen
+                  Bắt đầu trò chuyện
                 </Button>
               </Link>
               <p className="text-[9px] text-muted-foreground/40 mt-2">
-                VD: &quot;Tao du an tu ticket ISD-90335&quot;
+                VD: &quot;Tạo dự án từ ticket ISD-90335&quot;
               </p>
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-1">
             <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1 px-1">
-              Lich su ({sortedSessions.length})
+              Lịch sử ({sortedSessions.length})
             </p>
             {sortedSessions.slice(0, 10).map((s) => (
               <Link key={s._id} href={`/pm-agent/chat?session=${s._id}`}>
@@ -75,7 +75,7 @@ export default function PMAgentPage() {
                       s.status === "completed" ? "bg-blue-500/10 text-blue-500" :
                       "bg-neutral-500/10 text-neutral-500"
                     }`}>
-                      {s.status === "active" ? "Dang xu ly" : s.status === "completed" ? "Hoan tat" : "Da huy"}
+                      {s.status === "active" ? "Đang xử lý" : s.status === "completed" ? "Hoàn tất" : "Đã hủy"}
                     </span>
                     <Clock className="w-3 h-3 text-muted-foreground/30" />
                     <span className="text-[9px] text-muted-foreground/50 hidden sm:inline">

@@ -103,6 +103,7 @@ QUAN TRỌNG:
 - Chỉ đề xuất hành động KHI THỰC SỰ CẦN THIẾT. Nếu tin nhắn là trao đổi thông thường, không cần PM — trả về mảng rỗng [].
 - Mỗi hành động phải có dẫn chứng từ nội dung tin nhắn cụ thể.
 - Nếu có nhiều tin nhắn cùng một vấn đề, chỉ tạo MỘT hành động duy nhất.
+- Tất cả nội dung text (title, description, sourceSender, actionLabel) PHẢI viết tiếng Việt CÓ DẤU đầy đủ. NGHIÊM CẤM viết tiếng Việt không dấu.
 
 Output là JSON array, không markdown, không code block:
 [

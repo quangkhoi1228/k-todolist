@@ -1,0 +1,29 @@
+---
+description: Khi cần verify UI/render, có thể chụp screenshot để xác nhận kết quả (KHÔNG bắt buộc)
+alwaysApply: true
+---
+
+# Chụp Screenshot để Verify Kết Quả (tùy chọn)
+
+Khi hoàn thành thay đổi liên quan đến **UI / render / browser** (component, trang, layout, style, image load, message hiển thị...), agent **có thể** chụp screenshot để verify — nhưng **KHÔNG bắt buộc**.
+
+## Nguyên tắc
+
+1. **Không tự ý mở browser** trừ khi user yêu cầu rõ. Mở Chrome/profile verify tốn thời gian (copy profile, khởi động browser) — chỉ làm khi user chủ động yêu cầu verify UI.
+
+2. **Khi user yêu cầu verify UI**:
+   - Mở app bằng browser thật (xem `real-browser-verification.mdc` — dùng Chrome profile có session Clerk sẵn, không bắt user đăng nhập)
+   - Chụp screenshot **trước** (state gốc) và **sau** (state sau khi thay đổi) nếu có thể
+   - So sánh và kết luận dựa trên ảnh, kèm ảnh vào báo cáo (đường dẫn file hoặc inline image)
+
+3. **Cách chụp screenshot** (khi user yêu cầu):
+   - Khi có MCP browser (`cursor-ide-browser`): `browser_navigate` → `browser_snapshot` → `browser_take_screenshot`
+   - Khi dùng Chrome CDP/Playwright (profile thật): dùng `page.screenshot()` rồi đọc file ảnh bằng tool Read để kiểm tra nội dung
+   - Screenshot lưu vào thư mục tạm (VD: `/tmp/`, `scripts/tmp/`) — sau task nhớ dọn (xem `cleanup-after-task.mdc`)
+
+4. **Không có browser/MCP**: nêu rõ trong báo cáo; verify bằng cách khác nếu có thể (snapshot DOM, curl HTML, dữ liệu DB) — nhưng nói rõ đây KHÔNG phải screenshot verify.
+
+## Khi chạy sync Teams/Zalo
+
+- Sync script đã có `HEADLESS=false` + Chrome profile thật — sau khi sync xong, nếu user muốn verify dữ liệu hiển thị thì mở app và chụp screenshot như trên.
+- Không bắt buộc screenshot từng tin nhắn; chỉ chụp khi user yêu cầu.

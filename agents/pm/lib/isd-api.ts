@@ -81,7 +81,7 @@ export async function getTicket(config: ISDConfig, ticketId: string): Promise<IS
     return {
       id: ticketId,
       key: ticketId,
-      summary: "Khong the dong bo tu ISD",
+      summary: "Không thể đồng bộ từ ISD",
       status: "unknown",
       priority: "normal",
       description: "",

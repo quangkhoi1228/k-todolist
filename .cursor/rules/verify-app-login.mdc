@@ -1,6 +1,6 @@
-# Verify UI K-Todolist — dùng session Clerk có sẵn, KHÔNG bắt user đăng nhập lại
+# Verify UI K-Todolist — dùng session Clerk có sẵn, KHÔNG bắt user đăng nhập lại (CHỈ khi user yêu cầu)
 
-Khi cần verify UI app (localhost:3000) bằng browser thật: **session Clerk đã tồn tại trong Chrome profile thật của user** — không bắt user đăng nhập lại.
+Khi user yêu cầu verify UI app (localhost:3000) bằng browser thật: **KHÔNG tự ý mở browser** trừ khi user chủ động yêu cầu. Khi có yêu cầu, session Clerk đã tồn tại trong Chrome profile thật của user — không bắt user đăng nhập lại.
 
 ## Profile có session
 
@@ -34,7 +34,7 @@ Nên cơ chế chuẩn là: **copy profile → đổi thư mục → xoá lock/s
 4. Mở browser bằng profile mới trắng `/tmp/kflow-verify-profile` rồi chờ user đăng nhập thủ công — lãng phí thời gian, user không cần đăng nhập.
 5. Chạy Chrome bằng `nohup ... & disown` — instance dễ chết/mất kiểm soát; launch bằng background job của **shell thường** (không detach khỏi shell) để Chrome sống ổn định.
 
-## CÁCH ĐÚNG — 1 lệnh duy nhất
+## CÁCH ĐÚNG — 1 lệnh duy nhất (khi user yêu cầu verify)
 
 Đã đóng gói thành script: `scripts/verify-ui-open.sh` — tự copy profile (nếu cần), mở Chrome CDP bằng profile copy, in URL tab để confirm session OK.
 
@@ -70,7 +70,3 @@ curl -s http://127.0.0.1:9222/json/list | python3 -c "import sys,json; [print(p[
 ```
 
 Nếu dùng Playwright `launchPersistentContext` thì trỏ **thư mục gốc** `/tmp/kflow-login-profile` (KHÔNG trỏ `/tmp/kflow-login-profile/Default`).
-
-## Không áp dụng cho sync Teams/Zalo
-
-Profile verify UI này CHỈ dùng verify app. Sync Teams/Zalo vẫn dùng `.teams-session/chrome-profile` / `.zalo-session/chrome-profile` (xem real-browser-verification.mdc). Chrome CDP 9222 dùng cho sync chỉ được mở bằng lệnh `open -n -a "Google Chrome" --args --user-data-dir="<profile>" --remote-debugging-port=9222 ...`.

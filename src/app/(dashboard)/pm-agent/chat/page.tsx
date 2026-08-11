@@ -152,10 +152,10 @@ export default function PMAgentChatPage() {
 
     // For "chat" action, execute immediately
     if (!sessionId) {
-      setShowTemporaryMessage(reply || `Toi tim thay ticket **${ticketId}**. Ban muon tao du an moi khong?`);
+      setShowTemporaryMessage(reply || `Tôi tìm thấy ticket **${ticketId}**. Bạn muốn tạo dự án mới không?`);
     } else {
       await pmx.addMessage({ sessionId, role: "user", content: text });
-      await pmx.addMessage({ sessionId, role: "agent", content: reply || `Toi da nhan: "${text}". Ban muon lam gi tiep?` });
+      await pmx.addMessage({ sessionId, role: "agent", content: reply || `Tôi đã nhận: "${text}". Bạn muốn làm gì tiếp?` });
     }
     return null;
   }, [sessionId, chatHistory, pmx, contextProject]);
@@ -185,11 +185,11 @@ export default function PMAgentChatPage() {
           isdData: JSON.stringify(isdData),
         });
       } catch (err) {
-        return { message: `Loi khi tao du an tu ticket **#${ticketId}**: ${err instanceof Error ? err.message : "Loi khong xac dinh"}. Vui long thu lai.` };
+        return { message: `Lỗi khi tạo dự án từ ticket **#${ticketId}**: ${err instanceof Error ? err.message : "Lỗi không xác định"}. Vui lòng thử lại.` };
       }
       if (result.duplicate) {
         setSessionId(result.sessionId);
-        return { redirect: true, sessionId: result.sessionId, message: `Ticket **#${ticketId}** da duoc tao tu truoc. Dang mo lai phien cu...` };
+        return { redirect: true, sessionId: result.sessionId, message: `Ticket **#${ticketId}** đã được tạo từ trước. Đang mở lại phiên cũ...` };
       }
       // Fire-and-forget: generate suggestions
       if (result.projectId && isdData) {
@@ -235,7 +235,7 @@ export default function PMAgentChatPage() {
       if (contextProject && action !== "create_project") {
         return { message: `Bạn đang xem dự án **${contextProject.name}**. Tôi có thể giúp gì cho dự án này?` };
       }
-      return { message: `Toi tim thay ticket **${ticketId}**. Ban muon tao du an moi khong?` };
+      return { message: `Tôi tìm thấy ticket **${ticketId}**. Bạn muốn tạo dự án mới không?` };
     }
 
     await pmx.addMessage({ sessionId, role: "user", content: text });
@@ -243,7 +243,7 @@ export default function PMAgentChatPage() {
     if (action === "lookup_ticket") {
       const ticketToLookup = ticketId || session?.ticketId;
       if (!ticketToLookup) {
-        await pmx.addMessage({ sessionId, role: "agent", content: "Khong co ticket nao de tra cuu." });
+        await pmx.addMessage({ sessionId, role: "agent", content: "Không có ticket nào để tra cứu." });
         return {};
       }
       try {
@@ -255,13 +255,13 @@ export default function PMAgentChatPage() {
           const f = data.fields || {};
           await pmx.addMessage({
             sessionId, role: "agent",
-            content: `Thong tin ticket **#${data.key}**:\n\nTieu de: ${f.summary || "N/A"}\nTrang thai: ${f.status?.name || "N/A"}\nPriority: ${f.priority?.name || "N/A"}\nAssignee: ${f.assignee?.displayName || "Chua co"}\nReporter: ${f.reporter?.displayName || "N/A"}`,
+            content: `Thông tin ticket **#${data.key}**:\n\nTiêu đề: ${f.summary || "N/A"}\nTrạng thái: ${f.status?.name || "N/A"}\nPriority: ${f.priority?.name || "N/A"}\nAssignee: ${f.assignee?.displayName || "Chưa có"}\nReporter: ${f.reporter?.displayName || "N/A"}`,
           });
         } else {
-          await pmx.addMessage({ sessionId, role: "agent", content: `Khong the lay thong tin ticket **#${ticketToLookup}** tu ISD.` });
+          await pmx.addMessage({ sessionId, role: "agent", content: `Không thể lấy thông tin ticket **#${ticketToLookup}** từ ISD.` });
         }
       } catch {
-        await pmx.addMessage({ sessionId, role: "agent", content: "Loi ket noi den ISD." });
+        await pmx.addMessage({ sessionId, role: "agent", content: "Lỗi kết nối đến ISD." });
       }
       return {};
     }
@@ -271,14 +271,14 @@ export default function PMAgentChatPage() {
         const wf = JSON.parse(session?.workflowData || "{}");
         if (wf.linkedProjectId) { router.push(`/projects/${wf.linkedProjectId}`); return {}; }
       } catch {}
-      await pmx.addMessage({ sessionId, role: "agent", content: `Du an **${session?.projectName}** (Ticket #${session?.ticketId}) dang duoc quan ly.` });
+      await pmx.addMessage({ sessionId, role: "agent", content: `Dự án **${session?.projectName}** (Ticket #${session?.ticketId}) đang được quản lý.` });
       return {};
     }
 
     // For other actions (add_personnel, create_meeting, update_sow) — respond with instructions
     await pmx.addMessage({
       sessionId, role: "agent",
-      content: pa.reply || `Toi da nhan: "${text}". Toi co the giup ban tiep voi du an **${session?.projectName}**. Ban muon lam gi?`,
+      content: pa.reply || `Tôi đã nhận: "${text}". Tôi có thể giúp bạn tiếp với dự án **${session?.projectName}**. Bạn muốn làm gì?`,
     });
     return {};
   }, [sessionId, userId, session, pmx, smx, router, contextProject]);
@@ -301,9 +301,9 @@ export default function PMAgentChatPage() {
     } catch (err) {
       console.error("Error:", err);
       if (sessionId) {
-        await pmx.addMessage({ sessionId, role: "agent", content: `Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}.` });
+        await pmx.addMessage({ sessionId, role: "agent", content: `Xin lỗi, đã có lỗi: ${err instanceof Error ? err.message : "Lỗi không xác định"}.` });
       } else {
-        setShowTemporaryMessage(`Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}`);
+        setShowTemporaryMessage(`Xin lỗi, đã có lỗi: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
       }
     } finally {
       setProcessing(false);
@@ -329,9 +329,9 @@ export default function PMAgentChatPage() {
     } catch (err) {
       console.error("Error:", err);
       if (sessionId) {
-        await pmx.addMessage({ sessionId, role: "agent", content: `Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}.` });
+        await pmx.addMessage({ sessionId, role: "agent", content: `Xin lỗi, đã có lỗi: ${err instanceof Error ? err.message : "Lỗi không xác định"}.` });
       } else {
-        setShowTemporaryMessage(`Xin loi, da co loi: ${err instanceof Error ? err.message : "Loi khong xac dinh"}`);
+        setShowTemporaryMessage(`Xin lỗi, đã có lỗi: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
       }
       setProcessing(false);
     }

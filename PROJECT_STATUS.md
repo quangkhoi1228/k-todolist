@@ -9,7 +9,7 @@ tags: []
 > File này là **nguồn sự thật** về trạng thái dự án — dùng làm đầu vào cho mọi task tiếp theo.
 > Cách cập nhật: sửa trực tiếp file này khi bắt đầu/kết thúc 1 task. Xem mục [Giữ file đúng hiện trạng](#giữ-file-đúng-hiện-trạng).
 
-- **Cập nhật lần cuối:** 2026-08-11 (flow init → kick-off + role capabilities + bỏ kho quy trình xong, đã verify browser thật; thêm script `scripts/verify-ui-open.sh` mở Chrome CDP 1 lệnh bằng profile copy giữ session Clerk — verified 11/08)
+- **Cập nhật lần cuối:** 2026-08-11 (flow init → kick-off + role capabilities + bỏ kho quy trình xong; fix agent trả lời tiếng Việt không dấu — thêm ràng buộc "có dấu" vào system prompt + sửa chuỗi hardcode. Verify UI qua Chrome tạm dừng — chỉ mở browser khi user yêu cầu; script `scripts/verify-ui-open.sh` vẫn giữ để dùng khi cần)
 - **Commit HEAD:** `ef0ce04` — `feat: suggestions actions (add task, send Teams/Zalo) + session/login fixes` *(working tree có thay đổi chưa commit — xem mục 3)*
 
 ---
@@ -68,12 +68,13 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 4. UI hiển thị gợi ý trong **SuggestionsQuickView** (panel phải) + **ProjectDetailPanel** (tab Suggestions).
    - Người dùng có thể: Đã xử lý · Thêm task · **Gửi tin nhắn qua Teams** (deep link chat 1:1 với Sale, nội dung prefill sẵn).
 
-### Verify UI app đã đăng nhập sẵn (Clerk) — KHÔNG bắt user đăng nhập lại
+### Verify UI app đã đăng nhập sẵn (Clerk) — CHỈ khi user yêu cầu
 
+- **KHÔNG tự ý mở browser để verify UI** — mở Chrome/profile tốn thời gian. Chỉ mở khi user chủ động yêu cầu (quyết định 11/08).
 - **Session Clerk app nằm trong Chrome profile thật của user** tại `~/Library/Application Support/Google/Chrome/` (thư mục gốc, chứa `Default/` — 983M). Cookies `localhost|__session` còn hạn tới 2027.
 - **Phải COPY profile (user hỏi 11/08 "sao ko dùng luôn")**: profile thật đang bị Chrome user mở giữ `SingletonLock` → mở instance CDP trỏ thẳng vào sẽ thoát/từ chối. Copy sang `/tmp/kflow-login-profile` **giữ nguyên Cookies** (session không mất), chỉ xoá lock/history/session-restore/Login Data. Chi tiết xem `.cursor/rules/verify-app-login.mdc`.
 - **SAI LẦM CẦN TRÁNH** (đã mắc 07/08): dùng `chromium.launchPersistentContext` trỏ vào **profile con `Default`** (vd `/Users/.../Google/Chrome/Default`) → Chrome tạo `Default/Default` mới → **mất session, bắt đăng nhập** dù cookie vẫn còn. Cũng **không dùng** `--user-data-dir="$HOME/.../Google/Chrome"` kèm `--remote-debugging-port` trực tiếp: Chrome báo *"DevTools remote debugging requires a non-default data directory"*. **Không dùng profile `.teams-session/*`/`.zalo-session/*` để mở app** — chỉ có session Teams/Zalo, không có Clerk → bắt đăng nhập.
-- **CÁCH ĐÚNG — 1 lệnh (script `scripts/verify-ui-open.sh`, verified 11/08 OK)**:
+- **CÁCH ĐÚNG — 1 lệnh (script `scripts/verify-ui-open.sh`, verified 11/08 OK — CHỈ khi user yêu cầu)**:
   1. Mở: `scripts/verify-ui-open.sh` (tuỳ chọn `"<url>" [port]`, mặc định `http://localhost:3000/projects` port 9222). Script tự copy profile → xoá lock files → mở Chrome CDP bằng `open -n` (không dùng `nohup & disown` — dễ chết process).
   2. Verify qua `http://127.0.0.1:9222/json/list` — page URL trỏ `/projects` (không phải `/sign-in`) là session OK. Có thể chụp screenshot bằng Playwright `connectOverCDP` (VD: `npx tsx` script nhỏ gọi `chromium.connectOverCDP("http://127.0.0.1:9222")` → `page.screenshot()`).
   3. Khi xong: `scripts/verify-ui-open.sh --stop` (tắt Chrome + dọn profile copy).
@@ -499,7 +500,7 @@ ISD (servicedesk.fci.vn)          Teams / Zalo (browser thật)
 - Không thêm lại hook `afterAgentResponse` auto-chạy `tsc` — nó khiến agent chậm/treo khi làm việc dài.
 
 ### Chú ý khi làm task
-- **Bắt buộc browser thật để verify** feature nào liên quan Teams/Zalo/rendering (file rule `real-browser-verification`).
+- **Verify UI qua browser thật CHỈ khi user yêu cầu** — không tự ý mở Chrome để verify (quyết định 11/08). Feature liên quan Teams/Zalo/rendering vẫn dùng browser thật cho **sync/automation** (rule `real-browser-verification`), nhưng verify UI app chỉ làm khi user nhờ.
 - **Dọn dẹp file tạm sau task** (debug/test scripts, screenshot) trước khi kết thúc (file rule `cleanup-after-task`).
 - Không tự ý xoá script trong `agents/pm/scripts/` đang được route API gọi, không xoá dữ liệu DB/ISD/Teams/Zalo.
 

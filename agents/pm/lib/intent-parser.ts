@@ -168,39 +168,39 @@ export function generateAgentResponse(intent: ParsedIntent, context?: { projectN
   switch (intent.action) {
     case "create_project":
       if (intent.ticketId) {
-        return `Toi se tao du an tu ticket **#${intent.ticketId}**. Dang dong bo thong tin tu ISD...`;
+        return `Tôi sẽ tạo dự án từ ticket **#${intent.ticketId}**. Đang đồng bộ thông tin từ ISD...`;
       }
-      return `Vui long cung cap so ticket ISD. VD: "Tao du an tu ticket ISD-90335"`;
+      return `Vui lòng cung cấp số ticket ISD. VD: "Tạo dự án từ ticket ISD-90335"`;
 
     case "lookup_ticket":
       if (intent.ticketId) {
-        return `Dang tra cuu thong tin ticket **#${intent.ticketId}** tu ISD...`;
+        return `Đang tra cứu thông tin ticket **#${intent.ticketId}** từ ISD...`;
       }
-      return `Vui long cho toi so ticket can xem. VD: "Xem ticket ISD-90335"`;
+      return `Vui lòng cho tôi số ticket cần xem. VD: "Xem ticket ISD-90335"`;
 
     case "add_personnel":
-      return `Toi se giup ban them nhan su vao du an. Vui long cho thong tin: ten, email, team, vai tro (PIC/Support).`;
+      return `Tôi sẽ giúp bạn thêm nhân sự vào dự án. Vui lòng cho thông tin: tên, email, team, vai trò (PIC/Support).`;
 
     case "create_meeting":
-      return `Toi se giup ban tao meeting kickoff. Can chuan bi: ngay, gio, danh sach thanh vien tham gia, agenda.`;
+      return `Tôi sẽ giúp bạn tạo meeting kickoff. Cần chuẩn bị: ngày, giờ, danh sách thành viên tham gia, agenda.`;
 
     case "update_sow":
-      return `Toi se giup cap nhat SOW. Hien tai SOW dang o trang thai: **${context?.projectName || "Cho xu ly"}**`;
+      return `Tôi sẽ giúp cập nhật SOW. Hiện tại SOW đang ở trạng thái: **${context?.projectName || "Chờ xử lý"}**`;
 
     case "view_project":
-      return `Du an **${context?.projectName || "hien tai"}** dang duoc quan ly.`;
+      return `Dự án **${context?.projectName || "hiện tại"}** đang được quản lý.`;
 
     case "goto_project":
-      return `Dang tim du an **${intent.ticketId || intent.original.replace(/chuyển\s*(?:sang|đến|qua|tới|đi)\s+|đến\s+|tìm\s+/i, "").trim() || "..."}**.`;
+      return `Đang tìm dự án **${intent.ticketId || intent.original.replace(/chuyển\s*(?:sang|đến|qua|tới|đi)\s+|đến\s+|tìm\s+/i, "").trim() || "..."}**.`;
 
     default:
-      return `Toi da nhan duoc tin nhan cua ban. Toi co the giup:
-- Tao du an tu ticket ISD
-- Xem thong tin ticket
-- Them nhan su trien khai
-- Tao meeting kickoff
-- Cap nhat SOW
+      return `Tôi đã nhận được tin nhắn của bạn. Tôi có thể giúp:
+- Tạo dự án từ ticket ISD
+- Xem thông tin ticket
+- Thêm nhân sự triển khai
+- Tạo meeting kickoff
+- Cập nhật SOW
 
-Ban muon lam gi?`;
+Bạn muốn làm gì?`;
   }
 }

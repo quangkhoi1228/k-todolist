@@ -317,7 +317,7 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
           log(`Da xoa stale lock ${lockName} (pid trong lock khong con song).`);
         }
       } catch (e) {
-        log(`Khong the xu ly lock ${lockName}: ${String(e).slice(0, 80)}`);
+        log(`Không thể xử lý lock ${lockName}: ${String(e).slice(0, 80)}`);
       }
     }
 
@@ -337,7 +337,7 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
       fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf-8");
       log("Da ghi Preferences (suppress restore).");
     } catch (e) {
-      log("Khong the ghi Preferences: " + e);
+      log("Không thể ghi Preferences: " + e);
     }
 
     log(`Mo Chrome that voi persistent profile: ${profileDir}`);
@@ -535,7 +535,7 @@ export async function waitForZaloLogin(
     .catch(() => false);
 
   if (hasQR || url.includes("chat.zalo.me") || url.includes("id.zalo.me")) {
-    log("Can dang nhap Zalo. Vui long scan QR code trong cua so browser...");
+    log("Cần đăng nhập Zalo. Vui lòng scan QR code trong cửa sổ browser...");
     console.log("\n  >>> SCAN QR CODE DANG NHAP ZALO TRONG CUA SO VUA MO <<<\n");
 
     try {
@@ -774,7 +774,7 @@ export async function navigateToZaloGroup(
       await page.waitForTimeout(500);
     }
   } catch {
-    log("Khong the su dung search box.");
+    log("Không thể sử dụng search box.");
   }
 
   // Attempt 3: Scroll the sidebar to load more items, then click
@@ -793,7 +793,7 @@ export async function navigateToZaloGroup(
     if (await tryClickGroup()) return true;
   }
 
-  log(`Khong tim thay nhom Zalo "${groupName}" trong sidebar.`);
+  log(`Không tìm thấy nhóm Zalo "${groupName}" trong sidebar.`);
   await page.screenshot({ path: path.join(DEFAULT_ZALO_CONFIG.screenshotDir, `not-found-${Date.now()}.png`) });
   return false;
 }
@@ -958,7 +958,7 @@ export async function scrollZaloChatContainer(
     .waitForSelector('[id^="bb_msg_id_"], [class*="message-wrapper"], [class*="chat-message"]', {
       timeout: 20_000,
     })
-    .catch(() => log("[Zalo] Khong thay message nao sau khi mo chat — tiep tuc..."));
+    .catch(() => log("[Zalo] Không thấy message nào sau khi mở chat — tiếp tục..."));
   await page.waitForTimeout(1_500);
 
   const scrollToBottom = `
@@ -1019,7 +1019,7 @@ export async function scrollZaloChatContainer(
       break;
     }
     if (attempt === 2) {
-      log(`[Zalo] Bottom chua on dinh sau 3 lan (scrollTop=${state.scrollTop}/${state.scrollHeight}, maxTs=${state.maxTs}) — tiep tuc voi vung DOM hien tai.`);
+      log(`[Zalo] Bottom chưa ổn định sau 3 lần (scrollTop=${state.scrollTop}/${state.scrollHeight}, maxTs=${state.maxTs}) — tiếp tục với vùng DOM hiện tại.`);
     }
     prevMaxTs = state.maxTs;
   }
@@ -1204,7 +1204,7 @@ export async function collectZaloMessagesFromPage(
     );
     log("Da tim thay message pane.");
   } catch {
-    log("Khong tim thay message pane. Se thu tim bang text.");
+    log("Không tìm thấy message pane. Se thu tim bang text.");
     if (process.env.DEBUG_SCRIPTS === "1") {
       await page.screenshot({ path: path.join(config.screenshotDir, `debug-no-messages-${Date.now()}.png`) });
     }
@@ -1970,11 +1970,11 @@ export async function sendZaloMessage(
     if (!clicked) {
       // Clear the search box so we don't leave it dirty
       await searchBox.fill("").catch(() => {});
-      return { ok: false, error: `Khong tim thay chat "${chatName}" trong danh sach. Khong gui gi ca.` };
+      return { ok: false, error: `Không tìm thấy chat "${chatName}" trong danh sách. Không gửi gì cả.` };
     }
     log(`Da click vao chat: ${clicked}`);
   } else {
-    return { ok: false, error: "Khong tim thay o tim kiem Zalo (search box). Khong gui gi ca." };
+    return { ok: false, error: "Không tìm thấy ô tìm kiếm Zalo (search box). Không gửi gì cả." };
   }
 
   // ── 2. VERIFY the open chat is the intended target ──────────
@@ -2001,7 +2001,7 @@ export async function sendZaloMessage(
   const input = page.locator('#richInput, [contenteditable="true"]').first();
   const inputVisible = await input.isVisible({ timeout: 3_000 }).catch(() => false);
   if (!inputVisible) {
-    return { ok: false, error: "Khong thay o nhap tin nhan (#richInput). Khong gui gi ca." };
+    return { ok: false, error: "Không thấy ô nhập tin nhắn (#richInput). Không gửi gì cả." };
   }
 
   await input.click();
@@ -2015,7 +2015,7 @@ export async function sendZaloMessage(
     return el?.innerText || '';
   });
   if (!typedText.trim()) {
-    return { ok: false, error: "Khong the nhap tin nhan vao o input. Khong gui gi ca." };
+    return { ok: false, error: "Không thể nhập tin nhắn vào ô input. Không gửi gì cả." };
   }
   log(`Da nhap ${typedText.length} ky tu vao o input.`);
 

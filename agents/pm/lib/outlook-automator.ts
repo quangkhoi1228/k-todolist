@@ -227,7 +227,7 @@ export async function waitForOutlookReady(
     log("Outlook da load xong.");
     return true;
   } catch {
-    log("Khong the load Outlook. Co the can dang nhap lai.");
+    log("Không thể load Outlook. Có thể cần đăng nhập lại.");
 
     // Take debug screenshot
     const screenshotPath = path.join(
@@ -400,7 +400,7 @@ async function fillRecipients(
     }
   }
 
-  log(`Khong the dien ${fieldLabel}. Thu fallback...`);
+  log(`Không thể điền ${fieldLabel}. Thử fallback...`);
 }
 
 /**
@@ -436,7 +436,7 @@ async function fillSubject(page: Page, subject: string): Promise<void> {
     }
   }
 
-  log("Khong the dien Subject.");
+  log("Không thể điền Subject.");
 }
 
 /**
@@ -554,7 +554,7 @@ async function setImportance(
     }
   }
 
-  log(`Khong the set importance ${importance}.`);
+  log(`Không thể set importance ${importance}.`);
 }
 
 /**
@@ -654,7 +654,7 @@ export async function addAttachments(
     log(`Da dinh kem ${validFiles.length} file qua input.`);
     await page.waitForTimeout(3_000);
   } catch (e) {
-    log(`Khong the dinh kem file: ${e}`);
+    log(`Không thể đính kèm file: ${e}`);
   }
 }
 
@@ -790,7 +790,7 @@ export async function composeAndSendEmail(
     if (!sent) {
       return {
         ok: false,
-        error: "Khong the click nut Send.",
+        error: "Không thể click nút Send.",
         screenshotPath,
       };
     }

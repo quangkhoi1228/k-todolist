@@ -191,7 +191,7 @@ export async function createSession(args: {
   await insertMessage(
     sessionId,
     "agent",
-    `Da tiep nhan ticket #${args.ticketId} cho du an "${args.projectName}". Toi dang dong bo thong tin tu ISD...`,
+    `Đã tiếp nhận ticket #${args.ticketId} cho dự án "${args.projectName}". Tôi đang đồng bộ thông tin từ ISD...`,
     JSON.stringify({ action: "session_created", step: "init" }),
     now + 1
   );
@@ -300,7 +300,7 @@ export async function createCustomProject(userId: string, projectName: string) {
   await insertMessage(
     sessionId,
     "agent",
-    `Da tao du an tu chinh: **${projectName}**\n\nDu an da san sang. Toi co the giup ban tiep theo:\n\n1. Xem chi tiet du an trong KFlow\n2. Tiep tuc quy trinh Kickoff (them nhan su, tao meeting)\n3. Cap nhat SOW\n\nBan muon lam gi tiep theo?`,
+    `Đã tạo dự án từ chính: **${projectName}**\n\nDự án đã sẵn sàng. Tôi có thể giúp bạn tiếp theo:\n\n1. Xem chi tiết dự án trong KFlow\n2. Tiếp tục quy trình Kickoff (thêm nhân sự, tạo meeting)\n3. Cập nhật SOW\n\nBạn muốn làm gì tiếp theo?`,
     JSON.stringify({ action: "project_created", step: "init" }),
     now + 1
   );
@@ -652,15 +652,15 @@ ${resourceTicketsLinks}
     sessionId,
     "agent",
     success
-      ? `Da lay thong tin ticket **#${args.ticketId}** tu ISD.\n\n**${ticketSummary}**\nTrang thai: ${ticketStatus} | Priority: ${ticketPriority}\nAssignee: ${ticketAssignee} | Reporter: ${ticketReporter}\n\nDa tao du an moi trong KFlow: **${projectName}**`
-      : `Da tao du an tu ticket **#${args.ticketId}** nhung khong dong bo duoc thong tin tu ISD (API khong the truy cap). Ban co the kiem tra lai ISD token.`,
+      ? `Đã lấy thông tin ticket **#${args.ticketId}** từ ISD.\n\n**${ticketSummary}**\nTrạng thái: ${ticketStatus} | Priority: ${ticketPriority}\nAssignee: ${ticketAssignee} | Reporter: ${ticketReporter}\n\nĐã tạo dự án mới trong KFlow: **${projectName}**`
+      : `Đã tạo dự án từ ticket **#${args.ticketId}** nhưng không đồng bộ được thông tin từ ISD (API không thể truy cập). Bạn có thể kiểm tra lại ISD token.`,
     JSON.stringify({ action: "project_created", step: "init" }),
     now + 1
   );
   await insertMessage(
     sessionId,
     "agent",
-    `Du an da san sang. Toi co the giup ban tiep theo:\n\n1. Xem chi tiet du an trong KFlow\n2. Tiep tuc quy trinh Kickoff (them nhan su, tao meeting)\n3. Cap nhat SOW\n\nBan muon lam gi tiep theo?`,
+    `Dự án đã sẵn sàng. Tôi có thể giúp bạn tiếp theo:\n\n1. Xem chi tiết dự án trong KFlow\n2. Tiếp tục quy trình Kickoff (thêm nhân sự, tạo meeting)\n3. Cập nhật SOW\n\nBạn muốn làm gì tiếp theo?`,
     JSON.stringify({ action: "ready_for_next", step: "init" }),
     now + 2
   );

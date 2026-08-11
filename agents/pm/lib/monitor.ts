@@ -6,7 +6,6 @@
 
 import { getMessagesByProject } from "../../../src/lib/repo/projectChats";
 import { addSuggestionsBatch } from "../../../src/lib/repo/projectSuggestions";
-import { searchBusinessProcesses } from "../../../src/lib/repo/businessProcesses";
 
 export interface MonitorMessage {
   sender?: string;
@@ -70,49 +69,6 @@ export async function runMonitor(
 
     const messageLog = crossPlatformLog.join("\n");
 
-    // ── Tìm quy trình nghiệp vụ phù hợp từ kho quy trình ──
-    // Rút từ khoá từ tin nhắn để match triggers/name/description của business process.
-    // Kết quả được đưa vào system prompt để LLM tham khảo khi đưa ra gợi ý.
-    let relevantProcesses: any[] = [];
-    try {
-      const words = (messageLog || "")
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
-        .split(/\s+/)
-        .filter((w) => w.length > 3)
-        .slice(0, 12);
-      const keywords = [...new Set(words)];
-      relevantProcesses = await searchBusinessProcesses(userId, keywords, undefined, 5);
-      if (relevantProcesses.length > 0) {
-        console.log(
-          `[Monitor] Found ${relevantProcesses.length} relevant business process(es):`,
-          relevantProcesses.map((p) => p.name)
-        );
-      }
-    } catch (e) {
-      console.warn(`[Monitor] Could not search business processes: ${e}`);
-    }
-
-    let processContext = "";
-    if (relevantProcesses.length > 0) {
-      processContext = `\n\nDƯỚI ĐÂY LÀ CÁC QUY TRÌNH NGHIỆP VỤ CỦA BẠN KHỚP VỚI BỐI CẢNH HIỆN TẠI (tham khảo để đưa ra gợi ý, KHÔNG bắt buộc phải tuân theo):
-${relevantProcesses
-  .map((p: any) => {
-    const steps = Array.isArray(p.steps)
-      ? (p.steps as any[])
-          .filter((s: any) => s && s.title)
-          .map((s: any) => `${s.order ?? ""}. ${s.title}${s.description ? `: ${s.description}` : ""}${s.owner ? ` (${s.owner})` : ""}${s.duration ? ` — ${s.duration}` : ""}`)
-          .join("\n")
-      : "";
-    return `### ${p.name}${p.category ? ` [${p.category}]` : ""}
-Mô tả: ${p.description || ""}
-Các bước:
-${steps || "(không có bước)"}
-${p.outcome ? `Kết quả mong đợi: ${p.outcome}` : ""}`;
-  })
-  .join("\n\n")}`;
-    }
-
     const systemPrompt = `Bạn là PM Agent - trợ lý quản lý dự án thông minh.
 
 Phân tích tin nhắn từ nhóm chat dự án (có thể gồm cả Teams nội bộ và Zalo với khách hàng) và xác định:
@@ -136,7 +92,8 @@ Mỗi action cần có:
 - reasoning: suy luận/tại sao đi đến kết luận này, căn cứ vào điều gì trong tin nhắn (2-4 câu)
 - expectedOutcome: kết quả mong muốn nếu PM thực hiện hành động (1-2 câu, mô tả trạng thái hoàn thành)
 
-QUAN TRỌNG: Chỉ đề xuất hành động KHI THỰC SỰ CẦN THIẾT. Nếu tin nhắn là trao đổi thông thường hoặc đã được xử lý xong, trả về [].${processContext}
+QUAN TRỌNG: Chỉ đề xuất hành động KHI THỰC SỰ CẦN THIẾT. Nếu tin nhắn là trao đổi thông thường hoặc đã được xử lý xong, trả về [].
+QUAN TRỌNG: Tất cả nội dung text (title, description, sourceSender, actionLabel, input, reasoning, expectedOutcome) PHẢI viết tiếng Việt CÓ DẤU đầy đủ. NGHIÊM CẤM viết tiếng Việt không dấu (vd "du an", "ban muon lam gi").
 
 Output là JSON array, không markdown, không code block:
 [{"type":"action_item","priority":"high","title":"...","description":"...","sourceSender":"...","sourceMessage":"...","actionLabel":"...","input":"...","reasoning":"...","expectedOutcome":"..."}]`;
@@ -148,7 +105,7 @@ Output là JSON array, không markdown, không code block:
         model,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: `Phân tích tin nhắn:\n\n${messageLog}\n\nQUY TRÌNH THAM KHẢO:\n${processContext || "(không có quy trình khớp)"}` },
+          { role: "user", content: `Phân tích tin nhắn:\n\n${messageLog}` },
         ],
         temperature: 0.1,
         max_tokens: 8192,

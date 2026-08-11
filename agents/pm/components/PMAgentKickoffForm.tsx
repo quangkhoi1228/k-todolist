@@ -148,11 +148,11 @@ export function PMAgentKickoffForm({
           {/* Add New Person */}
           <div className="flex flex-col gap-2 p-2.5 rounded-lg border border-dashed border-border/60 bg-muted/5">
             <Label className="text-[10px] font-semibold text-muted-foreground">
-              Them nhan su
+              Thêm nhân sự
             </Label>
             <div className="grid grid-cols-2 gap-2">
               <Input
-                placeholder="Ho ten"
+                placeholder="Họ tên"
                 value={newPerson.name}
                 onChange={(e) => setNewPerson({ ...newPerson, name: e.target.value })}
                 className="h-7 text-[10px] bg-background/50 border-border/60 rounded-lg"
@@ -200,7 +200,7 @@ export function PMAgentKickoffForm({
                 onValueChange={(v) => setNewPerson({ ...newPerson, role: (v ?? "pic") as "pic" | "support" })}
               >
                 <SelectTrigger className="h-7 text-[10px] bg-background/50 border-border/60 rounded-lg cursor-pointer">
-                  <SelectValue placeholder="Vai tro" />
+                  <SelectValue placeholder="Vai trò" />
                 </SelectTrigger>
                 <SelectContent className="bg-card/95 backdrop-blur-xl border-border text-[10px]">
                   <SelectItem value="pic" className="text-[10px] cursor-pointer">PIC</SelectItem>
@@ -291,9 +291,9 @@ export function PMAgentKickoffForm({
             </div>
 
             <div className="flex flex-col gap-1">
-              <Label className="text-[9px] text-muted-foreground">Noi dung / Agenda</Label>
+              <Label className="text-[9px] text-muted-foreground">Nội dung / Agenda</Label>
               <Textarea
-                placeholder="VD: Presale trinh bay yeu cau KH, phuong an trien khai..."
+                placeholder="VD: Presale trình bày yêu cầu KH, phương án triển khai..."
                 value={localMeeting?.agenda || ""}
                 onChange={(e) => setLocalMeeting({
                   date: localMeeting?.date || "",
@@ -307,7 +307,7 @@ export function PMAgentKickoffForm({
             </div>
 
             <div className="flex flex-col gap-1">
-              <Label className="text-[9px] text-muted-foreground">Thanh vien tham gia</Label>
+              <Label className="text-[9px] text-muted-foreground">Thành viên tham gia</Label>
               <div className="flex flex-wrap gap-1">
                 {localPersonnel.map((p, i) => (
                   <label

@@ -74,7 +74,7 @@ export function PMAgentInitForm({ onSubmit, loading }: PMAgentInitFormProps) {
               Ten du an <span className="text-red-400">*</span>
             </Label>
             <Input
-              placeholder="VD: Trien khai FW cho KH A"
+              placeholder="VD: Triển khai FW cho KH A"
               value={form.projectName}
               onChange={(e) => update("projectName", e.target.value)}
               className="h-8 text-xs bg-background/50 border-border/60 rounded-lg"
@@ -214,7 +214,7 @@ export function PMAgentInitForm({ onSubmit, loading }: PMAgentInitFormProps) {
         {loading ? (
           <>
             <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-            Dang xu ly...
+            Đang xử lý...
           </>
         ) : (
           <>

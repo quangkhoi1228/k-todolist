@@ -419,7 +419,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
           log(`Da xoa stale lock ${lockName} (pid trong lock khong con song).`);
         }
       } catch (e) {
-        log(`Khong the xu ly lock ${lockName}: ${String(e).slice(0, 80)}`);
+        log(`Không thể xử lý lock ${lockName}: ${String(e).slice(0, 80)}`);
       }
     }
 
@@ -446,7 +446,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
       fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf-8");
       log("Da ghi Preferences (suppress restore + protocol dialog).");
     } catch (e) {
-      log("Khong the ghi Preferences: " + e);
+      log("Không thể ghi Preferences: " + e);
     }
 
     log(`Mo Chrome that voi persistent profile: ${profileDir}`);
@@ -678,7 +678,7 @@ export async function waitForLogin(
   }
 
   if (needsLogin) {
-    log("Can dang nhap. Vui long dang nhap trong cua so browser...");
+    log("Cần đăng nhập. Vui lòng đăng nhập trong cửa sổ browser...");
     console.log("\n  >>> DANG NHAP VAO TEAMS TRONG CUA SO VUA MO <<<");
 
     try {
@@ -795,7 +795,7 @@ export async function navigateToChatInSidebar(
       const searchVisible = await searchTrigger.isVisible({ timeout: 3_000 }).catch(() => false);
 
       if (!searchVisible) {
-        log("Khong thay o search Teams.");
+        log("Không thấy ô search Teams.");
         return false;
       }
 
@@ -809,7 +809,7 @@ export async function navigateToChatInSidebar(
       const inputVisible = await searchInput.isVisible({ timeout: 3_000 }).catch(() => false);
 
       if (!inputVisible) {
-        log("Khong thay input search.");
+        log("Không thấy input search.");
         return false;
       }
 
@@ -991,7 +991,7 @@ export async function navigateToChatInSidebar(
     }
   }
 
-  log(`Khong tim thay chat "${chatName}" trong sidebar.`);
+  log(`Không tìm thấy chat "${chatName}" trong sidebar.`);
   return false;
 
   /** Poll header chat mở lên (tối đa maxMs) — dừng ngay khi header xuất hiện. */
@@ -1280,7 +1280,7 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
     );
     log("Da tim thay message pane.");
   } catch {
-    log("Khong tim thay message pane.");
+    log("Không tìm thấy message pane.");
     if (process.env.DEBUG_SCRIPTS === "1") {
       await page.screenshot({ path: path.join(config.screenshotDir, `debug-${Date.now()}.png`) });
     }
@@ -2472,7 +2472,7 @@ export async function verifyOpenChatTeams(
   });
 
   if (!headerRaw) {
-    return { verified: false, reason: "Khong tim thay header chat (khong the verify)." };
+    return { verified: false, reason: "Không tìm thấy header chat (không thể verify)." };
   }
 
   // Extract only the participant names — strip app chrome text like
@@ -2553,7 +2553,7 @@ export async function sendTeamsMessage(
   log(`Mo chat "${chatName}" trong sidebar...`);
   const opened = await navigateToChatInSidebar(page, chatName);
   if (!opened) {
-    return { ok: false, error: `Khong tim thay chat "${chatName}" trong sidebar. Khong gui gi ca.` };
+    return { ok: false, error: `Không tìm thấy chat "${chatName}" trong sidebar. Không gửi gì cả.` };
   }
 
   // ── 2. VERIFY the open chat is the intended target ──────────
@@ -2587,7 +2587,7 @@ export async function sendTeamsMessage(
 
   const inputVisible = await input.isVisible({ timeout: 5_000 }).catch(() => false);
   if (!inputVisible) {
-    return { ok: false, error: "Khong thay o nhap tin nhan Teams (compose box). Khong gui gi ca." };
+    return { ok: false, error: "Không thấy ô nhập tin nhắn Teams (compose box). Không gửi gì cả." };
   }
 
   await input.click();
@@ -2601,7 +2601,7 @@ export async function sendTeamsMessage(
     return el?.innerText || "";
   });
   if (!typedText.trim()) {
-    return { ok: false, error: "Khong the nhap tin nhan vao o input. Khong gui gi ca." };
+    return { ok: false, error: "Không thể nhập tin nhắn vào ô input. Không gửi gì cả." };
   }
   log(`Da nhap ${typedText.length} ky tu vao o input.`);
 

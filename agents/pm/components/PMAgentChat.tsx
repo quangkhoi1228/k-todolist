@@ -21,7 +21,7 @@ export function PMAgentChat({
   suggestions = [],
   onSuggestionAction,
   disabled = false,
-  placeholder = "Nhap tin nhan...",
+  placeholder = "Nhập tin nhắn...",
 }: PMAgentChatProps) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -103,7 +103,7 @@ export function PMAgentChat({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 mb-0.5">
                   <span className="text-[10px] font-bold text-foreground">
-                    {msg.role === "agent" ? "PM Agent" : msg.role === "user" ? "Toi" : "He thong"}
+                    {msg.role === "agent" ? "PM Agent" : msg.role === "user" ? "Tôi" : "Hệ thống"}
                   </span>
                   <span className="text-[9px] text-muted-foreground/50">
                     {new Date(msg.createdAt).toLocaleString("vi-VN")}

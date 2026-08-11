@@ -16,13 +16,13 @@ interface PMAgentSOWFormProps {
 }
 
 const SOW_STATUSES = [
-  { value: "pending", label: "Cho xu ly" },
-  { value: "presale_drafting", label: "Presale dang soan" },
-  { value: "kt_updating", label: "KT dang cap nhat" },
-  { value: "pm_reviewing", label: "PM dang review" },
-  { value: "customer_review", label: "KH dang review" },
-  { value: "approved", label: "KH da duyet" },
-  { value: "rejected", label: "KH tu choi" },
+  { value: "pending", label: "Chờ xử lý" },
+  { value: "presale_drafting", label: "Presale đang soạn" },
+  { value: "kt_updating", label: "KT đang cập nhật" },
+  { value: "pm_reviewing", label: "PM đang review" },
+  { value: "customer_review", label: "KH đang review" },
+  { value: "approved", label: "KH đã duyệt" },
+  { value: "rejected", label: "KH từ chối" },
 ];
 
 export function PMAgentSOWForm({ sow, onSave, onComplete }: PMAgentSOWFormProps) {
@@ -115,7 +115,7 @@ export function PMAgentSOWForm({ sow, onSave, onComplete }: PMAgentSOWFormProps)
           Ghi chu / Review notes
         </Label>
         <Textarea
-          placeholder="VD: Presale da cung cap SOW draft. Can KT cap nhat scope trien khai..."
+          placeholder="VD: Presale đã cung cấp SOW draft. Cần KT cập nhật scope triển khai..."
           value={localSOW.reviewNotes}
           onChange={(e) => update("reviewNotes", e.target.value)}
           className="min-h-[60px] text-[10px] bg-background/50 border-border/60 rounded-lg"

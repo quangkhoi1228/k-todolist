@@ -1,23 +1,17 @@
 ---
-description: Bắt buộc dùng browser thật để verify browser-based features, không suy đoán
+description: Dùng browser thật cho automation Teams/Zalo (sync) — không bắt buộc verify UI qua Chrome
 alwaysApply: true
 ---
 
-# Phải dùng Browser Thật để Verify
+# Dùng Browser Thật cho Automation Teams/Zalo
 
 Dự án này tương tác với **Microsoft Teams** và **Zalo** qua trình duyệt — cả hai đều chặn browser automation (Playwright headless, Puppeteer, v.v.).
 
 ## Nguyên tắc
 
-1. **Không suy đoán**: Nếu feature liên quan đến browser rendering (DOM, blob URL, iframe, cookie, session, image load), **không được phép suy đoán kết quả**. Phải mở browser thật để verify.
+1. **Sync Teams/Zalo phải dùng browser thật**: Các sync script PHẢI dùng Playwright với Chrome profile thật (`useRealChrome: true`, `createStealthContext(config)`) — không dùng chromium headless mặc định (dễ bị phát hiện là bot).
 
-2. **Dùng `cursor-ide-browser` hoặc Playwright với `useRealChrome: true`**:
- - Khi debug trực tiếp, dùng `browser_navigate` + `browser_snapshot` + `browser_take_screenshot` từ MCP `cursor-ide-browser`.
- - Khi chạy sync script, Playwright đã config sẵn `useRealChrome: true` và `const { browser, context } = await createStealthContext(config)` (dùng Chrome profile thật).
-
-3. **Luôn chụp screenshot để so sánh**: Khi verify bất kỳ thay đổi nào về UI/render, phải chụp screenshot trước và sau.
-
-4. **Không dùng browser test (chromium headless mặc định)**: Các browser như Playwright chromium mặc định dễ bị phát hiện là bot. Dùng `channel: "chrome"` và user data dir thật.
+2. **Verify UI qua Chrome KHÔNG bắt buộc**: Không tự ý mở browser/profile để verify UI trừ khi user yêu cầu rõ. Chỉ mở browser khi user chủ động bảo verify UI (xem `screenshot-verify.mdc`).
 
 ## Các file liên quan
 
@@ -26,15 +20,10 @@ Dự án này tương tác với **Microsoft Teams** và **Zalo** qua trình duy
 - Scripts trong `agents/pm/scripts/` — các sync và debug scripts
 - Script test: `final_test.ts`, `debug_*.ts`, `check_*.ts`
 
-## Khi debug
+## Khi debug / chạy sync
 
 ```bash
 # Dùng Playwright với user Chrome profile thật khi chạy sync
 HEADLESS=false npx tsx agents/pm/scripts/sync-all-projects.ts
 HEADLESS=false USER_ID=xxx PROJECT_ID=xxx CHAT_NAME="..." npx tsx agents/pm/scripts/sync-single-chat.ts
-
-# Dùng MCP browser tools để inspect page trực tiếp
-# 1. browser_navigate -> mở trang
-# 2. browser_snapshot -> đọc DOM structure
-# 3. browser_take_screenshot -> chụp ảnh verify
 ```
