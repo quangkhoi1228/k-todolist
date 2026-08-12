@@ -73,6 +73,7 @@ export const tasks = pgTable(
     order: real("order"),
     pic: text("pic"),
     support: text("support"),
+    path: text("path"), // đường dẫn phân cấp, vd "1. Chuẩn bị / 2.1 Hạ tầng"
     priority: text("priority"), // 'low','normal','high'
     notes: text("notes"),
     createdAt: real("createdAt").notNull().default(0),
@@ -394,25 +395,45 @@ export const files = pgTable(
   (t) => [index("files_by_user").on(t.userId)]
 );
 
-// ─── taskTemplates (task list mẫu — render task list theo template) ─────────
+// ─── taskTemplates (task list mẫu — DÙNG CHUNG cho mọi user) ──────────────
+// Template/module không còn phân biệt theo user — mọi user thấy cùng 1 bộ
+// template/module. userId giữ lại (nullable) cho tương thích dữ liệu cũ.
 export const taskTemplates = pgTable(
   "taskTemplates",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
-    userId: text("userId").notNull(),
+    userId: text("userId"), // nullable — dùng chung, không còn per-user
     name: text("name").notNull(), // tên template (vd: "Migration Cloud")
     category: text("category"), // phân loại (vd: "migration", "security", "waf", "general")
     description: text("description"), // mô tả khi nào dùng template này
-    items: jsonb("items").notNull(), // array of { phase, title, details?, pic?, support?, manday?, startOffsetDays?, endOffsetDays? }
+    items: jsonb("items").notNull(), // array of { phase, title, details?, support?, manday?, startOffsetDays?, endOffsetDays? } hoặc { type:"module", moduleId }
     triggers: jsonb("triggers"), // từ khoá để auto-detect từ mô tả dự án (vd: ["migrate", "migration", "onpremise"])
     isActive: boolean("isActive").notNull().default(true),
     createdAt: real("createdAt").notNull(),
     updatedAt: real("updatedAt").notNull(),
   },
   (t) => [
-    index("tt_by_user").on(t.userId),
-    index("tt_by_user_active").on(t.userId, t.isActive),
+    index("tt_by_active").on(t.isActive),
   ]
+);
+
+// ─── taskModules (module task tái sử dụng — DÙNG CHUNG, template tham chiếu) ─
+// Module là nhóm task dùng chung (vd: "Thống nhất yêu cầu", "Migration Cloud",
+// "Triển khai FW Fortinet", "Nghiệm thu/Bàn giao"). Template lưu items có thể chứa
+// item dạng { type: "module", moduleId } — khi render/tạo task sẽ expand module
+// thành các task thật. Sửa module → mọi template dùng nó đều cập nhật theo (tham chiếu).
+// Module dùng chung cho mọi user — không còn filter theo userId.
+export const taskModules = pgTable(
+  "taskModules",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("userId"), // nullable — dùng chung, không còn per-user
+    name: text("name").notNull(), // tên module (vd: "Thống nhất yêu cầu")
+    description: text("description"), // mô tả module
+    items: jsonb("items").notNull(), // array of TaskTemplateItem (task thật, không lồng module)
+    createdAt: real("createdAt").notNull(),
+    updatedAt: real("updatedAt").notNull(),
+  }
 );
 
 // ─── projectSummaries (bản tóm tắt dự án theo version — hiện trạng + next actions) ─────

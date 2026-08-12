@@ -154,7 +154,12 @@ export default function ListPage() {
   };
 
   // Basic implementation to highlight overflowing tasks
-  const processedTasks = (tasks || []).slice().sort((a, b) => (a.startDate || 0) - (b.startDate || 0));
+  const processedTasks = (tasks || []).slice().sort((a, b) => {
+    // Primary: order (null = createdAt fallback), then createdAt for stability
+    const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+    if (orderDiff !== 0) return orderDiff;
+    return (a.startDate || 0) - (b.startDate || 0);
+  });
   const dailyHours: Record<string, number> = {};
 
   const tasksWithOverflow = processedTasks.map(task => {
@@ -521,6 +526,11 @@ export default function ListPage() {
                       {renderSortIcon("project")}
                     </div>
                   </TableHead>
+                  <TableHead className="text-neutral-400 font-bold text-[10px] uppercase tracking-wider py-2">
+                    <div className="flex items-center">
+                      Nhóm
+                    </div>
+                  </TableHead>
                   <TableHead 
                     className="text-neutral-400 font-bold text-[10px] uppercase tracking-wider cursor-pointer hover:bg-white/5 select-none transition-colors group py-2"
                     onClick={() => handleSort("startDate")}
@@ -564,7 +574,7 @@ export default function ListPage() {
               <TableBody>
                 {sortedTasks.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-neutral-500 py-12 text-xs">
+                    <TableCell colSpan={9} className="text-center text-neutral-500 py-12 text-xs">
                       Không tìm thấy công việc nào phù hợp.
                     </TableCell>
                   </TableRow>
@@ -612,6 +622,15 @@ export default function ListPage() {
                                 {projectName}
                               </Badge>
                             </div>
+                          ) : (
+                            "-"
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground group-hover:text-foreground text-xs transition-colors">
+                          {task.path ? (
+                            <span className="text-[10px] text-foreground/70" title={task.path}>
+                              {task.path.split(" / ").pop() || task.path}
+                            </span>
                           ) : (
                             "-"
                           )}

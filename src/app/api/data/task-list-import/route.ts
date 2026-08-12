@@ -9,6 +9,15 @@ import type { DetectedTask } from "@/lib/taskListAnalyzer";
 
 export const runtime = "nodejs";
 
+/** Chuẩn hoá tên member để so khớp (bỏ dấu + lowercase) — dùng để nhận diện placeholder "Khách hàng". */
+function normMemberName(name: string): string {
+  return String(name ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
 /**
  * Import task list dán từ Excel vào dự án:
  * - action=analyze: { userId, projectId, text } → parse + LLM detect → { tasks, source, mappedPics }
@@ -24,6 +33,11 @@ export async function POST(req: NextRequest) {
 
     const members = await getMembersByProject(projectId);
 
+    // Đảm bảo luôn có placeholder "Khách hàng" cho task của khách (PIC = "KH")
+    const CUSTOMER_PLACEHOLDER = { name: "Khách hàng", email: undefined, roleName: "" };
+    const hasCustomer = members.some((m) => normMemberName(m.name) === "khachhang");
+    const membersWithCustomer = hasCustomer ? members : [{ ...CUSTOMER_PLACEHOLDER } as any, ...members];
+
     if (action === "analyze") {
       const text = String(body.text ?? "").trim();
       if (!text) throw Object.assign(new Error("Chưa có nội dung"), { status: 400 });
@@ -32,7 +46,7 @@ export async function POST(req: NextRequest) {
       const items = rowsToTasks(parsed.rows);
       const result = await analyzeTaskList(
         items,
-        members.map((m) => ({ name: m.name, email: m.email, roleName: m.roleName })),
+        membersWithCustomer.map((m) => ({ name: m.name, email: m.email, roleName: m.roleName })),
         text
       );
       return {
@@ -62,13 +76,14 @@ export async function POST(req: NextRequest) {
             userId: String(body.userId),
             title: t.title.trim(),
             estimatedTime: t.manday && t.manday > 0 ? t.manday : 1,
-            startDate: null,
-            endDate: null,
+            startDate: t.startDate && !isNaN(Number(t.startDate)) ? Number(t.startDate) : null,
+            endDate: t.endDate && !isNaN(Number(t.endDate)) ? Number(t.endDate) : null,
             status: "todo",
             project: Number(projectId),
             order: ++order,
             pic: t.pic || null,
             support: t.support || null,
+            path: t.path || null,
             priority: "normal",
             notes: t.details || null,
             createdAt: now + order,

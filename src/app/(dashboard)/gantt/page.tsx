@@ -177,8 +177,56 @@ export default function GanttPage() {
         },
       });
 
-      // Add child tasks
-      for (const task of groupTasks) {
+      // Add child tasks — nhóm thêm theo path nếu có
+      const sortedGroupTasks = [...groupTasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+      // Tìm min/max date cho từng group (theo path) để vẽ group header bar
+      const pathGroups = new Map<string, { tasks: typeof sortedGroupTasks; minStart: Date; maxEnd: Date }>();
+      for (const t of sortedGroupTasks) {
+        const key = t.path || "";
+        let pg = pathGroups.get(key);
+        if (!pg) {
+          pg = { tasks: [], minStart: new Date(8e15), maxEnd: new Date(0) };
+          pathGroups.set(key, pg);
+        }
+        pg.tasks.push(t);
+        if (t.startDate && new Date(t.startDate) < pg.minStart) pg.minStart = new Date(t.startDate);
+        if (t.endDate && new Date(t.endDate) > pg.maxEnd) pg.maxEnd = new Date(t.endDate);
+      }
+
+      // Nếu chỉ có 1 path (hoặc không có path) → không vẽ group header, giữ nguyên
+      const hasMultiplePaths = pathGroups.size > 1 || (pathGroups.size === 1 && ![...pathGroups.keys()][0]);
+
+      let lastGroupPath: string | null = "__init__";
+      for (const task of sortedGroupTasks) {
+        // Group header theo path (nếu có nhiều nhóm)
+        const groupPath = task.path || "";
+        if (hasMultiplePaths && groupPath && groupPath !== lastGroupPath) {
+          const pg = pathGroups.get(groupPath);
+          if (pg) {
+            const segs = groupPath.split(" / ");
+            const groupLabel = segs[segs.length - 1] || groupPath;
+            result.push({
+              start: pg.minStart,
+              end: pg.maxEnd,
+              name: `📂 ${groupLabel}`,
+              id: `group-${projectId}-${groupPath}`,
+              project: projectId,
+              type: "task",
+              progress: 0,
+              isDisabled: true,
+              hideChildren: true,
+              styles: {
+                backgroundColor: "rgba(100, 116, 139, 0.12)",
+                backgroundSelectedColor: "rgba(100, 116, 139, 0.18)",
+                progressColor: "rgba(100, 116, 139, 0.3)",
+                progressSelectedColor: "rgba(100, 116, 139, 0.4)",
+              },
+            });
+          }
+          lastGroupPath = groupPath;
+        }
+
         // Build dependencies list: find deps where this task is the successor
         const depIds: string[] = [];
         if (allDeps) {

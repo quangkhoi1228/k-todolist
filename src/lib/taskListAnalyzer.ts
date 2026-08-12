@@ -17,10 +17,13 @@ export interface TaskItemInput {
   title: string;
   no?: string;
   phase?: string;
+  path?: string;
   details?: string;
   pic?: string;
   support?: string;
   manday?: number;
+  startDate?: number | null; // timestamp (ms)
+  endDate?: number | null; // timestamp (ms)
   status?: string;
 }
 
@@ -134,6 +137,30 @@ function normText(s: unknown): string {
   return String(s ?? "").replace(/\s+/g, " ").trim();
 }
 
+/** Parse ngày thành timestamp ms — hỗ trợ "YYYY-MM-DD", "d/M/yyyy", "dd-MM-yyyy" hoặc số (đã là ms). */
+function parseDateTs(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "number") return !isNaN(raw) && raw > 0 ? raw : undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined;
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return isNaN(dt.getTime()) ? undefined : dt.getTime();
+  }
+  const m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (m) {
+    const d = Number(m[1]);
+    const mo = Number(m[2]);
+    let y = Number(m[3]);
+    if (y < 100) y += 2000;
+    if (d < 1 || d > 31 || mo < 1 || mo > 12) return undefined;
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    return isNaN(dt.getTime()) ? undefined : dt.getTime();
+  }
+  return undefined;
+}
+
 /** Chuẩn hoá 1 task từ LLM — đảm bảo mọi field có type đúng. */
 function normalizeTask(raw: any): DetectedTask | null {
   if (!raw || typeof raw !== "object") return null;
@@ -143,10 +170,13 @@ function normalizeTask(raw: any): DetectedTask | null {
   return {
     title,
     phase: normText(raw.phase) || "Khác",
+    path: normText(raw.path) || normText(raw.phase) || undefined,
     details: normText(raw.details) || undefined,
     pic: normText(raw.pic) || "",
     support: normText(raw.support) || "",
     manday: manday && manday > 0 ? manday : undefined,
+    startDate: parseDateTs(raw.startDate),
+    endDate: parseDateTs(raw.endDate),
     status: normText(raw.status) || undefined,
     no: normText(raw.no) || undefined,
   };
@@ -161,10 +191,13 @@ function fallbackTasks(items: TaskItemInput[]): DetectedTask[] {
       return {
         title,
         phase: normText(it.phase) || "Khác",
+        path: normText(it.path) || normText(it.phase) || undefined,
         details: normText(it.details) || undefined,
         pic: normText(it.pic) || "",
         support: normText(it.support) || "",
         manday: it.manday && it.manday > 0 ? Number(it.manday) : undefined,
+        startDate: it.startDate && !isNaN(Number(it.startDate)) ? Number(it.startDate) : undefined,
+        endDate: it.endDate && !isNaN(Number(it.endDate)) ? Number(it.endDate) : undefined,
         status: it.status,
         no: normText(it.no) || undefined,
       } as DetectedTask;
@@ -177,31 +210,101 @@ function fallbackTasks(items: TaskItemInput[]): DetectedTask[] {
 /** Tách alias/email từ text PIC (vd "FCI DatPT115", "FCI (datpt115)", "datpt115" hoặc email). */
 export function extractPicAliases(picText: string): string[] {
   const aliases: string[] = [];
-  const parts = String(picText ?? "").split(/[\/,;()]+/);
+  // Tách theo /,;() và khoảng trắng — để gom từng token riêng (vd "FCI LuanTC6" → "FCI","LuanTC6")
+  const parts = String(picText ?? "").split(/[\/,;()\s]+/);
   for (const p of parts) {
     const t = p.trim();
     if (!t) continue;
     if (/^fci$/i.test(t)) continue; // "FCI" chung — không phải người
     if (/^kh$/i.test(t)) continue; // khách hàng
+    if (/^kh[aá]c$/i.test(t)) continue;
+    if (/^khachhang$/i.test(t)) continue;
     aliases.push(t);
   }
   // Nếu không tách được alias nào → giữ nguyên chuỗi (vd "FCI DatPT115")
-  if (aliases.length === 0 && normText(picText)) aliases.push(normText(picText));
+  if (aliases.length === 0 && normText(picText)) {
+    const whole = normText(picText);
+    // Chỉ dùng fallback nếu toàn bộ chuỗi không phải token bị loại (KH/FCI...)
+    if (!/^(fci|kh|kh[aá]c|khachhang)$/i.test(whole)) aliases.push(whole);
+  }
   return aliases;
 }
 
-/** Map 1 picText → member name (match alias/email trong member list), hoặc null. */
+/** Bỏ dấu tiếng Việt + lowercase + chỉ giữ chữ/số — để so khớp tên viết hoa/thường, có dấu/không dấu. */
+function normKey(s: string): string {
+  return String(s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // bỏ dấu tiếng Việt
+    .replace(/[^a-z0-9]/g, "");
+}
+
+/** Tách họ tên đầy đủ thành các token (đã normalise) để so khớp từng phần. */
+function nameTokens(name: string): string[] {
+  return normKey(name).split(/[\s,]+/).filter(Boolean);
+}
+
+/** Tách email local-part (trước @) thành các token — vd "LuanTC6" hoặc "dat.pt135" → ["datpt135"]. */
+function emailLocalTokens(email: string): string[] {
+  const local = normText(email).split("@")[0] ?? "";
+  if (!local) return [];
+  // Tách theo dấu chấm/dash/gạch dưới để gommon (vd "dat.pt135" → "dat","pt135") nhưng cũng giữ nguyên cả local
+  const parts = normKey(local).split(/[._\-]+/).filter(Boolean);
+  return parts.length ? parts : [normKey(local)];
+}
+
+/**
+ * Map 1 picText → member name. Ưu tiên khớp chính xác, sau đó mới tới khớp từng phần.
+ * Hỗ trợ nhiều dạng input: "FCI LuanTC6", "LuanTC6@fpt.com", "LuanTC6", "Luan Tran Cong",
+ * "luan tran cong", "LUAN TRAN CONG" (viết hoa/thường), tên có/không dấu.
+ *
+ * Trả về member name nếu khớp, ngược lại null.
+ */
 export function matchPicToMember(picText: string, members: MemberRef[]): string | null {
   const aliases = extractPicAliases(picText);
   for (const alias of aliases) {
-    const a = alias.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const a = normKey(alias);
+    if (!a || a.length < 2) continue;
+    let best: { name: string; score: number } | null = null;
     for (const m of members) {
-      const name = normText(m.name).toLowerCase().replace(/[^a-z0-9]/g, "");
-      const email = normText(m.email ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (name === a || email === a || email.includes(a) || a.includes(email)) {
-        return normText(m.name);
+      const nameKey = normKey(m.name);
+      const emailFull = normText(m.email ?? "");
+      const emailKey = normKey(emailFull);
+      const emailLocal = normKey((emailFull.split("@")[0] ?? ""));
+      const etoks = emailLocalTokens(emailFull);
+      const ntoks = nameTokens(m.name);
+      let score = 0;
+
+      // 1) Khớp chính xác (email đầy đủ, email local-part, hoặc toàn bộ tên)
+      if (emailKey === a || emailLocal === a || nameKey === a) {
+        score = 100;
+      }
+      // 2) Alias khớp đúng 1 token email (vd "LuanTC6" == emailLocal)
+      else if (etoks.includes(a)) {
+        score = 90;
+      }
+      // 3) Alias khớp đúng 1 token tên (vd "luan" hoặc "cong")
+      else if (ntoks.includes(a) && a.length >= 3) {
+        score = 80;
+      }
+      // 4) Email local chứa alias hoặc alias chứa email local (vd "LuanTC6" ↔ "LuanTC6")
+      else if (emailLocal && (emailLocal.includes(a) || a.includes(emailLocal)) && a.length >= 3) {
+        score = 70;
+      }
+      // 5) Alias chứa 1 token tên hoặc ngược lại (vd "LuanTC6" chứa "luan")
+      else if (ntoks.some((t) => (t.length >= 3 && (a.includes(t) || t.includes(a))))) {
+        score = 60;
+      }
+      // 6) Alias chứa 1 token email hoặc ngược lại
+      else if (etoks.some((t) => (t.length >= 3 && (a.includes(t) || t.includes(a))))) {
+        score = 50;
+      }
+
+      if (score > 0 && (!best || score > best.score)) {
+        best = { name: normText(m.name), score };
       }
     }
+    if (best) return best.name;
   }
   return null;
 }
@@ -218,6 +321,10 @@ function assignPics(tasks: DetectedTask[], members: MemberRef[]): { tasks: Detec
       if (mapped) {
         t2.pic = mapped;
         mappedPics[t.pic] = mapped;
+      } else if (isCustomerPic(t.pic)) {
+        // PIC là khách hàng (KH) → gán placeholder "Khách hàng"
+        t2.pic = "Khách hàng";
+        mappedPics[t.pic] = "Khách hàng";
       } else {
         t2.pic = ""; // không khớp member → để trống (PM tự chọn)
       }
@@ -226,6 +333,7 @@ function assignPics(tasks: DetectedTask[], members: MemberRef[]): { tasks: Detec
     if (t.support) {
       const mapped = matchPicToMember(t.support, members);
       if (mapped) t2.support = mapped;
+      else if (isCustomerPic(t.support)) t2.support = "Khách hàng";
       else t2.support = "";
     }
     return t2;
@@ -233,25 +341,33 @@ function assignPics(tasks: DetectedTask[], members: MemberRef[]): { tasks: Detec
   return { tasks: out, mappedPics };
 }
 
+/** Nhận diện PIC/Support là khách hàng: "KH", "Khách hàng", "Khách", "Customer", "KH (tên)". */
+function isCustomerPic(picText: string): boolean {
+  const s = String(picText ?? "").trim().toLowerCase();
+  if (!s) return false;
+  return /^(kh|khách|khach|khachhang|customer|khách hàng)$/.test(s) || /^kh[\(\s]/.test(s);
+}
+
 // ─── LLM analyze ──────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `Bạn là PM Agent của công cụ quản lý dự án K-Todolist (FPT Cloud).
 
 Người dùng dán nội dung task list copy từ file Excel (giữ tab giữa các cột, có thể là dạng text thuần) của một dự án triển khai. Nhiệm vụ của bạn:
-1. Tách từng task thành: title, phase (nhóm: Chuẩn bị / Triển khai / Khảo sát / Nghiệm thu / Bàn giao...), details, pic, support, manday (số), status (nếu có).
-2. "Pic" và "support" — NGƯỜI CHỊU TRÁCH NHIỆM CHÍNH / HỖ TRỢ:
+1. Tách từng task thành: title, phase (nhóm: Chuẩn bị / Triển khai / Khảo sát / Nghiệm thu / Bàn giao...), path (đường dẫn phân cấp đầy đủ, vd "1. Chuẩn bị / 2.1 Hạ tầng" — nếu không có nhóm con thì bằng phase), details, pic, support, manday (số), startDate, endDate, status (nếu có).
+2. "startDate" và "endDate" — ngày bắt đầu/kết thúc theo KẾ HOẠCH (Plan) trong dữ liệu gốc. Định dạng "YYYY-MM-DD" (vd "2026-07-01"). Nếu cột ngày rỗng → null.
+3. "Pic" và "support" — NGƯỜI CHỊU TRÁCH NHIỆM CHÍNH / HỖ TRỢ:
    - ƯU TIÊN dùng đúng tên/alias trong cột PIC/Support của dữ liệu gốc (VD "FCI DatPT115" → "DatPT115"; "FCI (longpm2)" → "longpm2"; "KH" → bỏ trống).
    - Chỉ CHỌN MỘT người trong danh sách MEMBER dưới đây (dùng chính xác TÊN member), KHÔNG bịa tên ngoài danh sách.
    - Nếu không khớp member nào → để pic/support rỗng.
-3. KHÔNG tạo task mới ngoài dữ liệu gốc. Giữ nguyên thứ tự.
+4. KHÔNG tạo task mới ngoài dữ liệu gốc. Giữ nguyên thứ tự.
 
 DANH SÁCH MEMBER CỦA DỰ ÁN (chỉ assign cho những người này):
 <members/>
 
 QUY TẮC OUTPUT:
 - Trả về DUY NHẤT 1 JSON object (không markdown, không code block):
-{ "tasks": [ { "title": "...", "phase": "...", "details": "...", "pic": "...", "support": "...", "manday": <số hoặc null>, "status": "done|processing|todo|pending|<rỗng>" } ] }
-- Mỗi field là string (hoặc số cho manday) — không thêm field khác.
+{ "tasks": [ { "title": "...", "phase": "...", "path": "...", "details": "...", "pic": "...", "support": "...", "manday": <số hoặc null>, "startDate": "YYYY-MM-DD" | null, "endDate": "YYYY-MM-DD" | null, "status": "done|processing|todo|pending|<rỗng>" } ] }
+- Mỗi field là string (hoặc số cho manday, hoặc "YYYY-MM-DD"/null cho startDate/endDate) — không thêm field khác.
 - Bỏ qua dòng tiêu đề (header) và dòng trống.
 - Nếu không có task nào → "tasks": [].
 `;

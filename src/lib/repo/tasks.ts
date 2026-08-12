@@ -1,6 +1,9 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { tasks, taskDependencies } from "../db";
+import { patchLatestSummary } from "./projectSummaries";
+import { getTaskTemplate } from "./taskTemplates";
+import { expandTemplateItems } from "./taskModules";
 
 // ─── Helpers ───────────────────────────────────────────────
 export function mapTask(t: any): any {
@@ -38,6 +41,7 @@ export async function createTask(args: {
   order?: number;
   pic?: string;
   support?: string;
+  path?: string;
   priority?: string;
 }) {
   const db = getDb();
@@ -55,11 +59,27 @@ export async function createTask(args: {
       order: args.order ?? null,
       pic: args.pic ?? null,
       support: args.support ?? null,
+      path: args.path ?? null,
       priority: args.priority ?? null,
       createdAt: Date.now(),
     })
     .returning();
-  return mapTask(res[0]);
+  const created = mapTask(res[0]);
+
+  // Ghi KB chung dự án: thêm task mới vào nextSteps (nếu task thuộc project)
+  if (created?.project) {
+    try {
+      await patchLatestSummary(
+        created.project,
+        { nextSteps: [{ text: created.title, done: false, source: "auto:task" }] },
+        { userId: args.userId }
+      );
+    } catch (err) {
+      console.error("[createTask] Ghi KB nextSteps lỗi:", err);
+    }
+  }
+
+  return created;
 }
 
 export async function updateTask(id: number | string, updates: {
@@ -73,6 +93,7 @@ export async function updateTask(id: number | string, updates: {
   order?: number;
   pic?: string;
   support?: string;
+  path?: string;
   priority?: string;
 }) {
   const db = getDb();
@@ -88,6 +109,7 @@ export async function updateTask(id: number | string, updates: {
   if (updates.order !== undefined) patch.order = updates.order;
   if (updates.pic !== undefined) patch.pic = updates.pic;
   if (updates.support !== undefined) patch.support = updates.support;
+  if (updates.path !== undefined) patch.path = updates.path;
   if (updates.priority !== undefined) patch.priority = updates.priority;
   await db.update(tasks).set(patch).where(eq(tasks.id, pid));
 }
@@ -118,6 +140,76 @@ export async function deleteTask(id: number | string) {
   await db.delete(taskDependencies).where(eq(taskDependencies.taskId, tid));
   await db.delete(taskDependencies).where(eq(taskDependencies.dependsOnTaskId, tid));
   await db.delete(tasks).where(eq(tasks.id, tid));
+}
+
+// ─── Batch import from templates ───────────────────────────
+/**
+ * Tạo nhiều task từ nhiều template, theo thứ tự template đã truyền.
+ * Mỗi template tạo ra các task theo items order; order tăng dần liên tục
+ * bắt đầu từ max(order) hiện có của project + 1000.
+ */
+export async function createTasksFromTemplates(args: {
+  userId: string;
+  projectId: number | string;
+  templateIds: Array<number | string>;
+}) {
+  const db = getDb();
+  const pid = Number(args.projectId);
+  if (!pid) throw new Error("Thiếu projectId");
+  if (!args.templateIds || args.templateIds.length === 0) {
+    throw new Error("Thiếu templateIds");
+  }
+
+  // Tìm max order hiện có trong project
+  const existing = await db
+    .select({ order: tasks.order })
+    .from(tasks)
+    .where(eq(tasks.project, pid));
+  let maxOrder = 0;
+  for (const t of existing) {
+    if (t.order && t.order > maxOrder) maxOrder = t.order;
+  }
+
+  const now = Date.now();
+  const created: any[] = [];
+  let orderCursor = maxOrder;
+
+  for (const templateId of args.templateIds) {
+    const template = await getTaskTemplate(templateId);
+    if (!template) continue;
+    // Expand module references to real task items
+    const expandedItems = await expandTemplateItems(args.userId, template.items ?? []);
+    for (const item of expandedItems) {
+      if (item.isGroup || !item.title) continue;
+      orderCursor += 1000;
+      const res = await db
+        .insert(tasks)
+        .values({
+          userId: args.userId,
+          title: item.title,
+          estimatedTime: item.manday ?? 1,
+          startDate: null,
+          endDate: null,
+          status: "todo",
+          project: pid,
+          order: orderCursor,
+          pic: null,
+          support: item.support || null,
+          path: item.phase || null,
+          priority: "normal",
+          notes: item.details || null,
+          createdAt: now,
+        })
+        .returning();
+      created.push(res[0]);
+    }
+  }
+
+  return {
+    ok: true,
+    createdTasks: created.length,
+    templateCount: args.templateIds.length,
+  };
 }
 
 // ─── Dependencies ──────────────────────────────────────────
