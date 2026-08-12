@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, ChevronDown, ListPlus, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal, History, ShieldCheck } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import { SowImportDialog } from "./SowImportDialog";
+import { TaskListImportPanel } from "./TaskListImportPanel";
 import { format } from "date-fns";
 import { WysiwygEditor } from "./WysiwygEditor";
 import type { Doc } from "@/lib/types";
@@ -71,8 +72,8 @@ interface ProjectDetailPanelProps {
     deletedAt?: number | null;
     teamsGroups?: Array<{ name: string; type: "internal" | "customer"; platform?: "teams" | "zalo" | string; url?: string }>;
   };
-  tab?: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries";
-  onTabChange?: (tab: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries") => void;
+  tab?: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks";
+  onTabChange?: (tab: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks") => void;
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string; short: string }> = {  todo: { label: "Chưa thực hiện", color: "text-neutral-500", short: "Todo" },
@@ -786,11 +787,17 @@ function SummaryContentView({
   latest,
   expanded = false,
   handleDeleteSummary,
+  projectId,
+  userId,
+  ssmx,
 }: {
   data: SummaryData;
   latest: { _id?: string } | null;
   expanded?: boolean;
   handleDeleteSummary?: (id: string) => void;
+  projectId?: string;
+  userId?: string;
+  ssmx?: ReturnType<typeof useProjectSummaryMutations>;
 }) {
   const basic = (data?.basic || {}) as Record<string, unknown>;
   const status = (data?.status || {}) as Record<string, unknown>;
@@ -806,8 +813,163 @@ function SummaryContentView({
   const num = (v: unknown): number => (typeof v === "number" ? v : 0);
   const bool = (v: unknown): boolean => !!v;
 
+  // ─── KB: scope + nextSteps editable ─────────────────────────
+  const scope = (data?.scope || {}) as Record<string, unknown>;
+  const nextSteps = (data?.nextSteps || []) as Array<Record<string, unknown>>;
+
+  const [scopeEditing, setScopeEditing] = useState(false);
+  const [scopeDraft, setScopeDraft] = useState({ goal: "", overview: "", topology: "", timeline: "" });
+  const [scopeSaving, setScopeSaving] = useState(false);
+  const [newStep, setNewStep] = useState("");
+  const [stepSaving, setStepSaving] = useState(false);
+
+  const startScopeEdit = () => {
+    setScopeDraft({
+      goal: str(scope.goal),
+      overview: str(scope.overview),
+      topology: str(scope.topology),
+      timeline: str(scope.timeline),
+    });
+    setScopeEditing(true);
+  };
+
+  const saveScope = async () => {
+    if (!projectId || !ssmx) return;
+    setScopeSaving(true);
+    try {
+      await ssmx.setScope({ projectId, scope: scopeDraft, userId });
+      setScopeEditing(false);
+    } catch (err) {
+      console.error("[KB] Lưu scope lỗi:", err);
+    } finally {
+      setScopeSaving(false);
+    }
+  };
+
+  const addNextStep = async () => {
+    const text = newStep.trim();
+    if (!text || !projectId || !ssmx) return;
+    setStepSaving(true);
+    try {
+      await ssmx.setNextSteps({ projectId, steps: [{ text, done: false, source: "pm" }], userId });
+      setNewStep("");
+    } catch (err) {
+      console.error("[KB] Thêm nextStep lỗi:", err);
+    } finally {
+      setStepSaving(false);
+    }
+  };
+
+  const toggleStep = async (index: number, done: boolean) => {
+    if (!projectId || !ssmx) return;
+    try {
+      await ssmx.toggleNextStep({ projectId, index, done });
+    } catch (err) {
+      console.error("[KB] Toggle nextStep lỗi:", err);
+    }
+  };
+
   return (
     <div className="px-3 py-2.5 space-y-2">
+      {/* ─── KB: Scope (editable) ─── */}
+      {projectId && (
+        <div className="border border-indigo-500/20 rounded-lg bg-indigo-500/5 px-2.5 py-2 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <h5 className="text-[9px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400 flex items-center gap-1">
+              <BrainCircuit className="w-3 h-3" /> Scope (KB chung dự án)
+            </h5>
+            {!scopeEditing && (
+              <button type="button" onClick={startScopeEdit} className="text-[9px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 cursor-pointer">
+                <Edit3 className="w-2.5 h-2.5" /> Sửa
+              </button>
+            )}
+          </div>
+          {scopeEditing ? (
+            <div className="space-y-1.5">
+              <div>
+                <label className="text-[8px] text-muted-foreground">Mục tiêu</label>
+                <textarea value={scopeDraft.goal} onChange={(e) => setScopeDraft({ ...scopeDraft, goal: e.target.value })} className="w-full text-[10px] rounded border border-border/40 bg-background px-1.5 py-1 resize-y min-h-[40px]" placeholder="Mục tiêu dự án..." />
+              </div>
+              <div>
+                <label className="text-[8px] text-muted-foreground">Phạm vi / Tổng quan</label>
+                <textarea value={scopeDraft.overview} onChange={(e) => setScopeDraft({ ...scopeDraft, overview: e.target.value })} className="w-full text-[10px] rounded border border-border/40 bg-background px-1.5 py-1 resize-y min-h-[40px]" placeholder="Phạm vi, tổng quan..." />
+              </div>
+              <div>
+                <label className="text-[8px] text-muted-foreground">Topology / Hạ tầng</label>
+                <textarea value={scopeDraft.topology} onChange={(e) => setScopeDraft({ ...scopeDraft, topology: e.target.value })} className="w-full text-[10px] rounded border border-border/40 bg-background px-1.5 py-1 resize-y min-h-[40px]" placeholder="Topology, hạ tầng..." />
+              </div>
+              <div>
+                <label className="text-[8px] text-muted-foreground">Timeline</label>
+                <input value={scopeDraft.timeline} onChange={(e) => setScopeDraft({ ...scopeDraft, timeline: e.target.value })} className="w-full text-[10px] rounded border border-border/40 bg-background px-1.5 py-1" placeholder="Timeline, các mốc..." />
+              </div>
+              <div className="flex gap-1">
+                <button type="button" onClick={saveScope} disabled={scopeSaving} className="text-[9px] px-2 py-0.5 rounded bg-indigo-500 text-white hover:bg-indigo-600 disabled:opacity-50 cursor-pointer flex items-center gap-1">
+                  {scopeSaving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Save className="w-2.5 h-2.5" />} Lưu
+                </button>
+                <button type="button" onClick={() => setScopeEditing(false)} className="text-[9px] px-2 py-0.5 rounded border border-border/40 hover:bg-muted/30 cursor-pointer flex items-center gap-1">
+                  <X className="w-2.5 h-2.5" /> Huỷ
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-0.5 text-[10px]">
+              {str(scope.goal) && <div><span className="text-muted-foreground">Mục tiêu: </span><span className="text-foreground/90">{str(scope.goal)}</span></div>}
+              {str(scope.overview) && <div className="text-muted-foreground/80">{str(scope.overview)}</div>}
+              {str(scope.topology) && <div><span className="text-muted-foreground">Topology: </span><span className="text-foreground/80">{str(scope.topology)}</span></div>}
+              {str(scope.timeline) && <div><span className="text-muted-foreground">Timeline: </span><span className="font-medium text-foreground">{str(scope.timeline)}</span></div>}
+              {!str(scope.goal) && !str(scope.overview) && !str(scope.topology) && !str(scope.timeline) && (
+                <div className="text-muted-foreground/50 italic text-[9px]">Chưa có scope — bấm "Sửa" để nhập</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ─── KB: Next steps (checklist editable) ─── */}
+      {projectId && (
+        <div className="border border-emerald-500/20 rounded-lg bg-emerald-500/5 px-2.5 py-2 space-y-1">
+          <h5 className="text-[9px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+            <ListPlus className="w-3 h-3" /> Next steps (KB)
+          </h5>
+          <div className="space-y-0.5">
+            {nextSteps.length === 0 ? (
+              <div className="text-muted-foreground/50 italic text-[9px]">Chưa có bước tiếp theo</div>
+            ) : (
+              nextSteps.map((s, i) => (
+                <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => toggleStep(i, !bool(s.done))}
+                    className={`shrink-0 mt-0.5 w-3 h-3 rounded border flex items-center justify-center cursor-pointer transition-colors ${
+                      bool(s.done) ? "bg-emerald-500 border-emerald-500 text-white" : "border-border/50 hover:border-emerald-500/50"
+                    }`}
+                    title={bool(s.done) ? "Đánh dấu chưa xong" : "Đánh dấu xong"}
+                  >
+                    {bool(s.done) && <Check className="w-2 h-2" />}
+                  </button>
+                  <span className={`flex-1 ${bool(s.done) ? "text-muted-foreground line-through" : "text-foreground/90"}`}>{str(s.text)}</span>
+                  {str(s.source) && (
+                    <span className="shrink-0 text-[8px] text-muted-foreground/40 bg-muted/30 px-1 rounded">{str(s.source)}</span>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+          <div className="flex gap-1 mt-1">
+            <input
+              value={newStep}
+              onChange={(e) => setNewStep(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !stepSaving) addNextStep(); }}
+              placeholder="Thêm bước tiếp theo..."
+              className="flex-1 text-[10px] rounded border border-border/40 bg-background px-1.5 py-0.5"
+              disabled={stepSaving}
+            />
+            <button type="button" onClick={addNextStep} disabled={stepSaving || !newStep.trim()} className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 hover:bg-emerald-500/20 disabled:opacity-50 cursor-pointer flex items-center gap-0.5">
+              {stepSaving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Plus className="w-2.5 h-2.5" />}
+            </button>
+          </div>
+        </div>
+      )}
       {/* Thông tin cơ bản */}
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
         <div className="col-span-2">
@@ -946,7 +1108,7 @@ function SummaryContentView({
 
 export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnTabChange }: ProjectDetailPanelProps) {
   const { userId } = useAuth();
-  const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries">("info");
+  const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks">("info");
   const tab = propTab ?? localTab;
   const handleTabChange = propOnTabChange ?? setLocalTab;
   const searchParams = useSearchParams();
@@ -2001,7 +2163,7 @@ ${resourceTicketsLinks}
           }`}
         >
           <Save className="w-3 h-3" />
-          Tóm tắt {summaries && summaries.length > 0 ? `(${summaries.length})` : ""}
+          KB dự án {summaries && summaries.length > 0 ? `(${summaries.length})` : ""}
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -2028,7 +2190,7 @@ ${resourceTicketsLinks}
       </div>
 
       {/* Tab Content */}
-      <div className={`p-3 ${tab === "chats" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
+      <div className={`p-3 ${tab === "chats" || tab === "import-tasks" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
         {tab === "info" ? (
           <div className="space-y-1.5">
             {/* WYSIWYG Editor — compact */}
@@ -2043,6 +2205,23 @@ ${resourceTicketsLinks}
                 onImageUpload={handleImageUpload}
               />
             </div>
+            {/* Import task list từ Excel */}
+            <button
+              type="button"
+              onClick={() => handleTabChange("import-tasks")}
+              className="w-full flex items-center justify-center gap-1.5 p-2 text-[11px] text-muted-foreground hover:text-foreground border border-dashed border-border/60 hover:border-emerald-500/40 rounded-lg hover:bg-emerald-500/5 transition-all cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+              Import task list từ Excel (dán nội dung)
+            </button>
+          </div>
+        ) : tab === "import-tasks" ? (
+          <div className="flex-1 h-full min-h-0">
+            <TaskListImportPanel
+              onClose={() => handleTabChange("info")}
+              projectId={project._id}
+              projectName={project.name}
+            />
           </div>
         ) : tab === "notes" ? (
           /* Notes Tab — project notes from notes table */
@@ -2233,11 +2412,11 @@ ${resourceTicketsLinks}
             <div className="flex items-center gap-2 bg-gradient-to-br from-primary/5 to-primary/[0.02] border border-primary/20 rounded-xl px-3 py-2.5">
               <Save className="w-3.5 h-3.5 text-primary" />
               <div className="flex-1 min-w-0">
-                <h3 className="text-xs font-semibold text-foreground">Tóm tắt dự án</h3>
+                <h3 className="text-xs font-semibold text-foreground">KB chung dự án</h3>
                 <p className="text-[9px] text-muted-foreground">
                   {summaries?.length
                     ? `${summaries.length} version — cập nhật tự động khi có biến động đáng chú ý`
-                    : "Chưa có bản tóm tắt nào — AI sẽ tạo khi có tin mới quan trọng"}
+                    : "Chưa có KB — AI sẽ tạo khi có tin mới quan trọng"}
                 </p>
               </div>
               <button
@@ -2304,7 +2483,7 @@ ${resourceTicketsLinks}
                           {latest.summaryText || "—"}
                         </pre>
                       ) : (
-                        <SummaryContentView data={data} latest={latest} expanded={selectedSummaryId === latest._id} handleDeleteSummary={handleDeleteSummary} />
+                        <SummaryContentView data={data} latest={latest} expanded={selectedSummaryId === latest._id} handleDeleteSummary={handleDeleteSummary} projectId={project._id} userId={userId ?? undefined} ssmx={ssmx} />
                       )}
                     </div>
                   );
@@ -2331,7 +2510,7 @@ ${resourceTicketsLinks}
                             </span>
                           </summary>
                           <div className="px-3 pb-3">
-                            <SummaryContentView data={v.summaryData || {}} latest={v} expanded={selectedSummaryId === v._id} handleDeleteSummary={handleDeleteSummary} />
+                            <SummaryContentView data={v.summaryData || {}} latest={v} expanded={selectedSummaryId === v._id} handleDeleteSummary={handleDeleteSummary} projectId={project._id} userId={userId ?? undefined} ssmx={ssmx} />
                           </div>
                         </details>
                       ))}

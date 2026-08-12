@@ -111,18 +111,6 @@ Em cảm ơn anh/chị ạ!`;
 export const REQUIREMENT_INPUT_HINT =
   "Nhập yêu cầu sơ bộ dự án (mỗi dòng 1 yêu cầu, bắt buộc có tiêu đề). Sau khi lưu, hệ thống tự sinh task tracking tương ứng.";
 
-/** Khung tính năng mẫu (multi-choice) — dùng cho B2 khi LLM không gợi ý / không có LLM. */
-export const DEFAULT_FEATURE_TEMPLATE = [
-  "Đồng bộ tin nhắn Teams",
-  "Đồng bộ tin nhắn Zalo",
-  "Tạo task tracking tự động từ yêu cầu",
-  "Tóm tắt dự án tự động",
-  "Gợi ý chốt SOW / phase chuyển giai đoạn",
-  "Cảnh báo & gợi ý đóng dự án (task xong / KH confirm)",
-  "Tìm kiếm & thêm member từ Teams",
-  "Nhắc việc trong ngày qua tin nhắn",
-];
-
 interface PhaseWorkflowCardProps {
   project: { _id: string; name: string; ticketId?: string | null };
   userId?: string;
@@ -219,21 +207,11 @@ export function PhaseWorkflowCard({
   const [questionSending, setQuestionSending] = useState(false);
   const [questionSendError, setQuestionSendError] = useState<string | null>(null);
   const [questionSendOk, setQuestionSendOk] = useState<string | null>(null);
-  const [reqTitle, setReqTitle] = useState("");
-  const [reqDetail, setReqDetail] = useState("");
   const [reqs, setReqs] = useState<WorkflowRequirement[]>([]);
   const [freeText, setFreeText] = useState("");
-  // ─── Phân tích yêu cầu sơ bộ bằng LLM (scope + next actions + gợi ý tính năng) ───
+  // ─── LLM sinh scope từ yêu cầu sơ bộ ───
   const [analyzing, setAnalyzing] = useState(false);
-  const [analysis, setAnalysis] = useState<{
-    scope: string[];
-    nextActions: string[];
-    featureSuggestions: string[];
-    source: "llm" | "fallback";
-  } | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
-  const [analysisLoadedKey, setAnalysisLoadedKey] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -447,21 +425,6 @@ export function PhaseWorkflowCard({
     if (Array.isArray(workflow.requirements) && workflow.requirements.length > 0) {
       setReqs(workflow.requirements);
     }
-    // Phân tích yêu cầu đã lưu (scope/next actions/tính năng) — chỉ load khi đổi project
-    if (workflow.preinfoAnalysis && String(workflow.id) !== analysisLoadedKey) {
-      setAnalysisLoadedKey(String(workflow.id));
-      const pa = workflow.preinfoAnalysis as any;
-      const features = Array.isArray(pa.featureSuggestions) && pa.featureSuggestions.length > 0
-        ? pa.featureSuggestions
-        : DEFAULT_FEATURE_TEMPLATE;
-      setAnalysis({
-        scope: Array.isArray(pa.scope) ? pa.scope : [],
-        nextActions: Array.isArray(pa.nextActions) ? pa.nextActions : [],
-        featureSuggestions: features,
-        source: pa.source === "llm" ? "llm" : "fallback",
-      });
-      setSelectedFeatures(Array.isArray(pa.selectedFeatures) && pa.selectedFeatures.length > 0 ? pa.selectedFeatures : features);
-    }
     if (workflow.sowPlan) {
       setSowPlan(workflow.sowPlan);
       setSelectedSowTemplateId(workflow.sowPlan.templateId ? String(workflow.sowPlan.templateId) : null);
@@ -626,14 +589,8 @@ export function PhaseWorkflowCard({
     }
   };
 
-  /** Thêm tên Pre-sale + Sale vào đầu tin nhắn (nếu có tên) — không dùng @mention (Teams không tag trực tiếp qua text) */
-  const buildTaggedQuestion = (raw: string): string => {
-    const tags: string[] = [];
-    if (presale.trim()) tags.push(presale.trim());
-    if (saleName?.trim()) tags.push(saleName.trim());
-    const nameLine = tags.length > 0 ? `${tags.join(" ")} — ` : "";
-    return `${nameLine}${raw}`.trim();
-  };
+  // Tin nhắn scope đã xưng hô tên người nhận trực tiếp (vd: "Chào chị A, anh B ơi...") — không cần thêm prefix tên nữa
+  const buildTaggedQuestion = (raw: string): string => raw.trim();
 
   /** Gửi câu hỏi qua nhóm Teams (gửi thật) — chạy ẩn nếu config headlessMode đang bật */
   const sendQuestionToTeamsGroup = async () => {
@@ -680,21 +637,6 @@ export function PhaseWorkflowCard({
     }
   };
 
-  const addRequirement = () => {
-    if (!reqTitle.trim()) return;
-    setReqs((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}`,
-        title: reqTitle.trim(),
-        detail: reqDetail.trim() || undefined,
-        priority: "normal",
-      },
-    ]);
-    setReqTitle("");
-    setReqDetail("");
-  };
-
   /** Dán văn bản tự do → tách từng dòng thành 1 yêu cầu (bỏ dòng trống, bỏ bullet/number prefix) */
   const parseFreeText = (text: string) => {
     const lines = text
@@ -714,7 +656,7 @@ export function PhaseWorkflowCard({
     setFreeText("");
   };
 
-  // ─── LLM phân tích yêu cầu sơ bộ (paste text từ Pre-sale) ───
+  // ─── LLM sinh scope từ yêu cầu sơ bộ (paste text từ Pre-sale) ───
   const runAnalysis = async (text: string) => {
     const t = text.trim();
     if (!t || analyzing) return;
@@ -732,17 +674,27 @@ export function PhaseWorkflowCard({
         return;
       }
       const a = data.analysis;
-      const features = Array.isArray(a.featureSuggestions) && a.featureSuggestions.length > 0
-        ? a.featureSuggestions
-        : DEFAULT_FEATURE_TEMPLATE;
-      setAnalysis({
-        scope: Array.isArray(a.scope) ? a.scope : [],
-        nextActions: Array.isArray(a.nextActions) ? a.nextActions : [],
-        featureSuggestions: features,
-        source: data.source === "llm" ? "llm" : "fallback",
-      });
-      // Tính năng gợi ý mặc định được tick sẵn — user có thể bỏ tick
-      setSelectedFeatures((prev) => Array.from(new Set([...prev, ...features])));
+      const scope = Array.isArray(a.scope) ? a.scope : [];
+      const nextActions = Array.isArray(a.nextActions) ? a.nextActions : [];
+      const items = [...scope, ...nextActions].filter((s) => s && String(s).trim());
+      if (items.length === 0) {
+        setAnalysisError("AI không sinh được scope từ nội dung này. Vui lòng bổ sung thêm thông tin.");
+        return;
+      }
+      setReqs((prev) => [
+        ...prev,
+        ...items.map((s, i) => {
+          const title = String(s).trim();
+          return {
+            id: `${Date.now()}-scope-${i}`,
+            title: title.length > 120 ? title.slice(0, 120) + "…" : title,
+            detail: title.length > 120 ? title : undefined,
+            priority: "normal" as const,
+          };
+        }),
+      ]);
+      showToast(`AI đã sinh ${items.length} hạng mục scope vào danh sách yêu cầu.`);
+      setFreeText("");
     } catch (e: any) {
       setAnalysisError(e?.message || "Lỗi kết nối khi phân tích yêu cầu.");
     } finally {
@@ -750,33 +702,6 @@ export function PhaseWorkflowCard({
     }
   };
 
-  /** Gộp scope (hạng mục) + next actions (việc cần làm) thành danh sách yêu cầu → reqs */
-  const addDetectedScopeToReqs = (scope: string[], nextActions: string[]) => {
-    const items = [...scope, ...nextActions].filter((s) => s && s.trim());
-    if (items.length === 0) return;
-    setReqs((prev) => [
-      ...prev,
-      ...items.map((s, i) => ({
-        id: `${Date.now()}-scope-${i}`,
-        title: s.trim().length > 120 ? s.trim().slice(0, 120) + "…" : s.trim(),
-        detail: s.trim().length > 120 ? s.trim() : undefined,
-        priority: "normal" as const,
-      })),
-    ]);
-  };
-
-  /** Xoá toàn bộ phân tích + tick tính năng (chỉ xoá trong UI, không đụng dữ liệu đã lưu) */
-  const clearAnalysis = () => {
-    setAnalysis(null);
-    setAnalysisError(null);
-    setSelectedFeatures([]);
-  };
-
-  const toggleFeature = (feature: string) => {
-    setSelectedFeatures((prev) =>
-      prev.includes(feature) ? prev.filter((f) => f !== feature) : [...prev, feature]
-    );
-  };
 
   // ─── Form chọn nhóm: state sync từ workflow + list chats + dropdown portal ───
   const groupRefs = useMemo(() => {
@@ -867,16 +792,6 @@ export function PhaseWorkflowCard({
     setError(null);
     try {
       const patch: any = { requirements: reqs };
-      // Lưu kèm phân tích LLM (scope/next actions/tính năng) — nếu có
-      if (analysis) {
-        patch.preinfoAnalysis = {
-          scope: analysis.scope,
-          nextActions: analysis.nextActions,
-          featureSuggestions: analysis.featureSuggestions,
-          selectedFeatures,
-          source: analysis.source,
-        };
-      }
       await onUpdateWorkflow({
         action: "updateWorkflowData",
         projectId: project._id,
@@ -1845,35 +1760,10 @@ export function PhaseWorkflowCard({
                     </button>
                     {showRequirements && (
                       <div className="mt-3 space-y-3">
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={reqTitle}
-                            onChange={(e) => setReqTitle(e.target.value)}
-                            placeholder="Tiêu đề yêu cầu (bắt buộc)"
-                            className="flex-1 h-10 px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
-                          />
-                          <button
-                            type="button"
-                            onClick={addRequirement}
-                            disabled={!reqTitle.trim()}
-                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40"
-                          >
-                            <Plus className="w-4 h-4" />
-                            Thêm
-                          </button>
-                        </div>
-                        <textarea
-                          value={reqDetail}
-                          onChange={(e) => setReqDetail(e.target.value)}
-                          placeholder="Chi tiết / mô tả yêu cầu (không bắt buộc)"
-                          rows={3}
-                          className="w-full px-3 py-2 text-sm rounded-lg bg-background/80 border border-border/50 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all resize-none"
-                        />
-                        <div className="pt-1 border-t border-dashed border-border/40 space-y-3">
+                        <div className="space-y-2">
                           <p className="text-xs text-muted-foreground/70 flex items-center gap-1.5">
                             <ScanSearch className="w-3.5 h-3.5" />
-                            Dán yêu cầu sơ bộ từ Pre-sale (email / tin nhắn) — hệ thống tự nhận diện scope & next actions:
+                            Dán yêu cầu sơ bộ từ Pre-sale (email / tin nhắn) — AI tự sinh scope thành danh sách yêu cầu:
                           </p>
                           <textarea
                             value={freeText}
@@ -1885,9 +1775,9 @@ export function PhaseWorkflowCard({
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-xs text-muted-foreground/60 mr-auto">
                               {analyzing
-                                ? "Đang phân tích bằng AI..."
+                                ? "Đang sinh scope bằng AI..."
                                 : freeText.trim()
-                                  ? `Sẽ tạo ${freeText.split(/\r?\n/).filter((l) => l.trim()).length} yêu cầu theo dòng`
+                                  ? "Sẵn sàng sinh scope"
                                   : "Chưa có nội dung"}
                             </span>
                             <button
@@ -1895,10 +1785,10 @@ export function PhaseWorkflowCard({
                               onClick={() => runAnalysis(freeText)}
                               disabled={!freeText.trim() || analyzing}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors cursor-pointer disabled:opacity-40"
-                              title="LLM tách scope, next actions và gợi ý tính năng"
+                              title="LLM sinh scope và đổ thẳng vào danh sách yêu cầu"
                             >
                               {analyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                              Phân tích bằng AI
+                              Sinh scope bằng AI
                             </button>
                             <button
                               type="button"
@@ -1915,131 +1805,6 @@ export function PhaseWorkflowCard({
                             <p className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
                               {analysisError}
                             </p>
-                          )}
-
-                          {/* Kết quả phân tích AI: scope + next actions + tính năng multi-choice */}
-                          {analysis && (
-                            <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-3">
-                              <div className="flex items-center gap-2">
-                                <Sparkles className="w-4 h-4 text-amber-500" />
-                                <span className="text-sm font-semibold text-foreground">
-                                  Phân tích yêu cầu sơ bộ
-                                </span>
-                                {analysis.source === "fallback" && (
-                                  <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] text-muted-foreground font-medium">
-                                    dò theo từ khóa
-                                  </span>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={clearAnalysis}
-                                  className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                                >
-                                  <X className="w-3 h-3" />
-                                  Bỏ
-                                </button>
-                              </div>
-
-                              {/* Scope */}
-                              {analysis.scope.length > 0 && (
-                                <div>
-                                  <p className="text-xs font-semibold text-foreground/80 mb-1.5 flex items-center gap-1.5">
-                                    <Target className="w-3.5 h-3.5 text-amber-500" />
-                                    Phạm vi dự án (scope)
-                                  </p>
-                                  <ul className="space-y-1">
-                                    {analysis.scope.map((s, i) => (
-                                      <li key={i} className="text-sm text-foreground/80 leading-relaxed flex items-start gap-2">
-                                        <span className="text-amber-500 mt-0.5">•</span>
-                                        <span className="flex-1">{s}</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => addDetectedScopeToReqs([s], [])}
-                                          className="ml-auto shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-                                          title="Thêm vào danh sách yêu cầu bên dưới"
-                                        >
-                                          <Plus className="w-3 h-3" />
-                                          Thêm yêu cầu
-                                        </button>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-
-                              {/* Next actions */}
-                              {analysis.nextActions.length > 0 && (
-                                <div>
-                                  <p className="text-xs font-semibold text-foreground/80 mb-1.5 flex items-center gap-1.5">
-                                    <ListTodo className="w-3.5 h-3.5 text-amber-500" />
-                                    Next actions
-                                  </p>
-                                  <ul className="space-y-1">
-                                    {analysis.nextActions.map((n, i) => (
-                                      <li key={i} className="text-sm text-foreground/80 leading-relaxed flex items-start gap-2">
-                                        <span className="text-amber-500 mt-0.5">•</span>
-                                        <span className="flex-1">{n}</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => addDetectedScopeToReqs([], [n])}
-                                          className="ml-auto shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-                                          title="Thêm vào danh sách yêu cầu bên dưới"
-                                        >
-                                          <Plus className="w-3 h-3" />
-                                          Thêm yêu cầu
-                                        </button>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-
-                              <div className="flex items-center justify-between">
-                                {analysis.scope.length + analysis.nextActions.length > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      addDetectedScopeToReqs(analysis.scope, analysis.nextActions);
-                                      showToast(`Đã thêm ${analysis.scope.length + analysis.nextActions.length} hạng mục vào danh sách yêu cầu.`);
-                                    }}
-                                    disabled={analyzing}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-500/15 text-amber-600 dark:text-amber-400 hover:bg-amber-500/25 transition-colors cursor-pointer disabled:opacity-40"
-                                  >
-                                    <ListPlus className="w-3.5 h-3.5" />
-                                    Thêm tất cả ({analysis.scope.length + analysis.nextActions.length}) vào yêu cầu
-                                  </button>
-                                )}
-                              </div>
-
-                              {/* Tính năng multi-choice */}
-                              <div>
-                                <p className="text-xs font-semibold text-foreground/80 mb-1.5">
-                                  Tính năng liên quan (chọn nhiều)
-                                </p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {analysis.featureSuggestions.map((f) => {
-                                    const on = selectedFeatures.includes(f);
-                                    return (
-                                      <button
-                                        key={f}
-                                        type="button"
-                                        onClick={() => toggleFeature(f)}
-                                        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
-                                          on
-                                            ? "border-violet-500/60 bg-violet-500/15 text-violet-600 dark:text-violet-400"
-                                            : "border-border/50 text-muted-foreground hover:text-foreground hover:border-primary/30"
-                                        }`}
-                                      >
-                                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors ${on ? "bg-violet-500 border-violet-500 text-white" : "border-border"}`}>
-                                          {on && <Check className="w-2.5 h-2.5" />}
-                                        </span>
-                                        {f}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            </div>
                           )}
                         </div>
                         {reqs.length > 0 && (
