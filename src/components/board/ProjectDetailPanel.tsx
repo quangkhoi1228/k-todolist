@@ -32,6 +32,7 @@ import {
   useProjectWorkflow,
   useProjectWorkflowMutations,
   useIsdByProject,
+  useUnresolvedCountByProject,
 } from "@/hooks/useDomain";
 import { useInvalidate } from "@/hooks/useData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -1044,6 +1045,9 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const isdSaleName = isdData?.reporter || isdData?.requester || isdData?.creator || "";
   const isdSaleEmail = isdData?.reporterEmail || isdData?.requesterEmail || isdData?.creatorEmail || "";
 
+  // ─── Suggestions Count (chưa xử lý) — badge trên tab Gợi ý ─────
+  const { data: unresolvedSuggestionsCount } = useUnresolvedCountByProject(project._id ?? null);
+
   // ─── Members UI State ─────────────────────
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberName, setNewMemberName] = useState("");
@@ -1943,7 +1947,7 @@ ${resourceTicketsLinks}
           }`}
         >
           <Sparkles className="w-3 h-3" />
-          Gợi ý
+          Gợi ý {unresolvedSuggestionsCount ? `(${unresolvedSuggestionsCount})` : ""}
         </button>
         <button
           type="button"

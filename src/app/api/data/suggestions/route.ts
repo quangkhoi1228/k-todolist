@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSuggestionsByProject, getUnresolvedSuggestionsByUser, getUnresolvedCountByUser, addSuggestion, markSuggestionAsRead, markSuggestionAsResolved, markAllAsReadByProject, deleteSuggestion, addSuggestionsBatch } from "@/lib/repo/projectSuggestions";
+import { getSuggestionsByProject, getUnresolvedSuggestionsByUser, getUnresolvedCountByUser, getUnresolvedCountByProject, addSuggestion, markSuggestionAsRead, markSuggestionAsResolved, markAllAsReadByProject, deleteSuggestion, addSuggestionsBatch } from "@/lib/repo/projectSuggestions";
 import { requireUserId, readJsonBody, handleRoute } from "../_helpers";
 
 export const runtime = "nodejs";
@@ -20,6 +20,10 @@ export async function GET(req: NextRequest) {
       case "getUnresolvedCountByUser": {
         const userId = sp.get("userId") ?? "";
         return await getUnresolvedCountByUser(userId);
+      }
+      case "getUnresolvedCountByProject": {
+        const projectId = sp.get("projectId") ?? "";
+        return await getUnresolvedCountByProject(projectId);
       }
       default:
         return { error: `Unknown action: ${action}` };

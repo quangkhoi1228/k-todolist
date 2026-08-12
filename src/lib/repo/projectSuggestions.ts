@@ -53,6 +53,20 @@ export async function getUnresolvedCountByUser(userId: string) {
   return rows[0]?.count ?? 0;
 }
 
+export async function getUnresolvedCountByProject(projectId: number | string) {
+  const db = getDb();
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(projectSuggestions)
+    .where(
+      and(
+        eq(projectSuggestions.projectId, Number(projectId)),
+        eq(projectSuggestions.isResolved, false)
+      )
+    );
+  return rows[0]?.count ?? 0;
+}
+
 // ─── Mutations ─────────────────────────────────────────────
 export async function addSuggestion(args: {
   projectId: number | string;

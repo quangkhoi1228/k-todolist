@@ -275,6 +275,14 @@ export function useUnresolvedCountByUser(userId?: string | null) {
   );
 }
 
+export function useUnresolvedCountByProject(projectId?: string | null) {
+  const key = projectId ? `suggestions:count:project:${projectId}` : null;
+  return useData<number>(
+    key,
+    key ? () => apiGet("/suggestions", { action: "getUnresolvedCountByProject", projectId }) : null
+  );
+}
+
 export function useSuggestionMutations() {
   const invalidate = useInvalidate();
   return useMemo(() => ({
