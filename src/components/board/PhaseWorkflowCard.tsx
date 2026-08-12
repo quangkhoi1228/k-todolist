@@ -88,17 +88,17 @@ export const PREINFO_QUESTION_TEMPLATE = (
   const recipients: string[] = [];
   if (presaleName?.trim()) {
     const you = presaleGender === "anh/chị" ? "anh/chị" : presaleGender;
-    recipients.push(`${you} ${presaleName.trim()} (Pre-sale)`);
+    recipients.push(`${you} ${presaleName.trim()}`);
   }
   if (saleName?.trim()) {
     const you = saleGender === "anh/chị" ? "anh/chị" : saleGender;
-    recipients.push(`${you} ${saleName.trim()} (Sale)`);
+    recipients.push(`${you} ${saleName.trim()}`);
   }
-  const greeting = recipients.length > 0 ? `Chào ${recipients.join(" và ")}` : "Chào anh/chị";
+  const greeting = recipients.length > 0 ? `Chào ${recipients.join(", ")} ơi` : "Chào anh/chị";
   const ticketPart = ticketId
     ? ` (https://servicedesk.fci.vn/browse/${ticketId})`
     : "";
-  return `${greeting}, em Khôi PM CDC ạ. Em mới nhận ticket${ticketPart} ạ. Dự án mới triển khai, nhờ anh/chị hỗ trợ em một số thông tin sơ bộ ạ:
+  return `${greeting}, em Khôi PM mới nhận ticket${ticketPart} ạ. Dự án mới triển khai, nhờ anh/chị hỗ trợ em một số thông tin sơ bộ ạ:
 
 - Scope: Hạng mục chính, mục tiêu, yêu cầu bắt buộc.
 - Topology/Hạ tầng: Sơ đồ mạng, kiến trúc và môi trường triển khai.
@@ -126,10 +126,14 @@ export const DEFAULT_FEATURE_TEMPLATE = [
 interface PhaseWorkflowCardProps {
   project: { _id: string; name: string; ticketId?: string | null };
   userId?: string;
-  /** Tên Sale (reporter ISD) — dùng để xưng hô đúng giới tính trong tin nhắn chào */
+  /** Tên Sale (member role "Sale") — dùng để xưng hô đúng giới tính trong tin nhắn chào */
   saleName?: string | null;
-  /** Email Sale (reporter ISD) — nút deep link Teams mở chat 1:1 với đúng người */
+  /** Email Sale (member role "Sale") — nút deep link Teams mở chat 1:1 với đúng người */
   saleEmail?: string | null;
+  /** Tên Pre-sale (member role "Pre-sale") — dùng để xưng hô trong câu hỏi scope */
+  presaleName?: string | null;
+  /** Email Pre-sale (member role "Pre-sale") */
+  presaleMemberEmail?: string | null;
   /** Mô tả/nội dung dự án (notes) — dùng để auto-detect template SoW (migration/security/waf) */
   projectDescription?: string;
   workflow: WorkflowRow | null | undefined;
@@ -169,6 +173,8 @@ export function PhaseWorkflowCard({
   userId,
   saleName,
   saleEmail,
+  presaleName,
+  presaleMemberEmail,
   projectDescription,
   workflow,
   loading,
@@ -260,31 +266,59 @@ export function PhaseWorkflowCard({
     }
   };
 
-  // ─── Thông tin Sale (từ ISD) + xưng hô theo giới tính ───
+  // ─── Thông tin Sale (từ member) + xưng hô theo giới tính ───
   /** Detect giới tính từ tên Việt Nam (giới hạn mẫu thường gặp, không gọi LLM ở client). */
-  const detectGenderByName = (rawName?: string | null): SaleGender => {
-    const name = (rawName || "").trim();
-    if (!name) return "anh/chị";
-    const lower = name.toLowerCase();
+  // ─── Dự đoán giới tính bằng LLM (thay cho pattern hard-code) ───
+  const genderCacheRef = useRef<Record<string, SaleGender>>({});
+  const [saleGender, setSaleGender] = useState<SaleGender>("anh/chị");
+  const [presaleGender, setPresaleGender] = useState<SaleGender>("anh/chị");
 
-    // Quy tắc rõ ràng nhất: "Thị"/"Thi" ở giữa → nữ
-    if (/\bth[ịi]\b/.test(lower) && !/\bth[ịi]ch\b/.test(lower)) return "chị";
-    // Tên đệm rõ giới tính
-    if (/\b(?:văn|hữu|đức|quang|minh|tuấn|hùng|long|nam|khánh|duy|hoàng)\b/.test(lower)) return "anh";
-    if (/\b(?:thị|thu|hồng|ngọc|lan|hương|linh|ngân|trang|thảo|nhung|hằng|phương|mai|oanh|hà)\b/.test(lower)) return "chị";
-    // Tên chính (từ cuối) thường gặp
-    const firstName = (name.split(/\s+/).pop() || "").toLowerCase();
-    if (firstName === "trang" || firstName === "lan" || firstName === "thảo" || firstName === "hương" || firstName === "ngân" || firstName === "nhung" || firstName === "oanh" || firstName === "hồng" || firstName === "mai" || firstName === "thu" || firstName === "linh" || firstName === "ngọc" || firstName === "hà" || firstName === "phương" || firstName === "hằng" || firstName === "minh") return "chị";
-    if (firstName === "hùng" || firstName === "long" || firstName === "nam" || firstName === "tuấn" || firstName === "đức" || firstName === "quang" || firstName === "văn" || firstName === "hữu" || firstName === "duy" || firstName === "khánh" || firstName === "hoàng") return "anh";
-    return "anh/chị";
-  };
-
-  // Lazy init từ saleName (đã có ISD data) + cập nhật khi ISD load muộn
-  const [saleGender, setSaleGender] = useState<SaleGender>(() => detectGenderByName(saleName));
-
+  // Gọi LLM 1 lần cho cả saleName + presaleName, cache kết quả theo tên
   useEffect(() => {
-    setSaleGender(detectGenderByName(saleName));
-  }, [saleName]);
+    const names = [saleName, presaleName]
+      .map((n) => String(n ?? "").trim())
+      .filter((n) => n && !genderCacheRef.current[n]);
+    if (names.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/data/detect-gender", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, names }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const genders: Record<string, SaleGender> = data?.genders || {};
+        if (cancelled) return;
+        for (const n of names) {
+          if (genders[n]) genderCacheRef.current[n] = genders[n];
+        }
+        if (saleName && genderCacheRef.current[String(saleName).trim()]) {
+          setSaleGender(genderCacheRef.current[String(saleName).trim()]);
+        }
+        if (presaleName && genderCacheRef.current[String(presaleName).trim()]) {
+          setPresaleGender(genderCacheRef.current[String(presaleName).trim()]);
+        }
+      } catch (e) {
+        // Lỗi → giữ "anh/chị" mặc định
+        console.error("[GenderDetect] error:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saleName, presaleName]);
+
+  // Pre-sale từ member có thể load sau workflow → cập nhật input khi member đến muộn
+  useEffect(() => {
+    if (!presaleName) return;
+    // Chỉ ghi đè khi user chưa tự nhập (input rỗng hoặc vẫn là giá trị cũ từ initData/member)
+    if (!presale.trim() || presale === workflow?.initData?.presale) {
+      setPresale(presaleName);
+      setPresaleEmail(presaleMemberEmail || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presaleName, presaleMemberEmail]);
 
   const greetMessage = GREET_SALE_TEMPLATE(saleName, saleGender, project.ticketId);
   const greetMessageText = GREET_SALE_TEMPLATE_TEXT(saleName, saleGender, project.ticketId);
@@ -390,21 +424,21 @@ export function PhaseWorkflowCard({
     if (wfId === undefined) return;
     // Reset trạng thái câu hỏi mỗi lần đổi project — tránh giữ text project cũ
     questionTextRef.current = "";
-    if (workflow.initData) {
-      setPresale(workflow.initData.presale || "");
-    }
+    setPresale(workflow.initData?.presale || presaleName || "");
+    setPresaleEmail(workflow.initData?.presaleEmail || presaleMemberEmail || "");
     if (Array.isArray(workflow.kickoffQuestions)) {
       setQuestionText(workflow.kickoffQuestions.join("\n"));
       questionTextRef.current = workflow.kickoffQuestions.join("\n");
     } else if (!questionTextRef.current) {
       // Chưa có câu hỏi nào lưu → fill sẵn template (user có thể sửa).
-      // Xưng hô đúng giới tính detect từ tên Pre-sale + Sale; kèm ticket link nếu có.
-      const presaleName = workflow.initData?.presale || "";
+      // Xưng hô đúng giới tính detect từ tên Pre-sale + Sale (LLM); kèm ticket link nếu có.
+      const presaleFromInit = workflow.initData?.presale || "";
+      const presaleResolved = presaleFromInit || presaleName || "";
       const template = PREINFO_QUESTION_TEMPLATE(
-        presaleName,
+        presaleResolved,
         saleName,
-        detectGenderByName(presaleName),
-        detectGenderByName(saleName),
+        presaleGender,
+        saleGender,
         project.ticketId
       );
       setQuestionText(template);
@@ -432,7 +466,7 @@ export function PhaseWorkflowCard({
       setSowPlan(workflow.sowPlan);
       setSelectedSowTemplateId(workflow.sowPlan.templateId ? String(workflow.sowPlan.templateId) : null);
     }
-  }, [(workflow as any)?._id]);
+  }, [(workflow as any)?._id, saleGender, presaleGender]);
 
   useEffect(() => () => {
     if (taskToastTimer.current) clearTimeout(taskToastTimer.current);
@@ -1232,13 +1266,15 @@ export function PhaseWorkflowCard({
                   };
                   const ext = summarize(workflow?.initData?.externalGroups);
                   const int = summarize(workflow?.initData?.internalGroups);
-                  if (ext.length === 0 && int.length === 0 && !workflow?.initData?.presale) return null;
+                  const presaleInitName = workflow?.initData?.presale || presaleName || "";
+                  const presaleInitEmail = workflow?.initData?.presaleEmail || presaleMemberEmail || "";
+                  if (ext.length === 0 && int.length === 0 && !presaleInitName) return null;
                   return (
                     <div className="ml-[34px] mt-3 rounded-lg bg-muted/50 border border-border/40 p-3 text-sm space-y-1.5">
-                      {workflow?.initData?.presale && (
+                      {presaleInitName && (
                         <p className="flex items-start gap-2 leading-relaxed">
                           <span className="text-primary mt-0.5 shrink-0">•</span>
-                          <span><b className="font-medium">Pre-sale:</b> {workflow.initData.presale}{workflow.initData.presaleEmail ? <span className="text-muted-foreground"> ({workflow.initData.presaleEmail})</span> : null}</span>
+                          <span><b className="font-medium">Pre-sale:</b> {presaleInitName}{presaleInitEmail ? <span className="text-muted-foreground"> ({presaleInitEmail})</span> : null}</span>
                         </p>
                       )}
                       {ext.length > 0 && (

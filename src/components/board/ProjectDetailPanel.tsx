@@ -1040,10 +1040,16 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   // ─── Project Workflow State (init → kick-off) ─────
   const { data: workflow, isLoading: workflowLoading } = useProjectWorkflow(project._id ?? null);
   const wfmx = useProjectWorkflowMutations();
-  // Thông tin Sale (reporter ISD) — dùng cho tin nhắn chào + deep link Teams
+  // Thông tin nhân sự (Sale, Pre-sale) — lấy từ projectMembers thay vì ISD
   const { data: isdData } = useIsdByProject(project._id ?? null);
-  const isdSaleName = isdData?.reporter || isdData?.requester || isdData?.creator || "";
-  const isdSaleEmail = isdData?.reporterEmail || isdData?.requesterEmail || isdData?.creatorEmail || "";
+  const memberSale = (projectMembers || []).find((m: any) => (m.roleName || "").toLowerCase() === "sale");
+  const memberPresale = (projectMembers || []).find((m: any) => (m.roleName || "").toLowerCase() === "pre-sale");
+  // Sale: ưu tiên member role "Sale"; fallback ISD reporter (cho dự án cũ chưa có member Sale)
+  const isdSaleName = memberSale?.name || isdData?.reporter || isdData?.requester || isdData?.creator || "";
+  const isdSaleEmail = memberSale?.email || isdData?.reporterEmail || isdData?.requesterEmail || isdData?.creatorEmail || "";
+  // Pre-sale: từ member role "Pre-sale"
+  const memberPresaleName = memberPresale?.name || "";
+  const memberPresaleEmail = memberPresale?.email || "";
 
   // ─── Suggestions Count (chưa xử lý) — badge trên tab Gợi ý ─────
   const { data: unresolvedSuggestionsCount } = useUnresolvedCountByProject(project._id ?? null);
@@ -3354,6 +3360,8 @@ ${resourceTicketsLinks}
             userId={userId ?? undefined}
             saleName={isdSaleName || undefined}
             saleEmail={isdSaleEmail || undefined}
+            presaleName={memberPresaleName || undefined}
+            presaleMemberEmail={memberPresaleEmail || undefined}
             projectDescription={project.notes ? (() => {
               try {
                 const parsed = JSON.parse(project.notes);
