@@ -22,15 +22,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Thiếu templateId" }, { status: 400 });
       }
       const { getTaskTemplate } = await import("@/lib/repo/taskTemplates");
+      const { expandTemplateItems } = await import("@/lib/repo/taskModules");
       const template = await getTaskTemplate(templateId);
       if (!template) {
         return NextResponse.json({ error: "Không tìm thấy template" }, { status: 404 });
       }
 
+      const expandItems = await expandTemplateItems(userId, template.items ?? []);
       const db = getDb();
       const now = Date.now();
       const createdTasks = [];
-      for (const item of template.items ?? []) {
+      for (const item of expandItems) {
         if (item.isGroup || !item.title) continue;
         const res = await db
           .insert(tasks)
@@ -72,7 +74,7 @@ export async function POST(req: NextRequest) {
     if (action === "importSow") {
       // 1. Tìm template có sẵn khớp category — nếu chưa có thì tạo mới
       let templateId: number | null = null;
-      const existing = await getTaskTemplates(userId);
+      const existing = await getTaskTemplates(null);
       const match = existing.find((t) => t.category === parsed.templateCategory);
       if (match) {
         templateId = Number(match.id);
@@ -82,7 +84,7 @@ export async function POST(req: NextRequest) {
           name: parsed.templateName,
           category: parsed.templateCategory,
           description: parsed.templateDescription,
-          items: parsed.items,
+          items: parsed.items.map(({ pic: _p, ...rest }) => rest) as any,
           triggers: parsed.triggers,
         });
         templateId = Number(created.id);

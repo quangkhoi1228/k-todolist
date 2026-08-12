@@ -54,7 +54,7 @@ export function SowImportDialog({
   const [detecting, setDetecting] = useState(false);
   const [detectedTemplateId, setDetectedTemplateId] = useState<string | null>(null);
 
-  const { data: templates } = useTaskTemplates(userId);
+  const { data: templates } = useTaskTemplates();
   const ttm = useTaskTemplateMutations();
   const tmx = useTaskMutations();
 
@@ -63,7 +63,7 @@ export function SowImportDialog({
     if (!open) return;
     setDetecting(true);
     const text = `${projectName} ${projectDescription ?? ""}`;
-    fetch(`/api/data/task-templates?action=detectTemplateForProject&userId=${encodeURIComponent(userId || "")}&text=${encodeURIComponent(text)}`)
+    fetch(`/api/data/task-templates?action=detectTemplateForProject&text=${encodeURIComponent(text)}`)
       .then((r) => r.json())
       .then((data) => {
         setDetectedTemplateId(data && data.id ? String(data.id) : null);

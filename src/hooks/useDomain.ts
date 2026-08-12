@@ -792,19 +792,16 @@ export function useUploadFile() {
   }, []);
 }
 
-// ─── Task Templates (task list mẫu — render task list theo template) ────────
-export function useTaskTemplates(userId?: string | null, includeInactive = false) {
-  const key = userId ? `task-templates:${userId}:${includeInactive ? "all" : "active"}` : null;
+// ─── Task Templates (task list mẫu — DÙNG CHUNG cho mọi user) ─────────
+export function useTaskTemplates(_userId?: string | null, includeInactive = false) {
+  const key = `task-templates:${includeInactive ? "all" : "active"}`;
   return useData<any[]>(
     key,
-    key
-      ? () =>
-          apiGet("/task-templates", {
-            action: "getTaskTemplates",
-            userId,
-            includeInactive: includeInactive ? "true" : "false",
-          })
-      : null
+    () =>
+      apiGet("/task-templates", {
+        action: "getTaskTemplates",
+        includeInactive: includeInactive ? "true" : "false",
+      })
   );
 }
 
@@ -824,6 +821,36 @@ export function useTaskTemplateMutations() {
     deleteTaskTemplate: async (body: any) => {
       const res = await apiPost("/task-templates", { action: "deleteTaskTemplate", ...body });
       await invalidate(["task-templates"]);
+      return res;
+    },
+  }), [invalidate]);
+}
+
+// ─── Task Modules (module task dùng chung — template tham chiếu) ─────────
+export function useTaskModules(_userId?: string | null) {
+  const key = `task-modules`;
+  return useData<any[]>(
+    key,
+    () => apiGet("/task-modules", { action: "getTaskModules" })
+  );
+}
+
+export function useTaskModuleMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    createTaskModule: async (body: any) => {
+      const res = await apiPost("/task-modules", { action: "createTaskModule", ...body });
+      await invalidate(["task-modules"]);
+      return res;
+    },
+    updateTaskModule: async (body: any) => {
+      const res = await apiPost("/task-modules", { action: "updateTaskModule", ...body });
+      await invalidate(["task-modules"]);
+      return res;
+    },
+    deleteTaskModule: async (body: any) => {
+      const res = await apiPost("/task-modules", { action: "deleteTaskModule", ...body });
+      await invalidate(["task-modules"]);
       return res;
     },
   }), [invalidate]);
@@ -854,6 +881,21 @@ export function useProjectSummaryMutations() {
     },
     deleteSummary: async (body: { id: string }) => {
       const res = await apiPost("/project-summaries", { action: "deleteSummary", ...body });
+      await invalidate(["summaries:"]);
+      return res;
+    },
+    setScope: async (body: { projectId: string; scope: Record<string, unknown>; userId?: string }) => {
+      const res = await apiPost("/project-summaries", { action: "setScope", ...body });
+      await invalidate(["summaries:"]);
+      return res;
+    },
+    setNextSteps: async (body: { projectId: string; steps: Array<{ text: string; done?: boolean; source?: string }>; userId?: string; replace?: boolean }) => {
+      const res = await apiPost("/project-summaries", { action: "setNextSteps", ...body });
+      await invalidate(["summaries:"]);
+      return res;
+    },
+    toggleNextStep: async (body: { projectId: string; index: number; done: boolean }) => {
+      const res = await apiPost("/project-summaries", { action: "toggleNextStep", ...body });
       await invalidate(["summaries:"]);
       return res;
     },

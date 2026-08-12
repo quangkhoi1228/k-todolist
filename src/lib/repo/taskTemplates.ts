@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { taskTemplates } from "../db";
 
@@ -6,7 +6,6 @@ export interface TaskTemplateItem {
   phase: string;
   title: string;
   details?: string;
-  pic?: string;
   support?: string;
   manday?: number;
   startOffsetDays?: number;
@@ -25,16 +24,13 @@ export function mapTemplate(t: any): any {
 }
 
 // ─── Queries ───────────────────────────────────────────────
-export async function getTaskTemplates(userId: string, includeInactive = false) {
+// Template dùng chung cho mọi user — không lọc theo userId.
+export async function getTaskTemplates(_userId?: string | null, includeInactive = false) {
   const db = getDb();
   const rows = await db
     .select()
     .from(taskTemplates)
-    .where(
-      includeInactive
-        ? eq(taskTemplates.userId, userId)
-        : and(eq(taskTemplates.userId, userId), eq(taskTemplates.isActive, true))
-    )
+    .where(includeInactive ? undefined : eq(taskTemplates.isActive, true))
     .orderBy(asc(taskTemplates.createdAt));
   return rows.map(mapTemplate);
 }
@@ -49,12 +45,12 @@ export async function getTaskTemplate(id: number | string) {
 }
 
 // Auto-detect template phù hợp từ mô tả dự án (project name/notes/ticket summary)
-export async function detectTemplateForProject(userId: string, text: string) {
+export async function detectTemplateForProject(_userId: string, text: string) {
   const db = getDb();
   const templates = await db
     .select()
     .from(taskTemplates)
-    .where(and(eq(taskTemplates.userId, userId), eq(taskTemplates.isActive, true)));
+    .where(eq(taskTemplates.isActive, true));
   const lower = (text || "").toLowerCase();
   let best: any = null;
   let bestScore = 0;
@@ -79,7 +75,7 @@ export async function detectTemplateForProject(userId: string, text: string) {
 
 // ─── Mutations ─────────────────────────────────────────────
 export async function createTaskTemplate(args: {
-  userId: string;
+  userId?: string | null;
   name: string;
   category?: string;
   description?: string;
@@ -91,7 +87,7 @@ export async function createTaskTemplate(args: {
   const res = await db
     .insert(taskTemplates)
     .values({
-      userId: args.userId,
+      userId: args.userId ?? null,
       name: args.name,
       category: args.category ?? null,
       description: args.description ?? null,
@@ -132,11 +128,11 @@ export async function updateTaskTemplate(
   return res[0] ? mapTemplate(res[0]) : null;
 }
 
-export async function deleteTaskTemplate(id: number | string, userId: string) {
+export async function deleteTaskTemplate(id: number | string, _userId?: string) {
   const db = getDb();
   const res = await db
     .delete(taskTemplates)
-    .where(and(eq(taskTemplates.id, Number(id)), eq(taskTemplates.userId, userId)))
+    .where(eq(taskTemplates.id, Number(id)))
     .returning();
   return res.length > 0;
 }

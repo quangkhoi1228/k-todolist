@@ -7,13 +7,13 @@ export interface ParsedSow {
   templateCategory: string;
   templateDescription: string;
   triggers: string[];
-  items: TaskTemplateItem[];
+  items: SowItem[];
   rawRows: number;
   skippedRows: number;
 }
 
 // item mở rộng với metadata parse
-export type SowItem = TaskTemplateItem & { _parentNo?: string; isGroup?: boolean };
+export type SowItem = TaskTemplateItem & { _parentNo?: string; isGroup?: boolean; pic?: string };
 
 // ─── Auto-detect template type from text ──────────────────
 const DETECT_RULES: {
@@ -184,8 +184,8 @@ export function parseSowWorkbook(buffer: ArrayBuffer | Buffer, filename?: string
   ].join(" ");
   const detected = detectTemplateType(allText);
 
-  // 5. Trả về items sạch (bỏ _parentNo)
-  const cleanItems: TaskTemplateItem[] = items.map(({ _parentNo, isGroup, ...rest }) => ({ ...rest, isGroup }));
+  // 5. Trả về items sạch (bỏ _parentNo) — pic chỉ dùng cho task thật, không lưu vào template
+  const cleanItems: SowItem[] = items.map(({ _parentNo, isGroup, ...rest }) => ({ ...rest, isGroup }));
 
   return {
     templateName: detected.name,
