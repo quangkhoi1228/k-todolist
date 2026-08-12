@@ -7,7 +7,17 @@
 import { parseIntent, generateAgentResponse } from "./intent-parser";
 import type { ParsedIntent } from "./intent-parser";
 
-export type LLMAction = "create_project" | "lookup_ticket" | "view_project" | "goto_project" | "chat" | "add_personnel" | "create_meeting" | "update_sow";
+export type LLMAction = "create_project" | "lookup_ticket" | "view_project" | "goto_project" | "chat" | "add_personnel" | "create_meeting" | "update_sow" | "add_task";
+
+export interface LLMTaskItem {
+  title: string;
+  detail?: string;
+  priority?: "low" | "normal" | "high";
+  pic?: string;
+  support?: string;
+  dueDate?: string;
+  manday?: number;
+}
 
 export interface LLMResult {
   action: LLMAction;
@@ -15,6 +25,7 @@ export interface LLMResult {
   projectQuery?: string | null;
   reply: string;
   confidence: number;
+  tasks?: LLMTaskItem[] | null;
 }
 
 export async function analyzeWithLLM(
@@ -41,12 +52,32 @@ export async function analyzeWithLLM(
     const data: LLMResult = await res.json();
 
     // Validate response
-    const validActions = ["create_project", "lookup_ticket", "view_project", "goto_project", "chat", "add_personnel", "create_meeting", "update_sow"];
+    const validActions = ["create_project", "lookup_ticket", "view_project", "goto_project", "chat", "add_personnel", "create_meeting", "update_sow", "add_task"];
     if (!data.action || !validActions.includes(data.action)) {
       return fallbackParse(text);
     }
 
-    return data;
+    const tasks = Array.isArray(data.tasks) && data.tasks.length > 0
+      ? data.tasks
+          .map((t: any) => (typeof t === "string" ? { title: t } : t))
+          .filter((t: any) => t && typeof t.title === "string" && t.title.trim())
+          .map((t: any) => ({
+            title: t.title.trim(),
+            detail: typeof t.detail === "string" ? t.detail.trim() : undefined,
+            priority: ["low", "normal", "high"].includes(t.priority) ? t.priority : undefined,
+            pic: typeof t.pic === "string" && t.pic.trim() ? t.pic.trim() : undefined,
+            support: typeof t.support === "string" && t.support.trim() ? t.support.trim() : undefined,
+            dueDate: typeof t.dueDate === "string" && t.dueDate.trim() ? t.dueDate.trim() : undefined,
+            manday: typeof t.manday === "number" && t.manday > 0 ? t.manday : undefined,
+          }))
+      : undefined;
+
+    // add_task phải kèm danh sách task — thiếu thì coi như chat
+    if (data.action === "add_task" && !tasks) {
+      return { ...fallbackParse(text), action: "chat" as const };
+    }
+
+    return { ...data, tasks };
   } catch (err) {
     console.warn("[LLM] Network error, fallback to rule-based:", err);
     return fallbackParse(text);
@@ -75,5 +106,14 @@ function fallbackParse(text: string): LLMResult {
     projectQuery,
     reply: generateAgentResponse(intent),
     confidence: intent.confidence,
+    tasks: intent.action === "add_task" && intent.tasks && intent.tasks.length > 0
+      ? intent.tasks
+          .filter((t) => t && t.title && t.title.trim())
+          .map((t) => ({
+            title: t.title.trim(),
+            detail: t.detail?.trim() || undefined,
+            priority: (["low", "normal", "high"].includes(t.priority ?? "") ? t.priority : undefined) as LLMTaskItem["priority"],
+          }))
+      : undefined,
   };
 }

@@ -6,10 +6,11 @@
  */
 
 export interface ParsedIntent {
-  action: "create_project" | "lookup_ticket" | "add_personnel" | "create_meeting" | "update_sow" | "view_project" | "goto_project" | "chat";
+  action: "create_project" | "lookup_ticket" | "add_personnel" | "create_meeting" | "update_sow" | "view_project" | "goto_project" | "add_task" | "chat";
   confidence: number; // 0-1
   ticketId?: string;
   entities: Record<string, string>;
+  tasks?: Array<{ title: string; detail?: string; priority?: string }>;
   original: string;
 }
 
@@ -88,6 +89,17 @@ const KEYWORDS: Record<string, { action: ParsedIntent["action"]; weight: number;
       /(?:chuy(?:ê|e)n|den|mo|tim)\s+.*(?:du an|project)/i,
     ],
   },
+  add_task: {
+    action: "add_task",
+    weight: 2.2,
+    patterns: [
+      /(?:tao|them|them moi|tach|chia|note? lai|ghi lai|rut ra|sinh)\s+(?:\d+\s+)?(?:tasks|cong viec|viec|nhiem vu|hu(?:y|u)?dong|deployment tasks|to do|todo|task)\b/i,
+      /them\s+(?:nhieu\s+)?task/i,
+      /sinh\s+task/i,
+      /chia\s+nho\s+(?:cong viec|task)/i,
+      /tao\s+to[- ]?do/i,
+    ],
+  },
 };
 
 // ─── Ticket ID Extractor ─────────────────────────────────
@@ -104,7 +116,14 @@ function extractTicketId(text: string): string | undefined {
 // ─── Main Parser ─────────────────────────────────────────
 
 export function parseIntent(text: string): ParsedIntent {
+  // Bản gốc (giữ dấu) dùng để trích xuất title/nội dung task
   const trimmed = text.trim();
+  // Bản normalize bỏ dấu dùng cho pattern match (regex không dấu)
+  const normText = trimmed
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "d");
   let bestAction: ParsedIntent["action"] = "chat";
   let bestScore = 0;
   const entities: Record<string, string> = {};
@@ -115,7 +134,7 @@ export function parseIntent(text: string): ParsedIntent {
   // Neu co ticket ID + khong co action cu the -> lookup
   for (const [, rule] of Object.entries(KEYWORDS)) {
     for (const pattern of rule.patterns) {
-      if (pattern.test(trimmed)) {
+      if (pattern.test(normText)) {
         const score = rule.weight;
         if (score > bestScore) {
           bestScore = score;
@@ -135,22 +154,93 @@ export function parseIntent(text: string): ParsedIntent {
   // Fallback: neu co ca ticket + create -> create_project
   if (bestAction === "lookup_ticket" && ticketId) {
     // Kiem tra lai xem co tu "tao" khong
-    if (/tao|mo|khoi tao|bat dau|tiep nhan/i.test(trimmed)) {
+    if (/tao|mo|khoi tao|bat dau|tiep nhan/i.test(normText)) {
       bestAction = "create_project";
       bestScore = 2;
     }
   }
 
   // Trich xuat entities bo sung
-  if (/nhan su|personnel|nguoi|ai|ten/i.test(trimmed)) {
+  if (/nhan su|personnel|nguoi|ai|ten/i.test(normText)) {
     // Try to extract names
-    const nameMatch = trimmed.match(/(?:la |ten |them |add )\s*([A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+)+)/);
+    const nameMatch = normText.match(/(?:la |ten |them |add )\s*([A-Za-z]+(?:\s+[A-Za-z]+)+)/);
     if (nameMatch) entities["person_name"] = nameMatch[1].trim();
   }
 
-  if (/meeting|hop|kickoff/i.test(trimmed)) {
-    const dateMatch = trimmed.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+  if (/meeting|hop|kickoff/i.test(normText)) {
+    const dateMatch = normText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
     if (dateMatch) entities["meeting_date"] = `${dateMatch[1]}/${dateMatch[2]}`;
+  }
+
+  // ─── add_task: tách từng dòng thành 1 task ──────────────
+  let tasks: ParsedIntent["tasks"];
+  if (bestAction === "add_task" || /(?:task|cong viec|nhiem vu|huy dong)/i.test(normText)) {
+    tasks = [];
+    for (const line of trimmed.split(/\r?\n/)) {
+      // Bỏ bullet/số prefix, giữ nguyên dấu cho title
+      const t = line.replace(/^[\s>•\-*•·◦▪\d\.\)]+/, "").trim();
+      if (!t) continue;
+      // Bản không-dấu cho test prefix (regex không dấu), title vẫn giữ bản gốc
+      const tNorm = t
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/g, "d")
+        .replace(/Đ/g, "d");
+      // Dòng lệnh mở đầu: "Tạo task:" / "Thêm 2 task:" — nếu có nội dung sau ":" thì dùng làm title task đầu
+      const cmdBody = tNorm.match(/^(?:tao|them|them moi|tach|chia|note? lai|ghi lai|rut ra|sinh)\s+(?:\d+\s+)?(?:task|tasks|cong viec|viec|nhiem vu|hu(?:y|u)?dong|deployment tasks|to do|todo|hu(?:y|u) dong|deployment)\s*(?:cho du an|cho project)?\s*[: ]+\s*(.+)$/i);
+      if (cmdBody) {
+        const rest = t.slice(t.indexOf(":") + 1).trim();
+        if (!rest) continue; // không có nội dung → bỏ dòng lệnh
+        // Nội dung sau ":" có thể là nhiều task (phẩy/và) — xử lý như body
+        const commaParts2 = rest.split(/[,;]+(?:\s*(?:và|va)\s*)?/).map((p) => p.trim()).filter(Boolean);
+        if (commaParts2.length > 1 && rest.length < 300) {
+          for (const part of commaParts2) tasks.push({ title: part });
+          continue;
+        }
+        const andMatch2 = rest.match(/^(.*?)\s+(?:và|va)\s+(.+)$/);
+        if (andMatch2 && rest.length < 200) {
+          tasks.push({ title: andMatch2[1].trim() });
+          tasks.push({ title: andMatch2[2].trim() });
+          continue;
+        }
+        tasks.push({ title: rest });
+        continue;
+      }
+      if (/^(?:task|cong viec|nhiem vu|hu(?:y|u) dong|deployment|to do|todo)\s*[: ]*\s*$/i.test(t)) {
+        continue; // header
+      }
+      // Bỏ cụm lệnh đầu dòng (vd "Thêm 2 task: A, B" → "A, B")
+      const body = t
+        .replace(/^(?:tao|them|them moi|tach|chia|note? lai|ghi lai|rut ra|sinh)\s+(?:\d+\s+)?(?:task|tasks|cong viec|viec|nhiem vu|hu(?:y|u)?dong|deployment tasks|to do|todo|hu(?:y|u) dong|deployment)\s*(?:cho du an|cho project)?\s*[: ]+\s*/i, "")
+        .trim();
+      if (!body) continue;
+      // Nếu body có dấu phẩy và không phải "A, B và C" trong detail → tách từng task
+      const commaParts = body.split(/[,;]+(?:\s*(?:và|va)\s*)?/).map((p) => p.trim()).filter(Boolean);
+      if (commaParts.length > 1 && body.length < 300) {
+        for (const part of commaParts) {
+          tasks.push({ title: part });
+        }
+        continue;
+      }
+      // Tách "A và B" (2 task gần nhau)
+      const andMatch = body.match(/^(.*?)\s+(?:và|va)\s+(.+)$/);
+      if (andMatch && body.length < 200) {
+        tasks.push({ title: andMatch[1].trim() });
+        tasks.push({ title: andMatch[2].trim() });
+        continue;
+      }
+      // Tách detail nếu có ":" xuất hiện lần đầu (vd "Task: chi tiết")
+      const sep = body.indexOf(":");
+      if (sep > 0 && sep < 120) {
+        const head = body.slice(0, sep).trim();
+        if (head.length <= 80) {
+          tasks.push({ title: head, detail: body.slice(sep + 1).trim() || undefined });
+          continue;
+        }
+      }
+      tasks.push({ title: body });
+    }
+    if (tasks.length === 0) tasks = undefined;
   }
 
   return {
@@ -158,6 +248,7 @@ export function parseIntent(text: string): ParsedIntent {
     confidence: bestScore / 2, // normalize to 0-1
     ticketId,
     entities,
+    tasks,
     original: trimmed,
   };
 }
@@ -189,6 +280,12 @@ export function generateAgentResponse(intent: ParsedIntent, context?: { projectN
 
     case "view_project":
       return `Dự án **${context?.projectName || "hiện tại"}** đang được quản lý.`;
+
+    case "add_task":
+      if (intent.tasks && intent.tasks.length > 0) {
+        return `Tôi sẽ tạo **${intent.tasks.length} task** cho dự án. Kiểm tra lại trước khi xác nhận nhé.`;
+      }
+      return `Bạn muốn tạo task cho dự án nào? Kể tên dự án và nội dung task (mỗi dòng 1 task).`;
 
     case "goto_project":
       return `Đang tìm dự án **${intent.ticketId || intent.original.replace(/chuyển\s*(?:sang|đến|qua|tới|đi)\s+|đến\s+|tìm\s+/i, "").trim() || "..."}**.`;

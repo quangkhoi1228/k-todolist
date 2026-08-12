@@ -10,9 +10,9 @@ import {
   Users
 } from "lucide-react";
 import TextareaAutosize from "react-textarea-autosize";
-import { usePmSessions, useProjects, usePmSessionByProject, usePmGeneralSession, usePmMessages, usePmSessionById, usePmMutations, useSuggestionMutations } from "../../../src/hooks/useDomain";
+import { usePmSessions, useProjects, usePmSessionByProject, usePmGeneralSession, usePmMessages, usePmSessionById, usePmMutations, useSuggestionMutations, useTaskMutations, useTasksByProject } from "../../../src/hooks/useDomain";
 import { analyzeWithLLM } from "../lib/llm-client";
-import type { LLMAction } from "../lib/llm-client";
+import type { LLMAction, LLMTaskItem } from "../lib/llm-client";
 import { NotificationBadge } from "./NotificationBadge";
 import type { DeployTask, WorkflowData } from "../lib/types";
 
@@ -22,6 +22,7 @@ interface PendingAction {
   ticketId: string | null;
   projectQuery: string | null;
   reply: string;
+  tasks?: LLMTaskItem[];
 }
 
 /**
@@ -103,13 +104,22 @@ const POPUP_ACTION_LABELS: Record<string, string> = {
   add_personnel: "Thêm nhân sự",
   create_meeting: "Tạo meeting kickoff",
   update_sow: "Cập nhật SOW",
+  add_task: "Tạo task cho dự án",
 };
 
 function popupActionDescription(pa: PendingAction): string {
   const label = POPUP_ACTION_LABELS[pa.action] || pa.action;
-  if (pa.ticketId) return `Bạn sắp thực hiện: ${label} #${pa.ticketId}.`;
-  if (pa.projectQuery) return `Bạn sắp thực hiện: ${label}: "${pa.projectQuery}".`;
-  return `Bạn sắp thực hiện: ${label}.`;
+  let base = "";
+  if (pa.ticketId) base = `Bạn sắp thực hiện: ${label} #${pa.ticketId}.`;
+  else if (pa.projectQuery) base = `Bạn sắp thực hiện: ${label}: "${pa.projectQuery}".`;
+  else base = `Bạn sắp thực hiện: ${label}.`;
+  if (pa.action === "add_task" && Array.isArray(pa.tasks) && pa.tasks.length > 0) {
+    const list = pa.tasks
+      .map((t) => `• ${t.title}${t.priority === "high" ? " (ưu tiên cao)" : ""}${t.dueDate ? ` — hạn ${t.dueDate}` : ""}`)
+      .join("\n");
+    base += `\n\nSẽ tạo **${pa.tasks.length} task**:\n${list}`;
+  }
+  return base;
 }
 
 function StatusIcon({ status, isAgent }: { status?: MessageStatus; isAgent: boolean }) {
@@ -129,6 +139,83 @@ const SUGGESTIONS = [
   { label: "Thêm nhân sự", icon: "👥" },
   { label: "Tạo meeting kickoff", icon: "📅" },
 ];
+
+/**
+ * Tạo nhiều task cho 1 dự án qua API /api/data/tasks (action=createTask).
+ * Trả về summary text tiếng Việt cho agent reply.
+ */
+async function createTasksForProject(
+  userId: string,
+  projectId: number | string,
+  items: LLMTaskItem[],
+  opts?: { lastOrder?: number; existingTitles?: Set<string> }
+): Promise<{ created: number; skipped: number; message: string }> {
+  const created: Array<{ title: string; id: number }> = [];
+  let skipped = 0;
+  let order = opts?.lastOrder ?? 0;
+
+  for (const item of items) {
+    const title = (item.title || "").trim();
+    if (!title) continue;
+
+    // Trùng tên với task đang có → bỏ qua, tránh duplicate
+    const dupKey = title.toLowerCase();
+    if (opts?.existingTitles?.has(dupKey)) {
+      skipped++;
+      continue;
+    }
+    opts?.existingTitles?.add(dupKey);
+
+    let startDate: number | null = null;
+    let endDate: number | null = null;
+    if (item.dueDate && /\d{4}-\d{2}-\d{2}/.test(item.dueDate)) {
+      const ms = new Date(item.dueDate).getTime();
+      if (!isNaN(ms)) {
+        startDate = ms;
+        endDate = ms + 8 * 3600 * 1000;
+      }
+    }
+
+    try {
+      const res = await fetch("/api/data/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createTask",
+          userId,
+          title,
+          estimatedTime: item.manday ?? 0,
+          notes: item.detail || null,
+          status: "todo",
+          project: projectId,
+          order: ++order,
+          pic: item.pic || null,
+          support: item.support || null,
+          priority: item.priority || "normal",
+          startDate,
+          endDate,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data && typeof data._id !== "undefined") {
+        created.push({ title, id: Number(data._id) });
+      } else {
+        skipped++;
+      }
+    } catch (err) {
+      console.error("[createTasksForProject] error:", err);
+      skipped++;
+    }
+  }
+
+  const createdTitles = created.map((c) => `- ${c.title}`).join("\n");
+  const message =
+    created.length > 0
+      ? `Đã tạo **${created.length} task** cho dự án:\n${createdTitles}` +
+        (skipped > 0 ? `\n\n${skipped} task bị bỏ qua (trùng tên hoặc lỗi).` : "")
+      : `Không tạo được task nào.`;
+  return { created: created.length, skipped, message };
+}
 
 export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizablePanel?: boolean; onClose?: () => void } = {}) {
   const router = useRouter();
@@ -250,6 +337,9 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
   const createCustomProjectMutation = pmx.createCustomProject;
   const smx = useSuggestionMutations();
   const addSuggestionsBatch = smx.addSuggestionsBatch;
+  const tmx = useTaskMutations();
+  const createTask = tmx.createTask;
+  const { data: projectTasks } = useTasksByProject(contextProjectId ?? null);
   const pendingRef = useRef<PendingMessage[]>([]);
 
   /** Keep pendingRef in sync with pendingMessages */
@@ -422,7 +512,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     if (createFlowStep !== "idle") return null;
 
     const llmResult = await analyzeWithLLM(text, [...chatHistory.slice(-6)], contextProject);
-    const { action, ticketId, projectQuery, reply } = llmResult;
+    const { action, ticketId, projectQuery, reply, tasks } = llmResult;
 
     // ── Auto-handle actions that match the current context ──────
     // If already viewing a project and user asks to view it, no confirmation needed
@@ -433,8 +523,9 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     const needsConfirmation: LLMAction[] = [
       "lookup_ticket",
       "add_personnel", "create_meeting", "update_sow",
+      "add_task",
     ];
-    if (needsConfirmation.includes(action)) return { text, action, ticketId, projectQuery: projectQuery ?? null, reply };
+    if (needsConfirmation.includes(action)) return { text, action, ticketId, projectQuery: projectQuery ?? null, reply, tasks: tasks ?? undefined };
 
     // create_project — handle directly in handleSend, no session needed
     if (action === "create_project") return { text, action, ticketId, projectQuery: projectQuery ?? null, reply };
@@ -511,6 +602,48 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     }
 
     await addMessage({ sessionId, role: "user", content: text });
+
+    // ── add_task: tạo task cho dự án (context project / session project) ──
+    if (action === "add_task") {
+      const items = (pa.tasks ?? []).filter((t) => t && t.title && t.title.trim());
+      const target = (() => {
+        try {
+          const wf = session?.workflowData ? JSON.parse(session.workflowData) : null;
+          if (wf?.linkedProjectId) return { projectId: Number(wf.linkedProjectId), name: session?.projectName || "dự án" };
+        } catch {}
+        return contextProject ? { projectId: contextProject._id as string, name: contextProject.name } : null;
+      })();
+
+      if (!target) {
+        await addMessage({
+          sessionId, role: "agent",
+          content: "Tôi cần biết task này thuộc **dự án nào**. Hãy mở trang dự án (hoặc bảo tôi \"đến dự án ...\") rồi thử lại.",
+        });
+        return {};
+      }
+      if (items.length === 0) {
+        await addMessage({
+          sessionId, role: "agent",
+          content: `Bạn muốn tạo task cho dự án **${target.name}**? Hãy mô tả nội dung task (mỗi dòng 1 task, có thể kèm mức ưu tiên / người phụ trách / hạn chót).`,
+        });
+        return {};
+      }
+
+      try {
+        const existingTitles = new Set(
+          (projectTasks ?? []).map((t: any) => String(t.title || "").toLowerCase()).filter(Boolean)
+        );
+        const lastOrder = (projectTasks ?? []).reduce((max: number, t: any) => Math.max(max, Number(t.order) || 0), 0);
+        const result = await createTasksForProject(userId!, target.projectId, items, { lastOrder, existingTitles });
+        await addMessage({ sessionId, role: "agent", content: result.message });
+      } catch (err) {
+        await addMessage({
+          sessionId, role: "agent",
+          content: `Lỗi khi tạo task cho dự án **${target.name}**: ${err instanceof Error ? err.message : "Lỗi không xác định"}`,
+        });
+      }
+      return {};
+    }
 
     if (action === "lookup_ticket") {
       const ticketToLookup = ticketId || session?.ticketId || contextProject?.ticketId || null;
