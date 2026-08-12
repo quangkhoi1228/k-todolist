@@ -224,7 +224,16 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
       });
 
       // Do NOT close the user's Chrome when the automation finishes.
-      const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
+      // Giữ browser thật (có newBrowserCDPSession cho helper mở tab nền) —
+      // chỉ chặn close() để không đóng Chrome của user.
+      const fakeBrowser = new Proxy(browser, {
+        get(target, prop, receiver) {
+          if (prop === "close") {
+            return async () => { log("CDP mode: giu Chrome that mo (khong dong)."); };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      }) as Browser;
 
       return { browser: fakeBrowser, context };
     } catch (cdpErr) {
@@ -499,6 +508,81 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
   });
 
   return { browser, context };
+}
+
+// ─── Helper: mở tab nền (tránh popup khi sync nền) ──────────
+// Giống openTeamsTabInBackground bên teams-automator: CDP mode mở tab bằng
+// `Target.createTarget background:true` — không focus window, không popup.
+// Khi sync chạy nền (HEADLESS=true / SYNC_BACKGROUND=1) cũng thu nhỏ window.
+export interface OpenZaloTabOptions {
+  /** Mở tab như tab nền (không focus). Mặc định true khi CDP connect. */
+  background?: boolean;
+  /** Thu nhỏ window chứa tab sau khi mở. Mặc định theo HEADLESS/SYNC_BACKGROUND. */
+  minimize?: boolean;
+  /** URL khởi tạo cho tab (mặc định about:blank — navigateToZalo sẽ goto). */
+  url?: string;
+}
+
+export async function openZaloTabInBackground(
+  browser: Browser,
+  context: BrowserContext,
+  opts: OpenZaloTabOptions = {}
+): Promise<Page> {
+  const isCdp = process.env.SYNC_CDP_CONNECTED === "1" || process.env.USE_CDP === "1";
+  const isHeadless = process.env.HEADLESS === "true" || process.env.HEADLESS === "1";
+  const background = opts.background ?? isCdp;
+  const minimize = opts.minimize ?? (isHeadless || process.env.SYNC_BACKGROUND === "1");
+
+  // CDP mode: tạo tab BACKGROUND qua protocol — không focus window hiện tại.
+  if (isCdp && background) {
+    try {
+      const session = await (browser as any).newBrowserCDPSession();
+      const existingPages = new Set(context.pages());
+      await session.send("Target.createTarget", {
+        url: opts.url || "about:blank",
+        background: true,
+      });
+      await session.detach().catch(() => {});
+      const deadline = Date.now() + 8_000;
+      let created: Page | null = null;
+      while (Date.now() < deadline) {
+        const page = context.pages().find((p) => !existingPages.has(p));
+        if (page) { created = page; break; }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (created) {
+        log("CDP: da mo tab Zalo BACKGROUND (khong hien cua so popup).");
+        return created;
+      }
+      log("CDP: tao tab Zalo background that bai (page chua xuat hien) — chuyen sang newPage().");
+    } catch (e) {
+      log(`CDP: tao tab Zalo background loi (${String(e).slice(0, 100)}) — fallback newPage().`);
+    }
+  }
+
+  const page = await context.newPage();
+  if (minimize) await minimizeZaloCdpWindow(browser, page).catch(() => {});
+  return page;
+}
+
+/** Thu nhỏ cửa sổ Chrome CDP chứa page (không focus → không nhảy popup). */
+export async function minimizeZaloCdpWindow(browser: Browser, page: Page): Promise<boolean> {
+  if (process.env.SYNC_CDP_CONNECTED !== "1") return false;
+  try {
+    const session = await (browser as any).newBrowserCDPSession();
+    const targetId = (page as any)._target?._targetId;
+    const { windowId } = await session.send("Browser.getWindowForTarget", targetId ? { targetId } : {});
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "minimized" },
+    });
+    await session.detach().catch(() => {});
+    log("CDP: da thu nho cua so Chrome (minimized) de khong lam phien man hinh.");
+    return true;
+  } catch (e) {
+    log(`CDP: thu nho window loi (${String(e).slice(0, 100)}) — bo qua.`);
+    return false;
+  }
 }
 
 // ─── Login / Session ────────────────────────────────────────

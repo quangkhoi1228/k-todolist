@@ -356,6 +356,11 @@ export function useProjectWorkflowMutations() {
       await invalidate(["tasks", "tasksByProject"]);
       return res;
     },
+    generateSowTasks: async (body: any) => {
+      const res = await apiPost("/project-workflows", { action: "generateSowTasks", ...body });
+      await invalidate(["tasks", "tasksByProject"]);
+      return res;
+    },
   }), [invalidate]);
 }
 
@@ -694,6 +699,11 @@ export function useMemberMutations() {
   return useMemo(() => ({
     addMember: async (body: any) => {
       const res = await apiPost("/members", { action: "addMember", ...body });
+      await invalidate(["members:", "roles"]);
+      return res;
+    },
+    addOrUpdateMember: async (body: any) => {
+      const res = await apiPost("/members", { action: "addOrUpdateMember", ...body });
       await invalidate(["members:", "roles"]);
       return res;
     },

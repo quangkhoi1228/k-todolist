@@ -3,7 +3,7 @@
  * Used by the PM Agent UI to provide an autocomplete dropdown.
  */
 
-import { DEFAULT_CONFIG, createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches } from "../lib/teams-automator";
+import { DEFAULT_CONFIG, createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, openTeamsTabInBackground } from "../lib/teams-automator";
 
 async function main() {
   const config = {
@@ -21,9 +21,9 @@ async function main() {
   let page = context.pages()[0];
   if (isCdp) {
     const teamsPage = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
-    page = teamsPage || (context.pages()[0] || await context.newPage());
+    page = teamsPage || (context.pages()[0] || await openTeamsTabInBackground(browser, context));
   } else {
-    page = context.pages()[0] || await context.newPage();
+    page = context.pages()[0] || await openTeamsTabInBackground(browser, context);
   }
   await applyStealthPatches(page);
 

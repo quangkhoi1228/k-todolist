@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
-import { createStealthContext, navigateToTeams, DEFAULT_CONFIG } from "../lib/teams-automator";
+import { createStealthContext, navigateToTeams, DEFAULT_CONFIG, openTeamsTabInBackground } from "../lib/teams-automator";
 
 // Health check dùng CHUNG profile chính (.teams-session/chrome-profile) — cùng
 // profile mà user đăng nhập Teams qua UI "Đăng nhập". TRƯỚC ĐÂY dùng bản copy
@@ -107,7 +107,18 @@ async function checkHealth() {
     useRealChrome: true,
   });
 
-  const page = context.pages()[0] || await context.newPage();
+  // CDP mode: ưu tiên tab Teams có sẵn; nếu chưa có → mở tab NỀN (không popup)
+  const pagesBefore = new Set(context.pages());
+  let page = context.pages()[0] || await openTeamsTabInBackground(browser, context);
+  let openedTab: import("playwright").Page | null = null;
+  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+    const teamsPage = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
+    if (teamsPage) page = teamsPage;
+  }
+  // Chỉ track tab KHÔNG tồn tại lúc script bắt đầu (tab mới script mở).
+  if (process.env.SYNC_CDP_CONNECTED === "1" && !pagesBefore.has(page)) {
+    openedTab = page;
+  }
 
   try {
     await navigateToTeams(page, { ...DEFAULT_CONFIG, headless: isHeadless });
@@ -146,9 +157,10 @@ async function checkHealth() {
       console.log(JSON.stringify({ ok: false, status: "error", error: msg }));
     }
   } finally {
-    // CDP: chỉ đóng tab mới, không đóng Chrome thật. Persistent: đóng browser.
+    // CDP: chỉ đóng tab do script mở (background hoặc newPage), không đóng
+    // Chrome thật và không đóng tab Teams Zalo sẵn có của user.
     if (process.env.SYNC_CDP_CONNECTED === "1") {
-      await page.close().catch(() => {});
+      if (openedTab) await openedTab.close().catch(() => {});
     } else {
       await browser.close().catch(() => {});
     }

@@ -4,11 +4,16 @@
  * Gửi tin nhắn tới một chat Teams (nhóm hoặc 1:1) với cơ chế verify an toàn:
  * - CHỈ gửi khi xác minh được chat đang mở đúng tên mục tiêu
  * - Dry run: nhập tin rồi xoá, KHÔNG gửi
+ * - Compose-only: mở chat + soạn sẵn tin nhắn, giữ nguyên để user tự gửi
+ *   (dùng cho luồng "mở deep link" từ UI — không tự động gửi)
  * - Mặc định yêu cầu xác nhận trước khi gửi thật
  *
  * Usage:
  *   # Dry run (soạn tin, không gửi):
  *   npx tsx agents/pm/scripts/teams-send.ts --chat "Mai Thuận An" --message "Xin chào" --dry-run
+ *
+ *   # Compose-only (mở chat + soạn sẵn, giữ browser mở để user tự gửi):
+ *   npx tsx agents/pm/scripts/teams-send.ts --chat "Nhóm Dự án X" --message "Xin chào" --compose --keep-open
  *
  *   # Gửi thật (cần --yes):
  *   npx tsx agents/pm/scripts/teams-send.ts --chat "Mai Thuận An" --message "Xin chào" --yes
@@ -20,6 +25,7 @@ import {
   navigateToTeams,
   applyStealthPatches,
   sendTeamsMessage,
+  openTeamsTabInBackground,
   DEFAULT_CONFIG,
   log,
   type AutomatorConfig,
@@ -90,6 +96,7 @@ function parseArgs(): {
   chatName: string;
   message: string;
   dryRun: boolean;
+  compose: boolean;
   confirm: boolean;
   force: boolean;
   headless: boolean;
@@ -106,6 +113,7 @@ function parseArgs(): {
     chatName: getArg("--chat") || process.env.TEAMS_TARGET_CHAT || "",
     message: getArg("--message") || process.env.TEAMS_MESSAGE || "",
     dryRun: args.includes("--dry-run"),
+    compose: args.includes("--compose"),
     confirm: !args.includes("--yes"),
     force: args.includes("--force"),
     headless: args.includes("--headless"),
@@ -114,7 +122,7 @@ function parseArgs(): {
 }
 
 async function main() {
-  const { chatName, message, dryRun, confirm, headless, keepOpen } = parseArgs();
+  const { chatName, message, dryRun, compose, confirm, headless, keepOpen } = parseArgs();
 
   if (!chatName) {
     console.error("Error: --chat <name> is required (ten chat Teams can gui den).");
@@ -128,10 +136,10 @@ async function main() {
   console.log("========== TEAMS SEND ==========");
   console.log(`  Chat target : ${chatName}`);
   console.log(`  Message     : ${message.slice(0, 120)}${message.length > 120 ? "..." : ""}`);
-  console.log(`  Mode        : ${dryRun ? "DRY RUN (khong gui)" : "LIVE"}`);
+  console.log(`  Mode        : ${compose ? "COMPOSE ONLY (soan san, khong gui)" : dryRun ? "DRY RUN (khong gui)" : "LIVE"}`);
 
   // Confirm before real send
-  if (!dryRun && confirm) {
+  if (!dryRun && !compose && confirm) {
     console.log("\n⚠️  CHU Y: Ban sap gui tin nhan THAT toi chat Teams:");
     console.log(`    "${chatName}"`);
     console.log(`    Noi dung: "${message.slice(0, 80)}..."`);
@@ -154,8 +162,17 @@ async function main() {
   await waitForSyncToFinish();
 
   const { browser, context } = await createStealthContext(config);
-  const page = context.pages()[0] || (await context.newPage());
+  // Chọn tab Teams NẾU CÓ (sync-project-chats cách làm): tab đang mở sẵn
+  // trong Chrome CDP thường có sidebar chat đã load. Fallback: tab đầu tiên.
+  let page = context.pages()[0];
+  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+    const teamsPg = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
+    page = teamsPg || (await openTeamsTabInBackground(browser, context, { minimize: config.headless }));
+  }
   await applyStealthPatches(page);
+
+  // Track kết quả tổng — dùng trong finally (CDP force-exit cần biết exit code)
+  let exitedOk = false;
 
   try {
     await navigateToTeams(page, config);
@@ -168,6 +185,7 @@ async function main() {
       chatName,
       message,
       dryRun,
+      composeOnly: compose,
       screenshots: true,
     });
 
@@ -176,18 +194,29 @@ async function main() {
     console.log(JSON.stringify(result));
 
     if (!result.ok) {
-      process.exit(1);
+      exitedOk = false;
+      // Để JSON {"ok":false,...} được print trước khi exit — dùng finally
+      // force-exit với exit code đúng.
+      throw new Error("send failed");
     }
-    if (result.dryRun) {
+    exitedOk = true;
+    if (result.composeOnly) {
+      log("COMPOSE ONLY hoan tat: tin nhan da soan san, user tu kiem tra va gui.");
+    } else if (result.dryRun) {
       log("DRY RUN hoan tat: khong co tin nhan nao duoc gui.");
     } else {
       log("Tin nhan da gui thanh cong.");
     }
   } finally {
     releaseSendLock();
-    try {
-      await context.storageState({ path: config.sessionDir + "/state.json" });
-    } catch { /* */ }
+    // CDP mode: Chrome thật đã giữ session tự nhiên — KHÔNG gọi storageState
+    // (gọi qua CDP có thể kẹt khi Chrome đang bận với tab vừa mở). Chỉ lưu
+    // session khi dùng persistent profile (mở Chrome riêng).
+    if (process.env.SYNC_CDP_CONNECTED !== "1") {
+      try {
+        await context.storageState({ path: config.sessionDir + "/state.json" });
+      } catch { /* */ }
+    }
 
     if (!config.headless && config.keepOpen) {
       log("Giu browser mo.");
@@ -202,6 +231,13 @@ async function main() {
     }, 30_000);
     await browser.close().catch(() => {});
     clearTimeout(closeTimeout);
+    // CDP mode: browser proxy close() là no-op (giữ Chrome thật) → websocket
+    // CDP vẫn mở → event loop không rỗng → Node KHÔNG tự exit. Phải force-exit
+    // ngay cuối cùng, nếu không API route chờ exit sẽ treo vô hạn.
+    if (process.env.SYNC_CDP_CONNECTED === "1") {
+      log("CDP mode: exit script ngay (khong dong Chrome that).");
+      process.exit(exitedOk ? 0 : 1);
+    }
   }
 }
 

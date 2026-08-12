@@ -6,6 +6,7 @@ import {
   updateWorkflowPhase,
   updateWorkflowData,
   generateTrackingTasks,
+  generateSowTasks,
 } from "@/lib/repo/projectWorkflows";
 import { updateProject } from "@/lib/repo/projects";
 import { requireUserId, readJsonBody, handleRoute } from "../_helpers";
@@ -54,6 +55,15 @@ export async function POST(req: NextRequest) {
           userId: body.userId,
           items: body.items ?? [],
           prefix: body.prefix,
+        });
+        return { ok: true, tasks: created };
+      }
+      case "generateSowTasks": {
+        requireUserId(body);
+        const created = await generateSowTasks({
+          projectId: body.projectId,
+          userId: body.userId,
+          items: body.items ?? [],
         });
         return { ok: true, tasks: created };
       }

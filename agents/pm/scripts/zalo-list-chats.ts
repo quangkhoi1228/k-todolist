@@ -8,7 +8,7 @@
 import { chromium } from "playwright";
 import path from "path";
 import fs from "fs";
-import { DEFAULT_ZALO_CONFIG, createZaloStealthContext, waitForZaloLogin, navigateToZalo, applyStealthPatches } from "../lib/zalo-automator";
+import { DEFAULT_ZALO_CONFIG, createZaloStealthContext, waitForZaloLogin, navigateToZalo, applyStealthPatches, openZaloTabInBackground } from "../lib/zalo-automator";
 
 async function main() {
   const config = {
@@ -26,9 +26,9 @@ async function main() {
   let page = context.pages()[0];
   if (isCdp) {
     const zaloPage = context.pages().find((p) => p.url().includes("zalo.me"));
-    page = zaloPage || (context.pages()[0] || await context.newPage());
+    page = zaloPage || (context.pages()[0] || await openZaloTabInBackground(browser, context));
   } else {
-    page = context.pages()[0] || await context.newPage();
+    page = context.pages()[0] || await openZaloTabInBackground(browser, context);
   }
   await applyStealthPatches(page);
 

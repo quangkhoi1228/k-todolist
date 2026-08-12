@@ -1,5 +1,5 @@
-import { createStealthContext as createTeamsContext, waitForLogin as waitTeamsLogin, navigateToTeams, DEFAULT_CONFIG as DEFAULT_TEAMS_CONFIG } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createStealthContext as createTeamsContext, waitForLogin as waitTeamsLogin, navigateToTeams, DEFAULT_CONFIG as DEFAULT_TEAMS_CONFIG, openTeamsTabInBackground } from "../lib/teams-automator";
+import { createZaloStealthContext, waitForZaloLogin, DEFAULT_ZALO_CONFIG, openZaloTabInBackground } from "../lib/zalo-automator";
 import dotenv from "dotenv";
 import path from "path";
 import { Page } from "playwright";
@@ -206,7 +206,7 @@ async function run() {
       let tPage = teamsCtx.pages()[0];
       if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
         const teamsPage = teamsCtx.pages().find((p) => p.url().includes("teams.microsoft.com"));
-        tPage = teamsPage || await teamsCtx.newPage();
+        tPage = teamsPage || await openTeamsTabInBackground(tBrowser, teamsCtx);
       }
 
       // Teams Classic (v2/) đã bị khai tử 01/07/2025 — goto thẳng "teams.microsoft.com"
@@ -227,7 +227,13 @@ async function run() {
         console.log(`Saved ${teamsGroups.length} Teams groups to Postgres.`);
       }
       
-      await tBrowser.close();
+      // CDP mode: đóng đúng tab riêng script mở (background), giữ Chrome thật.
+      if (process.env.SYNC_CDP_CONNECTED === "1" && tPage && teamsCtx.pages().length > 1) {
+        await tPage.close().catch(() => {});
+        console.log("[GroupSync] Da dong tab Teams rieng (CDP).");
+      } else {
+        await tBrowser.close();
+      }
     } catch (e) {
       console.error("Teams sync failed:", e);
     }
@@ -241,7 +247,7 @@ async function run() {
       let zPage = zaloCtx.pages()[0];
       if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
         const zaloPg = zaloCtx.pages().find((p) => p.url().includes("zalo.me"));
-        zPage = zaloPg || await zaloCtx.newPage();
+        zPage = zaloPg || await openZaloTabInBackground(zBrowser, zaloCtx);
       }
       
       await zPage.goto("https://chat.zalo.me", { waitUntil: "domcontentloaded" });

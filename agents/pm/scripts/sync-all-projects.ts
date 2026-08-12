@@ -1,5 +1,5 @@
-import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages, openTeamsTabInBackground } from "../lib/teams-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG, openZaloTabInBackground } from "../lib/zalo-automator";
 import * as path from "path";
 import * as fs from "fs";
 import dotenv from "dotenv";
@@ -292,7 +292,7 @@ async function main() {
     let teamsPage = teamsContext.pages()[0];
     if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
       const teamsPg = teamsContext.pages().find((p) => p.url().includes("teams.microsoft.com"));
-      teamsPage = teamsPg || await teamsContext.newPage();
+      teamsPage = teamsPg || await openTeamsTabInBackground(teamsBrowser, teamsContext);
     }
     await applyStealthPatches(teamsPage);
 
@@ -339,7 +339,7 @@ async function main() {
     let zaloPage = zaloContext.pages()[0];
     if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
       const zaloPg = zaloContext.pages().find((p) => p.url().includes("zalo.me"));
-      zaloPage = zaloPg || await zaloContext.newPage();
+      zaloPage = zaloPg || await openZaloTabInBackground(zaloBrowser, zaloContext);
     }
     await applyZaloStealthPatches(zaloPage);
 

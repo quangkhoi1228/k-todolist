@@ -452,6 +452,12 @@ export const projectWorkflows = pgTable(
     kickoffQuestions: jsonb("kickoffQuestions"),
     // Link task tracking đã tự sinh
     taskIds: jsonb("taskIds"),
+    // SoW planning (phase sow): template đề xuất + task list output
+    // { templateId, templateName, templateCategory, items: TaskTemplateItem[], taskIds: number[] }
+    sowPlan: jsonb("sowPlan"),
+    // LLM phân tích yêu cầu sơ bộ: scope + next actions + tính năng multi-choice đã chọn
+    // { scope: string[], nextActions: string[], featureSuggestions: string[], selectedFeatures: string[], source: "llm"|"fallback" }
+    preinfoAnalysis: jsonb("preinfoAnalysis"),
     updatedAt: real("updatedAt").notNull(),
     createdAt: real("createdAt").notNull(),
   },

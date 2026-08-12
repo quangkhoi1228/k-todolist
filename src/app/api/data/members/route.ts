@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getMembersByProject, addMember, updateMember, removeMember } from "@/lib/repo/projectMembers";
+import { getMembersByProject, addMember, addOrUpdateMember, updateMember, removeMember } from "@/lib/repo/projectMembers";
 import { requireUserId, readJsonBody, handleRoute } from "../_helpers";
 
 export const runtime = "nodejs";
@@ -27,6 +27,9 @@ export async function POST(req: NextRequest) {
       case "addMember":
         requireUserId(body);
         return await addMember(body);
+      case "addOrUpdateMember":
+        requireUserId(body);
+        return await addOrUpdateMember(body);
       case "updateMember":
         return await updateMember(body.id, body);
       case "removeMember":

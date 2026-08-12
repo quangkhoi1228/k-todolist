@@ -1,5 +1,5 @@
-import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages } from "../lib/teams-automator";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createStealthContext, waitForLogin, navigateToTeams, applyStealthPatches, incrementalScrollAndExtract, DEFAULT_CONFIG, getChatUrl, cleanTeamMessages, openTeamsTabInBackground } from "../lib/teams-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, navigateToZaloGroup, applyStealthPatches as applyZaloStealthPatches, scrollZaloChatContainer, collectZaloMessagesFromPage, finalizeZaloMessages, ensureZaloTabActive, getGroupUrl, verifyZaloOpenChat, DEFAULT_ZALO_CONFIG, openZaloTabInBackground } from "../lib/zalo-automator";
 import dotenv from "dotenv";
 import * as path from "path";
 import * as fs from "fs";
@@ -316,8 +316,8 @@ async function syncTeams(syncName: string) {
   // Mỗi script con giữ 1 TAB RIÊNG trong CDP mode (queue song song):
   // 2 script dùng chung 1 tab sẽ giẫm chân nhau. Không CDP → dùng tab có sẵn.
   let page = shouldUseOwnTab()
-    ? await context.newPage()
-    : (context.pages()[0] || await context.newPage());
+    ? await openTeamsTabInBackground(browser, context)
+    : (context.pages()[0] || await openTeamsTabInBackground(browser, context));
 
   try {
     await navigateToTeams(page, config);
@@ -469,8 +469,8 @@ async function syncZalo(syncName: string) {
   const { browser, context } = await createZaloStealthContext(config);
   // Mỗi script con giữ 1 TAB RIÊNG trong CDP mode (queue song song).
   let page = shouldUseOwnTab()
-    ? await context.newPage()
-    : (context.pages()[0] || await context.newPage());
+    ? await openZaloTabInBackground(browser, context)
+    : (context.pages()[0] || await openZaloTabInBackground(browser, context));
   if (!shouldUseOwnTab() && (process.env.USE_CDP === "1" || process.env.USE_CDP === "true")) {
     const zaloPage = context.pages().find((p) => p.url().includes("zalo.me"));
     page = zaloPage || page;

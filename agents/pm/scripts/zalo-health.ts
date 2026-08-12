@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
-import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, DEFAULT_ZALO_CONFIG } from "../lib/zalo-automator";
+import { createZaloStealthContext, waitForZaloLogin, navigateToZalo, DEFAULT_ZALO_CONFIG, openZaloTabInBackground } from "../lib/zalo-automator";
 
 // Health check dùng CHUNG profile chính (.zalo-session/chrome-profile) — cùng
 // profile mà user đăng nhập Zalo qua UI "Đăng nhập". TRƯỚC ĐÂY dùng bản copy
@@ -109,7 +109,7 @@ async function checkHealth() {
     useRealChrome: true,
   });
 
-  const page = context.pages()[0] || await context.newPage();
+  const page = context.pages()[0] || await openZaloTabInBackground(browser, context);
 
   try {
     await navigateToZalo(page, { ...DEFAULT_ZALO_CONFIG, headless: isHeadless });

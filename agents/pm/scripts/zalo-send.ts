@@ -23,6 +23,7 @@ import {
   navigateToZalo,
   applyStealthPatches,
   sendZaloMessage,
+  openZaloTabInBackground,
   DEFAULT_ZALO_CONFIG,
   log,
   type ZaloAutomatorConfig,
@@ -145,7 +146,7 @@ async function main() {
   await waitForSyncToFinish();
 
   const { browser, context } = await createZaloStealthContext(config);
-  const page = context.pages()[0] || (await context.newPage());
+  const page = context.pages()[0] || (await openZaloTabInBackground(browser, context, { minimize: config.headless }));
   await applyStealthPatches(page);
 
   try {

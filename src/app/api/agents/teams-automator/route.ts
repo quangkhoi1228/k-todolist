@@ -126,6 +126,29 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Search person theo email (Teams) ────────────────
+    if (action === "search_person") {
+      const exec = require("util").promisify(require("child_process").exec);
+      const scriptPath = path.join(process.cwd(), "agents/pm/scripts/teams-search-person.ts");
+      const query = (body.query || "").trim();
+      if (!query) {
+        return NextResponse.json({ ok: false, error: "query (email/ten) is required" }, { status: 400 });
+      }
+      const headless = body.headless !== false;
+
+      // Pass full env — dùng CDP nếu Chrome thật đang mở, fallback persistent profile
+      const env = { ...process.env, USE_CDP: process.env.USE_CDP ?? "1", CDP_PORT: process.env.CDP_PORT ?? "9222", TEAMS_SEARCH_QUERY: query };
+      try {
+        const headlessFlag = headless ? "--headless" : "";
+        const { stdout } = await exec(`npx tsx "${scriptPath}" ${headlessFlag}`, { env, maxBuffer: 1024 * 1024 * 5, timeout: 90_000 });
+        const match = stdout.match(/\{"ok":.*\}/);
+        if (match) return NextResponse.json(JSON.parse(match[0]));
+        return NextResponse.json({ ok: false, error: "Invalid output from search script", stdout });
+      } catch (err: any) {
+        return NextResponse.json({ ok: false, error: err.message, stdout: err.stdout, stderr: err.stderr });
+      }
+    }
+
     // ── List Chats ──────────────────────────────────
     if (action === "list_chats") {
       const exec = require("util").promisify(require("child_process").exec);

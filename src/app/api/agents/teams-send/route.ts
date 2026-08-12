@@ -4,10 +4,13 @@
  * Gửi tin nhắn tới một chat Teams (nhóm hoặc 1:1) với cơ chế verify an toàn:
  * - CHỈ gửi khi xác minh được chat đang mở đúng tên mục tiêu
  * - `dryRun: true` — soạn tin nhưng KHÔNG gửi (xoá ngay)
+ * - `action: "compose"` — mở chat + soạn sẵn tin nhắn, KHÔNG gửi, giữ Chrome mở
+ *   để user tự kiểm tra (deep-link style) — trả về ngay khi đã soạn xong
  * - Luôn mở browser headfull khi gửi thật để user quan sát được
  *
  * Actions:
  *   { action: "send", chatName, message, dryRun?, headless? } — gửi tin nhắn
+ *   { action: "compose", chatName, message } — mở chat + soạn sẵn, không gửi
  *   { action: "status" } — check if a send process is running
  *   { action: "health" } — check if Teams session is valid
  */
@@ -86,11 +89,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Send message ────────────────────────────────
-    if (action === "send") {
+    // ── Send message / Compose-only (mở chat + soạn sẵn, không gửi) ──
+    if (action === "send" || action === "compose") {
       const chatName = body.chatName as string | undefined;
       const message = body.message as string | undefined;
       const dryRun = body.dryRun === true;
+      const compose = action === "compose";
       const headless = body.headless === true; // default headfull so user sees the send
 
       // Validate
@@ -125,12 +129,25 @@ export async function POST(req: NextRequest) {
       const scriptPath = path.join(process.cwd(), "agents/pm/scripts/teams-send.ts");
 
       const args: string[] = [scriptPath, "--chat", chatName, "--message", message];
-      if (dryRun) args.push("--dry-run");
-      if (!dryRun) args.push("--yes"); // CLI requires --yes for real send
-      if (headless) args.push("--headless");
+      if (compose) {
+        // Compose-only: soạn sẵn, không gửi. CDP mode (Chrome thật) tự giữ tab
+        // mở sẵn — KHÔNG dùng --keep-open vì nó treo process vô hạn (API route
+        // chờ exit sẽ không bao giờ trả response).
+        args.push("--compose");
+        args.push("--headless");
+      } else {
+        if (dryRun) args.push("--dry-run");
+        if (!dryRun) args.push("--yes"); // CLI requires --yes for real send
+        if (headless) args.push("--headless");
+      }
 
       const env: Record<string, string | undefined> = {
         ...process.env,
+        // Bật CDP: nếu Chrome thật đang chạy (CDP 9222) thì dùng luôn, fallback
+        // persistent profile. Không set → script mở Chrome riêng trùng profile,
+        // crash "Teams profile đang bị Chrome khác dùng".
+        USE_CDP: process.env.USE_CDP ?? "1",
+        CDP_PORT: process.env.CDP_PORT ?? "9222",
       };
 
       // Wait for the actual send result

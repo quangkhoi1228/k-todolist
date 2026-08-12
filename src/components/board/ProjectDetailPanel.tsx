@@ -3354,6 +3354,15 @@ ${resourceTicketsLinks}
             userId={userId ?? undefined}
             saleName={isdSaleName || undefined}
             saleEmail={isdSaleEmail || undefined}
+            projectDescription={project.notes ? (() => {
+              try {
+                const parsed = JSON.parse(project.notes);
+                if (parsed && typeof parsed === "object" && parsed.ticketId) {
+                  return `${parsed.summary || ""} ${parsed.requester || ""} ${parsed.description || ""}`.trim();
+                }
+              } catch { /* not json */ }
+              return project.notes;
+            })() : undefined}
             workflow={workflow}
             loading={workflowLoading}
             onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
@@ -3363,6 +3372,9 @@ ${resourceTicketsLinks}
             onGenerateTasks={(items, prefix) =>
               wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
             }
+            onGenerateSowTasks={(items) =>
+              wfmx.generateSowTasks({ projectId: project._id, userId, items })
+            }
             onSwitchTab={(t) => handleTabChange(t as any)}
             fetchChatLists={(platforms) =>
               fetchChats(platforms?.[0] as any).then(() => ({
@@ -3371,6 +3383,25 @@ ${resourceTicketsLinks}
               }))
             }
             onSaveGroups={handleSaveWorkflowGroups}
+            onAddMember={async (args) => {
+              // Tìm role "Pre-sale" của user để gán roleId (nếu có)
+              const presaleRole = (projectRolesList || []).find(
+                (r: any) => String(r.name || "").toLowerCase() === "pre-sale"
+              );
+              // Upsert (không duplicate) — member presale đã tồn tại thì cập nhật lại
+              return mmx.addOrUpdateMember({
+                projectId: args.projectId,
+                userId: args.userId,
+                name: args.name,
+                email: args.email,
+                roleId: presaleRole?._id || undefined,
+                roleName: "Pre-sale",
+                source: args.source || "teams-search",
+              });
+            }}
+            projectTasks={projectTasks}
+            projectChats={projectChats}
+            projectGroups={activeTeamsGroups}
           />
         ) : tab === "emails" ? (
           /* Emails Tab */

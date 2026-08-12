@@ -53,6 +53,55 @@ export async function addMember(args: {
   return mapMember(res[0]);
 }
 
+/**
+ * Thêm member nếu chưa tồn tại (cùng project + roleName + source + name/email),
+ * ngược lại cập nhật thông tin mới nhất — tránh duplicate khi lưu preinfo nhiều lần.
+ */
+export async function addOrUpdateMember(args: {
+  projectId: number | string;
+  userId: string;
+  name: string;
+  email?: string;
+  roleId?: number | string;
+  roleName: string;
+  source: string;
+  permissions?: RoleCapability[];
+}) {
+  const db = getDb();
+  const projectId = Number(args.projectId);
+  const email = args.email?.trim() || undefined;
+  const name = args.name.trim();
+
+  const existing = await db
+    .select()
+    .from(projectMembers)
+    .where(eq(projectMembers.projectId, projectId));
+
+  // Match member cùng project: trùng role + source và (trùng name hoặc email)
+  const same = existing.find((m) => {
+    if (String(m.roleName || "").toLowerCase() !== args.roleName.toLowerCase()) return false;
+    if ((m.source || "") !== args.source) return false;
+    const sameName = m.name?.trim().toLowerCase() === name.toLowerCase();
+    const sameEmail =
+      email !== undefined &&
+      m.email !== null &&
+      String(m.email).trim().toLowerCase() === email.toLowerCase();
+    return sameName || sameEmail;
+  });
+
+  if (same) {
+    const patch: any = { name };
+    if (email !== undefined) patch.email = email;
+    await db
+      .update(projectMembers)
+      .set(patch)
+      .where(eq(projectMembers.id, same.id));
+    return mapMember({ ...same, ...patch });
+  }
+
+  return addMember(args);
+}
+
 export async function updateMember(id: number | string, updates: {
   name?: string;
   email?: string;

@@ -326,7 +326,16 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
       });
 
       // Do NOT close the user's Chrome when the automation finishes.
-      const fakeBrowser = { close: async () => { log("CDP mode: giu Chrome that mo (khong dong)."); } } as Browser;
+      // Giữ browser thật (có newBrowserCDPSession cho helper mở tab nền) —
+      // chỉ chặn close() để không đóng Chrome của user.
+      const fakeBrowser = new Proxy(browser, {
+        get(target, prop, receiver) {
+          if (prop === "close") {
+            return async () => { log("CDP mode: giu Chrome that mo (khong dong)."); };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      }) as Browser;
 
       return { browser: fakeBrowser, context };
     } catch (cdpErr) {
@@ -634,6 +643,87 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
   return { browser, context };
 }
 
+// ─── Helper: tab nền + thu nhỏ window (tránh popup khi sync nền) ──
+// Teams chặn Playwright headless (navigator.webdriver) nên sync LUÔN phải
+// dùng Chrome thật qua CDP hoặc persistent profile. Với CDP:
+//  - Tab Teams mới mở bằng CDP `Target.createTarget background:true` →
+//    KHÔNG focus window → không bật cửa sổ popup lên màn hình.
+//  - Nếu cửa sổ Chrome CDP đang hiển thị, thu nhỏ (minimized) bằng
+//    `Browser.setWindowBounds` khi sync nền → user không bị làm phiền.
+export interface OpenTeamsTabOptions {
+  /** Mở tab như tab nền (không focus). Mặc định true khi CDP connect. */
+  background?: boolean;
+  /** Thu nhỏ window chứa tab sau khi mở. Mặc định theo HEADLESS/SYNC_BACKGROUND. */
+  minimize?: boolean;
+  /** URL khởi tạo cho tab (mặc định about:blank — navigateToTeams sẽ goto). */
+  url?: string;
+}
+
+export async function openTeamsTabInBackground(
+  browser: Browser,
+  context: BrowserContext,
+  opts: OpenTeamsTabOptions = {}
+): Promise<Page> {
+  const isCdp = process.env.SYNC_CDP_CONNECTED === "1" || process.env.USE_CDP === "1";
+  const isHeadless = process.env.HEADLESS === "true" || process.env.HEADLESS === "1";
+  const background = opts.background ?? isCdp;
+  const minimize = opts.minimize ?? (isHeadless || process.env.SYNC_BACKGROUND === "1");
+
+  // CDP mode: tạo tab BACKGROUND qua protocol — không focus window hiện tại.
+  if (isCdp && background) {
+    try {
+      const session = await (browser as any).newBrowserCDPSession();
+      const existingPages = new Set(context.pages());
+      const { targetId } = await session.send("Target.createTarget", {
+        url: opts.url || "about:blank",
+        background: true,
+      });
+      await session.detach().catch(() => {});
+      // Poll cho tới khi page mới xuất hiện trong context (Playwright sync qua discovery)
+      const deadline = Date.now() + 8_000;
+      let created: Page | null = null;
+      while (Date.now() < deadline) {
+        const page = context.pages().find((p) => !existingPages.has(p));
+        if (page) { created = page; break; }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (created) {
+        log("CDP: da mo tab Teams BACKGROUND (khong hien cua so popup).");
+        // Tab background đã không hiện cửa sổ — không cần minimize nữa.
+        return created;
+      }
+      log("CDP: tao tab background that bai (page chua xuat hien) — chuyen sang newPage().");
+    } catch (e) {
+      log(`CDP: tao tab background loi (${String(e).slice(0, 100)}) — fallback newPage().`);
+    }
+  }
+
+  const page = await context.newPage();
+  if (minimize) await minimizeCdpWindow(browser, page).catch(() => {});
+  return page;
+}
+
+/** Thu nhỏ cửa sổ Chrome CDP chứa page (không focus → không nhảy popup). */
+export async function minimizeCdpWindow(browser: Browser, page: Page): Promise<boolean> {
+  if (process.env.SYNC_CDP_CONNECTED !== "1") return false;
+  try {
+    const session = await (browser as any).newBrowserCDPSession();
+    // Lấy targetId của page qua internal (không dùng title match — có thể trùng)
+    const targetId = (page as any)._target?._targetId;
+    const { windowId } = await session.send("Browser.getWindowForTarget", targetId ? { targetId } : {});
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "minimized" },
+    });
+    await session.detach().catch(() => {});
+    log("CDP: da thu nho cua so Chrome (minimized) de khong lam phien man hinh.");
+    return true;
+  } catch (e) {
+    log(`CDP: thu nho window loi (${String(e).slice(0, 100)}) — bo qua.`);
+    return false;
+  }
+}
+
 /**
  * Wait for Teams login to complete by watching URL.
  * Returns true if login was needed and completed.
@@ -714,12 +804,16 @@ export async function navigateToTeams(
   // otherwise we lose the current sidebar state and force a full app reload.
   if (current.includes("teams.microsoft.com") || current.includes("teams.live.com")) {
     log(`Da o Teams (${current.slice(0, 60)}), khong navigate lai.`);
+    // Dù đã ở Teams, tab có thể đang ở view khác (Calendar/Calls/...).
+    // Click vào Chat view để sidebar chat hiển thị — nếu đã ở Chat thì bỏ qua.
+    await switchToChatView(page);
     await page.waitForTimeout(2_000);
     return;
   }
   // Always go to homepage — v2 SPA loads reliably from there
   log("Dang mo Teams homepage...");
   await page.goto("https://teams.microsoft.com", { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await switchToChatView(page);
   // Teams v2 SPA render chậm — tab mới lạnh (sync song song) cần tới ~15-20s
   // để render sidebar chat. Chờ CHAT ITEMS thật xuất hiện (list-item / nhiều
   // treeitem) — `[role="tree"]` xuất hiện sớm khi app còn loading, không đủ.
@@ -745,7 +839,50 @@ export async function navigateToTeams(
   }
   await page.waitForTimeout(500);
   log(`URL: ${page.url()}`);
-  log(`URL: ${page.url()}`);
+}
+
+/**
+ * Chuyển tab Teams sang Chat view (nếu đang ở Calendar/Calls/Teams view khác).
+ * Teams v2: nút Chat trong app bar có aria-label "Chat (Ctrl+2)" — click để
+ * sidebar chat (danh sách hội thoại) hiện ra. Nếu đã ở Chat view thì bỏ qua.
+ */
+export async function switchToChatView(page: Page): Promise<boolean> {
+  try {
+    const clicked = await page.evaluate(() => {
+      const appBarButtons = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-tid^="app-bar-item"], [role="button"], button')
+      );
+      const chatBtn = appBarButtons.find((el) => {
+        const aria = (el.getAttribute("aria-label") || "").trim();
+        return /^chat(\s*\(|$)/i.test(aria);
+      });
+      if (!chatBtn) return false;
+      const pressed = chatBtn.getAttribute("aria-pressed");
+      if (pressed === "true") return false; // đã ở Chat view
+      (chatBtn as HTMLElement).click();
+      return true;
+    });
+    if (clicked) {
+      log("Da chuyen sang Chat view trong Teams.");
+      // Chờ sidebar chat thực sự render sau khi click (SPA chuyển view)
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const ok = await page.evaluate(() =>
+          document.querySelectorAll('[data-testid="list-item"]').length > 0 ||
+          document.querySelectorAll('[role="treeitem"]').length > 5
+        ).catch(() => false);
+        if (ok) break;
+        await page.waitForTimeout(500);
+      }
+      await page.waitForTimeout(800);
+      return true;
+    }
+    log("switchToChatView: khong tim thay nut Chat (page khong phai Teams app bar?).");
+    return false;
+  } catch (e) {
+    log(`switchToChatView loi: ${String(e).slice(0, 100)}`);
+    return false;
+  }
 }
 
 /**
@@ -2513,10 +2650,151 @@ export async function verifyOpenChatTeams(
   return { verified: true, headerName };
 }
 
+// ─── Search person theo email (Teams v2) ────────────────────
+export interface TeamsPersonSearchResult {
+  ok: boolean;
+  error?: string;
+  /** Nếu tìm được: tên hiển thị từ kết quả search */
+  name?: string;
+  /** Nếu tìm được: email hiển thị trong kết quả */
+  email?: string;
+  /** Tên chi tiết từng kết quả trả về (kể cả không khớp chính xác) */
+  suggestions?: Array<{ name: string; email?: string; alias?: string; raw: string }>;
+}
+
+/**
+ * Tìm người trong Teams theo email (hoặc tên/alias) qua ô search.
+ *
+ * Cơ chế (đã có sẵn trong navigateToChatInSidebar/trySearchChat, verify trên
+ * Chrome thật 07/08): bấm search entry → gõ query → đọc các suggestion
+ * `AUTOSUGGEST_SUGGESTION_*` có aria-label "Person <tên> (<alias>) <org>".
+ * Riêng email → hiển thị rõ ràng trong item nên không cần mở profile card.
+ *
+ * KHÔNG clone profile: dùng createStealthContext chuẩn (CDP nếu Chrome thật
+ * đang mở, fallback persistent profile `.teams-session/chrome-profile`).
+ */
+export async function searchTeamsPerson(
+  page: Page,
+  query: string
+): Promise<TeamsPersonSearchResult> {
+  const q = query.trim();
+  if (!q) return { ok: false, error: "query is required" };
+
+  try {
+    // Trường hợp panel search đã mở sẵn (từ lần chạy trước / user tự mở): input
+    // AUTOSUGGEST_INPUT hiển thị, không cần bấm search-entry nữa.
+    const openInput = page.locator('[data-tid="AUTOSUGGEST_INPUT"]').first();
+    const openInputVisible = await openInput.isVisible({ timeout: 1_500 }).catch(() => false);
+    if (openInputVisible) {
+      await openInput.click();
+      await openInput.fill(q);
+    } else {
+      const searchTrigger = page.locator(
+        '[data-tid="search-entry"], input[placeholder*="Search"], input[placeholder*="Tìm kiếm"], ' +
+        '[data-tid="app-bar-item-search"], button[aria-label*="Search"], button[aria-label*="Tìm kiếm"]'
+      ).first();
+      const visible = await searchTrigger.isVisible({ timeout: 3_000 }).catch(() => false);
+      if (!visible) {
+        log("Search person: khong thay o search Teams.");
+        return { ok: false, error: "Không thấy ô search Teams." };
+      }
+      await searchTrigger.click();
+      await page.waitForTimeout(1_200);
+
+      const searchInput = page.locator(
+        '[data-tid="AUTOSUGGEST_INPUT"], input[placeholder*="Search"], input[placeholder*="Tìm kiếm"], ' +
+        'input[role="searchbox"]'
+      ).first();
+      const inputVisible = await searchInput.isVisible({ timeout: 3_000 }).catch(() => false);
+      if (!inputVisible) {
+        log("Search person: khong thay input search.");
+        return { ok: false, error: "Không thấy ô nhập search." };
+      }
+      await searchInput.click();
+      await searchInput.fill(q);
+    }
+    await page.waitForTimeout(2_800);
+
+    // Đọc suggestion hiển thị (person + group + "see more") — ưu tiên Person.
+    const suggestions: TeamsPersonSearchResult["suggestions"] = [];
+    const top = await page.evaluate(() => {
+      const items = Array.from(
+        document.querySelectorAll(
+          '[data-tid^="AUTOSUGGEST_SUGGESTION_TOPHITS"], [data-tid^="AUTOSUGGEST_SUGGESTION_PEOPLE"], [role="option"], [data-tid^="AUTOSUGGEST_SUGGESTION_"]'
+        )
+      );
+      return items
+        .map((el) => {
+          const aria = (el as HTMLElement).getAttribute?.("aria-label") || "";
+          const text = ((el as HTMLElement).textContent || "").trim().replace(/\s+/g, " ").slice(0, 300);
+          return { aria, text, tid: el.getAttribute("data-tid") || "" };
+        })
+        .filter((x) => x.text.length > 0 && !/see more messages|send email|call |open profile|open chat/i.test(x.text));
+    });
+    for (const t of top) {
+      const isPerson = t.aria.toLowerCase().includes("person") || t.tid.includes("PEOPLE");
+      if (!isPerson) continue;
+      // Ưu tiên aria-label chuẩn của Teams: "Person <tên> (<alias>) <org>"
+      // (textContent dính cả hint "Use arrow keys to access controls" + avatar).
+      const raw = t.aria.includes("Person") || t.aria.includes("person")
+        ? t.aria.replace(/^Person:?\s*/i, "")
+        : t.text;
+      const nameRaw = raw.split("\n")[0].trim();
+      const emailMatch = raw.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+      let email: string | undefined;
+      if (emailMatch) email = emailMatch[0];
+      // Tách alias khỏi tên: "An Mai Thuan (ANMT3) FCI - CLOUD" → tên "An Mai Thuan",
+      // giữ nguyên khi không có ngoặc.
+      const parenMatch = nameRaw.match(/^(.*?)\s*\(([^)]+)\)\s*(.*)$/);
+      const name = parenMatch
+        ? parenMatch[1].trim()
+        : nameRaw.replace(/\s*\(.*\)\s*$/, "").trim();
+      // Alias trong ngoặc: "An Mai Thuan (ANMT3) FCI - CLOUD" → "ANMT3"
+      const alias = parenMatch ? parenMatch[2].trim() : undefined;
+      suggestions.push({ name, email, alias, raw });
+    }
+
+    // Dedup theo name
+    const seen = new Set<string>();
+    const uniq = suggestions.filter((s) => {
+      const k = s.name.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+
+    if (uniq.length === 0) {
+      await page.keyboard.press("Escape").catch(() => {});
+      log(`Search person: khong tim thay nguoi nao khop "${q}".`);
+      return { ok: false, error: `Không tìm thấy ai khớp "${q}".`, suggestions: [] };
+    }
+
+    // Ưu tiên kết quả khớp chính xác email / alias / toàn bộ từ
+    const qLower = q.toLowerCase();
+    const qEmail = qLower.includes("@") ? qLower.split("@")[0] : "";
+    const exact = uniq.find((s) =>
+      (s.email && s.email.toLowerCase() === qLower) ||
+      (qEmail && s.email && s.email.toLowerCase().startsWith(qEmail)) ||
+      (s.alias && s.alias.toLowerCase() === qLower) ||
+      s.name.toLowerCase() === qLower
+    );
+    const chosen = exact || uniq[0];
+
+    await page.keyboard.press("Escape").catch(() => {});
+    return { ok: true, name: chosen.name, email: chosen.email, suggestions: uniq };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+
 export interface TeamsSendOptions {
   chatName: string;
   message: string;
   dryRun?: boolean;
+  /** Compose-only: mở chat, soạn sẵn tin nhắn vào ô soạn thảo NHƯNG giữ nguyên
+   * để user tự kiểm tra rồi bấm Gửi — không gửi, không xoá. */
+  composeOnly?: boolean;
   screenshots?: boolean;
   openWaitMs?: number;
 }
@@ -2525,6 +2803,7 @@ export interface TeamsSendResult {
   ok: boolean;
   error?: string;
   dryRun?: boolean;
+  composeOnly?: boolean;
   targetChat?: string;
   screenshot?: string;
 }
@@ -2539,7 +2818,7 @@ export async function sendTeamsMessage(
   page: Page,
   options: TeamsSendOptions
 ): Promise<TeamsSendResult> {
-  const { chatName, message, dryRun, screenshots, openWaitMs = 5_000 } = options;
+  const { chatName, message, dryRun, composeOnly, screenshots, openWaitMs = 5_000 } = options;
 
   if (!chatName?.trim()) return { ok: false, error: "chatName is required" };
   if (!message?.trim()) return { ok: false, error: "message is required" };
@@ -2607,6 +2886,12 @@ export async function sendTeamsMessage(
 
   if (screenshots) {
     await page.screenshot({ path: path.join(shotDir, `send-composed-${stamp}.png`) }).catch(() => {});
+  }
+
+  // ── 4a. COMPOSE ONLY: giữ tin nhắn soạn sẵn để user tự kiểm tra + gửi ──
+  if (composeOnly) {
+    log("COMPOSE ONLY: da soan san tin nhan, KHONG tu dong gui — user tu bam Gui.");
+    return { ok: true, composeOnly: true, targetChat: chatName };
   }
 
   // ── 4. DRY RUN: clear and abort ─────────────────────────────

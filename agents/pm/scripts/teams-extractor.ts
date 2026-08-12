@@ -316,7 +316,7 @@ async function extractMessagesV2(page: Page) {
 
 // ─── Main ─────────────────────────────────────────────────
 async function main() {
-  const isHeadless = process.argv.includes("--headless");
+  const isHeadless = process.argv.includes("--headless") || process.env.HEADLESS === "true";
   ensureDir(SESSION_DIR);
   ensureDir(SCREENSHOT_DIR);
 
