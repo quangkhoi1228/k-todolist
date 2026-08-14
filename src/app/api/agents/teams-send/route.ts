@@ -53,6 +53,8 @@ function getRunningPid(): number | null {
 }
 
 export const runtime = "nodejs";
+/** Cho phép gửi Teams chạy tới 180s (script kill ở 150s). */
+export const maxDuration = 180;
 
 export async function POST(req: NextRequest) {
   try {
@@ -95,7 +97,7 @@ export async function POST(req: NextRequest) {
       const message = body.message as string | undefined;
       const dryRun = body.dryRun === true;
       const compose = action === "compose";
-      const headless = body.headless === true; // default headfull so user sees the send
+      const headless = body.headless !== false; // mặc định headless; headfull khi body.headless === false
 
       // Validate
       if (!chatName || !chatName.trim()) {
@@ -177,7 +179,26 @@ export async function POST(req: NextRequest) {
             /* */
           }
 
+          // Hard timeout: nếu script con không exit (treo do browser.close() kẹt,
+          // Chrome con giữ profile, v.v.) thì KILL và trả lỗi — API KHÔNG BAO GIỜ
+          // treo vô hạn, user luôn nhận được kết quả.
+          const TIMEOUT_MS = 150_000;
+          const killTimer = setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch { /* */ }
+            try {
+              if (fs.existsSync(RUNNING_FILE)) fs.unlinkSync(RUNNING_FILE);
+            } catch { /* */ }
+            resolve({
+              ok: false,
+              error: `Quá thời gian gửi (${TIMEOUT_MS / 1000}s). Đã hủy process ${pid}. Chrome có thể bị kẹt giữ profile — thử lại sau vài giây.`,
+            });
+          }, TIMEOUT_MS);
+          killTimer.unref();
+
           child.on("exit", (code: number | null) => {
+            clearTimeout(killTimer);
             try {
               if (fs.existsSync(RUNNING_FILE)) fs.unlinkSync(RUNNING_FILE);
             } catch {
@@ -223,6 +244,7 @@ export async function POST(req: NextRequest) {
           });
 
           child.on("error", (err) => {
+            clearTimeout(killTimer);
             try {
               if (fs.existsSync(RUNNING_FILE)) fs.unlinkSync(RUNNING_FILE);
             } catch {

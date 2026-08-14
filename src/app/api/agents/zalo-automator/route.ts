@@ -33,11 +33,11 @@ function stopBackgroundSync() {
     }
   } catch { /* */ }
   // Release stale Chrome profile locks
-  const profileDir = path.join(process.cwd(), ".zalo-session", "chrome-profile");
   for (const f of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
     try {
-      const p = path.join(profileDir, f);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
+      fs.unlinkSync(
+        path.join(/* turbopackIgnore: true */ process.cwd(), ".zalo-session", "chrome-profile", f)
+      );
     } catch { /* */ }
   }
 }

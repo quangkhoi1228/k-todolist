@@ -46,6 +46,85 @@ export function isSendWaiting(): boolean {
   return false;
 }
 
+/** Main Chrome only — GPU/Renderer/Utility Helper inherit --user-data-dir
+ *  nhưng KHÔNG phải process giữ SingletonLock. Match nhầm Helper → false
+ *  "profile đang bị Chrome khác dùng" mỗi khi sync/send còn Chrome. */
+function isChromeMainProcess(cmdline: string): boolean {
+  if (/\s--type=/.test(cmdline)) return false;
+  if (/Google Chrome Helper/.test(cmdline)) return false;
+  return true;
+}
+
+function currentProcessOwnsTeamsSendLock(): boolean {
+  try {
+    const lockPath = path.join(process.cwd(), ".teams-send-running");
+    if (!fs.existsSync(lockPath)) return false;
+    const pid = parseInt(fs.readFileSync(lockPath, "utf-8").trim(), 10);
+    return !isNaN(pid) && pid === process.pid;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kill Playwright Chrome (--remote-debugging-pipe) đang giữ profile.
+ * Gọi từ teams-send SAU khi preempt sync: Chrome con thường sống sót SIGTERM
+ * → send mở Chrome thứ 2 cùng profile sẽ fail "busy".
+ */
+export async function killPlaywrightChromeOnProfile(
+  profileDir: string,
+  waitMs = 8_000
+): Promise<void> {
+  const killOnce = (): number[] => {
+    const killed: number[] = [];
+    try {
+      const lines = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+      for (const line of lines) {
+        if (!line.includes(profileDir)) continue;
+        if (!line.includes("--remote-debugging-pipe")) continue;
+        if (!isChromeMainProcess(line)) continue;
+        const m = line.match(/^(\d+)\s/);
+        if (!m) continue;
+        const pid = Number(m[1]);
+        try {
+          process.kill(pid, "SIGKILL");
+          killed.push(pid);
+        } catch {
+          /* already gone */
+        }
+      }
+    } catch {
+      /* pgrep unavailable */
+    }
+    return killed;
+  };
+
+  const first = killOnce();
+  if (first.length > 0) {
+    log(`Da kill Playwright Chrome leftover tren profile (pid=${first.join(",")}).`);
+  }
+
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    let alive = false;
+    try {
+      const lines = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
+      alive = lines.some(
+        (line) =>
+          line.includes(profileDir) &&
+          isChromeMainProcess(line) &&
+          line.includes("--remote-debugging-pipe")
+      );
+    } catch {
+      alive = false;
+    }
+    if (!alive) return;
+    await new Promise((r) => setTimeout(r, 300));
+    killOnce();
+  }
+  log("Playwright Chrome tren profile van con sau khi kill — van tiep tuc.");
+}
+
 const DEFAULT_CDP_PORT = 9222;
 
 // ─── Config ─────────────────────────────────────────────────
@@ -88,6 +167,7 @@ export const DEFAULT_CONFIG: AutomatorConfig = {
   scrollWaitMs: 2_000,
   loginTimeoutMs: 120_000,
   headless: false,
+  useRealChrome: true,
 };
 
 // ─── Types ──────────────────────────────────────────────────
@@ -199,35 +279,13 @@ function ensureDir(dir: string) {
 
 // ─── Stealth Helpers ───────────────────────────────────────
 
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-];
-
-function randomPick<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-/** Chromium launch args for stealth */
-const STEALTH_ARGS = [
-  "--disable-blink-features=AutomationControlled",
-  "--disable-features=IsolateOrigins,site-per-process",
-  "--disable-web-security",
-  "--no-sandbox",
-  "--disable-setuid-sandbox",
-  "--disable-infobars",
-  "--disable-dev-shm-usage",
-  "--disable-accelerated-2d-canvas",
-  "--disable-gpu",
-  "--window-size=1280,800",
-  "--hide-scrollbars",
-  "--lang=en-US",
-];
+/** Outer Chrome window — vừa laptop 13/14" (avail ~1440×900 / 1512×982). */
+const CHROME_WINDOW_WIDTH = 1280;
+const CHROME_WINDOW_HEIGHT = 800;
 
 /**
  * Patch page to avoid bot detection.
@@ -267,28 +325,77 @@ export async function applyStealthPatches(page: Page): Promise<void> {
     Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en", "vi"] });
   });
 
-  // Randomize viewport slightly (Teams still needs reasonable size)
-  await page.setViewportSize({ width: randomInt(1250, 1280), height: randomInt(780, 800) });
+  // Không gọi setViewportSize ở đây. Persistent Chrome dùng viewport:null
+  // (layout theo inner size thật). Ép viewport lớn hơn cửa sổ → UI Teams/Zalo
+  // tràn, ô nhập tin ở đáy bị cắt không nhìn thấy.
+}
+
+/**
+ * Đặt cửa sổ Chrome vừa màn hình thật (không tràn, ô input ở đáy còn nhìn thấy).
+ * Chrome persistent profile hay restore kích thước cũ (vd 1600×1000) nên cần
+ * ghi đè sau khi launch. Bỏ qua khi sync nền / headless.
+ */
+export async function fitWindowToScreen(page: Page): Promise<void> {
+  if (process.env.SYNC_BACKGROUND === "1") return;
+  if (process.env.HEADLESS === "true" || process.env.HEADLESS === "1") return;
+  try {
+    // Bỏ emulated viewport (nếu Playwright từng setViewportSize) — phải gọi
+    // trên page session. Layout sẽ theo inner size thật của cửa sổ.
+    try {
+      const pageSession = await page.context().newCDPSession(page);
+      await pageSession.send("Emulation.clearDeviceMetricsOverride");
+      await pageSession.detach().catch(() => {});
+    } catch {
+      /* no override */
+    }
+
+    const screenInfo = await page.evaluate(() => ({
+      availW: window.screen.availWidth,
+      availH: window.screen.availHeight,
+    }));
+
+    const marginX = 48;
+    const marginY = 72; // menu bar + dock
+    const maxW = Math.max(1024, screenInfo.availW - marginX);
+    const maxH = Math.max(700, screenInfo.availH - marginY);
+    const width = Math.min(CHROME_WINDOW_WIDTH, maxW);
+    const height = Math.min(CHROME_WINDOW_HEIGHT, maxH);
+    const left = Math.max(16, Math.floor((screenInfo.availW - width) / 2));
+    const top = Math.max(28, Math.floor((screenInfo.availH - height) / 5));
+
+    // Browser.setWindowBounds cần browser-level CDP session (giống minimizeCdpWindow).
+    const browser = page.context().browser();
+    const session = browser
+      ? await (browser as any).newBrowserCDPSession()
+      : await page.context().newCDPSession(page);
+    const targetId = (page as any)._target?._targetId;
+    const { windowId } = await session.send(
+      "Browser.getWindowForTarget",
+      targetId ? { targetId } : {}
+    );
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "normal", left, top, width, height },
+    });
+    await session.detach().catch(() => {});
+    log(`Fit window ${width}x${height} (screen avail ${screenInfo.availW}x${screenInfo.availH})`);
+  } catch (e) {
+    log(`Fit window CDP loi (${String(e).slice(0, 100)}) — fallback resizeTo.`);
+    try {
+      await page.evaluate(
+        ({ w, h }) => {
+          window.moveTo(24, 40);
+          window.resizeTo(w, h);
+        },
+        { w: CHROME_WINDOW_WIDTH, h: CHROME_WINDOW_HEIGHT }
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 // ─── Browser Helpers ────────────────────────────────────────
-
-/**
- * Detect path to real Google Chrome on macOS.
- */
-function getChromePath(): string {
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return "google-chrome";
-}
 
 export async function createStealthContext(config: AutomatorConfig): Promise<{
   browser: Browser;
@@ -309,7 +416,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
     const cdpUrl = `http://127.0.0.1:${port}`;
     log(`CDP mode: connecting to real Chrome at ${cdpUrl}`);
     try {
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      const browser = await chromium.connectOverCDP(cdpUrl, { timeout: 2_500 });
       const context = browser.contexts()[0];
       if (!context) throw new Error("CDP browser has no default context.");
 
@@ -346,7 +453,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
     }
   }
 
-  if (config.useRealChrome) {
+  if (config.useRealChrome !== false) {
     const profileDir = path.join(config.sessionDir, "chrome-profile");
     ensureDir(profileDir);
 
@@ -377,15 +484,18 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
       for (const line of chromePaths) {
         if (!line.includes(profileDir)) continue;
         if (!line.includes("--remote-debugging-pipe")) continue; // Playwright-spawned only
+        if (!isChromeMainProcess(line)) continue;
         const m = line.match(/^(\d+)\s/);
         if (!m) continue;
         const pid = Number(m[1]);
         // Skip processes that are NOT orphans (still owned by a live parent —
         // i.e. a browser another script is actively using).
+        // Ngoại lệ: teams-send đã claim lock → Chrome sync leftover (ppid vẫn
+        // là node/tsx sync đang chết) phải bị kill, không chỉ orphan ppid=1.
         try {
           const ppidStr = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8" }).trim();
           const ppid = Number(ppidStr);
-          if (ppid > 1) continue;
+          if (ppid > 1 && !currentProcessOwnsTeamsSendLock()) continue;
         } catch {
           continue; // process already gone
         }
@@ -469,13 +579,17 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
         const lines = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
         for (const line of lines) {
           if (!line.includes(profileDir)) continue;
-          if (line.includes("--remote-debugging-pipe")) continue; // pipe-cùng script khác, sẽ được cleanup
+          if (!isChromeMainProcess(line)) continue; // bỏ GPU/Renderer Helper
           const m = line.match(/^(\d+)\s/);
           if (!m) continue;
           const pid = Number(m[1]);
           try {
             process.kill(pid, 0);
-            return pid; // live non-pipe Chrome đang giữ profile
+            return {
+              pid,
+              cdpPort: line.includes("--remote-debugging-port"),
+              playwrightPipe: line.includes("--remote-debugging-pipe"),
+            };
           } catch {
             // process gone — ignore
           }
@@ -486,10 +600,49 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
       return null;
     })();
     if (profileTaken) {
-      throw new Error(
-        `Teams profile đang bị Chrome khác dùng (pid=${profileTaken}, sync/send/đang mở). ` +
-        `Trả busy thay vì mở Chrome thứ 2 cùng profile.`
-      );
+      // Send đã claim lock → Playwright Chrome leftover (sync bị preempt) phải
+      // nhường profile. Kill rồi launch, không báo busy giả.
+      if (profileTaken.playwrightPipe && currentProcessOwnsTeamsSendLock()) {
+        log(`Profile bi Playwright Chrome leftover (pid=${profileTaken.pid}) — kill de gui tin.`);
+        await killPlaywrightChromeOnProfile(profileDir);
+      } else if (profileTaken.cdpPort && (process.env.USE_CDP === "1" || process.env.USE_CDP === "true")) {
+        const port = Number(process.env.CDP_PORT || DEFAULT_CDP_PORT);
+        const cdpUrl = `http://127.0.0.1:${port}`;
+        log(`Profile đang bị Chrome CDP (pid=${profileTaken.pid}) giữ — thử connect CDP lại ${cdpUrl}...`);
+        try {
+          const browser = await chromium.connectOverCDP(cdpUrl, { timeout: 2_500 });
+          const context = browser.contexts()[0];
+          if (!context) throw new Error("CDP browser has no default context.");
+          process.env.SYNC_CDP_CONNECTED = "1";
+          context.on("page", (newPage) => {
+            newPage.on("dialog", async (dialog) => {
+              log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
+              await dialog.dismiss().catch(() => {});
+            });
+          });
+          const fakeBrowser = new Proxy(browser, {
+            get(target, prop, receiver) {
+              if (prop === "close") {
+                return async () => { log("CDP mode: giu Chrome that mo (khong dong)."); };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }) as Browser;
+          log("CDP reconnect thanh cong — dung Chrome CDP dang giu profile.");
+          return { browser: fakeBrowser, context };
+        } catch (cdpRetryErr) {
+          log(`CDP reconnect that bai (${String(cdpRetryErr).slice(0, 120)}).`);
+        }
+        throw new Error(
+          `Teams profile đang bị Chrome khác dùng (pid=${profileTaken.pid}, sync/send/đang mở). ` +
+          `Trả busy thay vì mở Chrome thứ 2 cùng profile.`
+        );
+      } else if (!(profileTaken.playwrightPipe && currentProcessOwnsTeamsSendLock())) {
+        throw new Error(
+          `Teams profile đang bị Chrome khác dùng (pid=${profileTaken.pid}, sync/send/đang mở). ` +
+          `Trả busy thay vì mở Chrome thứ 2 cùng profile.`
+        );
+      }
     }
 
     // launchPersistentContext uses real Chrome + keeps cookies/storage
@@ -500,7 +653,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--window-size=1280,800",
+        `--window-size=${CHROME_WINDOW_WIDTH},${CHROME_WINDOW_HEIGHT}`,
         "--lang=en-US",
         // ── Suppress "Open Microsoft Teams?" protocol handler dialog ──
         "--disable-features=ExternalProtocolDialog",
@@ -510,6 +663,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
         // ── Fix macOS headless cookie decryption issue ──
         "--password-store=basic",
         "--use-mock-keychain",
+        "--window-position=40,60",
       ],
       viewport: null, // De window-size tu config hoat dong
       locale: "en-US",
@@ -523,6 +677,7 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
     const pages = persistentContext.pages();
     const page = pages.length > 0 ? pages[0] : await persistentContext.newPage();
     await applyStealthPatches(page);
+    if (!config.headless) await fitWindowToScreen(page).catch(() => {});
 
     // ── Block msteams:// protocol navigation ────────────
     // Teams tries to open the native app via msteams:// redirects,
@@ -598,49 +753,9 @@ export async function createStealthContext(config: AutomatorConfig): Promise<{
     return { browser: fakeBrowser, context: persistentContext };
   }
 
-  log(`Khoi dong Playwright Chromium (headless=${config.headless})...`);
-
-  const browser = await chromium.launch({
-    headless: config.headless,
-    args: STEALTH_ARGS,
-  });
-
-  const context = await browser.newContext({
-    storageState: fs.existsSync(path.join(config.sessionDir, "state.json"))
-      ? path.join(config.sessionDir, "state.json")
-      : undefined,
-    userAgent: randomPick(USER_AGENTS),
-    viewport: { width: 1280, height: 800 },
-    locale: "en-US",
-    timezoneId: "Asia/Ho_Chi_Minh",
-    geolocation: { latitude: 10.8231, longitude: 106.6297 },
-    permissions: ["geolocation"],
-    deviceScaleFactor: 1,
-    isMobile: false,
-    hasTouch: false,
-    bypassCSP: true,
-    ignoreHTTPSErrors: true,
-    colorScheme: "light",
-  });
-
-  await context.route("**/*", async (route) => {
-    const url = route.request().url();
-    if (url.startsWith("msteams:") || url.startsWith("msteams-launch:") || url.startsWith("microsoft-edge:")) {
-      log("Chan protocol redirect: " + url.slice(0, 80));
-      await route.abort();
-    } else {
-      await route.continue();
-    }
-  });
-
-  context.on("page", (newPage) => {
-    newPage.on("dialog", async (dialog) => {
-      log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
-      await dialog.dismiss().catch(() => {});
-    });
-  });
-
-  return { browser, context };
+  throw new Error(
+    "Teams cần Google Chrome + profile `.teams-session/chrome-profile` (không mở Chromium test)."
+  );
 }
 
 // ─── Helper: tab nền + thu nhỏ window (tránh popup khi sync nền) ──
@@ -724,6 +839,28 @@ export async function minimizeCdpWindow(browser: Browser, page: Page): Promise<b
   }
 }
 
+/** Đưa cửa sổ Chrome CDP chứa page lên trước + focus (dùng khi gửi thật headfull để user thấy). */
+export async function focusCdpWindow(browser: Browser, page: Page): Promise<boolean> {
+  if (process.env.SYNC_CDP_CONNECTED !== "1") return false;
+  try {
+    const session = await (browser as any).newBrowserCDPSession();
+    const targetId = (page as any)._target?._targetId;
+    const { windowId } = await session.send("Browser.getWindowForTarget", targetId ? { targetId } : {});
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "normal" },
+    });
+    await session.send("Page.bringToFront", targetId ? { targetId } : {}).catch(() => {});
+    await session.detach().catch(() => {});
+    await fitWindowToScreen(page).catch(() => {});
+    log("CDP: da dua cua so Chrome len truoc + fit man hinh (headfull).");
+    return true;
+  } catch (e) {
+    log(`CDP: focus window loi (${String(e).slice(0, 100)}) — bo qua.`);
+    return false;
+  }
+}
+
 /**
  * Wait for Teams login to complete by watching URL.
  * Returns true if login was needed and completed.
@@ -735,16 +872,23 @@ export async function waitForLogin(
   // Check if already logged in by URL pattern or Teams v2 shell elements
   const url = page.url();
   if (url.includes("teams.microsoft.com") && !url.includes("login") && !url.includes("auth")) {
-    // Teams v2 selectors + legacy selectors
-    const isLoggedIn = await page
-      .locator('[data-tid="app-bar-wrapper"], [data-tid="chat-title"], [data-tid="app-bar"], [data-tid="chat-header-title"]')
-      .first()
-      .isVisible({ timeout: 5_000 })
-      .catch(() => false);
-    if (isLoggedIn) {
-      log("Da co session, khong can dang nhap.");
-      return false;
+    // Teams v2 selectors + legacy selectors — poll ngắn, đừng chờ 5s cứng.
+    const shellDeadline = Date.now() + 4_000;
+    while (Date.now() < shellDeadline) {
+      const isLoggedIn = await page
+        .locator('[data-tid="app-bar-wrapper"], [data-tid="chat-title"], [data-tid="app-bar"], [data-tid="chat-header-title"]')
+        .first()
+        .isVisible({ timeout: 400 })
+        .catch(() => false);
+      if (isLoggedIn) {
+        log("Da co session, khong can dang nhap.");
+        return false;
+      }
     }
+    // URL đã là Teams (không phải trang login) — SPA có thể chưa render xong
+    // sidebar. KHÔNG rơi xuống vòng check ô login (4 × 10s = 40s phí).
+    log("URL da la Teams, coi nhu da dang nhap (shell chua kip render).");
+    return false;
   }
 
   const loginSelectors = [
@@ -756,7 +900,7 @@ export async function waitForLogin(
 
   let needsLogin = false;
   for (const sel of loginSelectors) {
-    const visible = await page.locator(sel).first().isVisible({ timeout: 10_000 }).catch(() => false);
+    const visible = await page.locator(sel).first().isVisible({ timeout: 800 }).catch(() => false);
     if (visible) {
       needsLogin = true;
       break;
@@ -804,10 +948,13 @@ export async function navigateToTeams(
   // otherwise we lose the current sidebar state and force a full app reload.
   if (current.includes("teams.microsoft.com") || current.includes("teams.live.com")) {
     log(`Da o Teams (${current.slice(0, 60)}), khong navigate lai.`);
-    // Dù đã ở Teams, tab có thể đang ở view khác (Calendar/Calls/...).
-    // Click vào Chat view để sidebar chat hiển thị — nếu đã ở Chat thì bỏ qua.
     await switchToChatView(page);
-    await page.waitForTimeout(2_000);
+    // Sidebar đã có chat items thì khỏi chờ 2s cứng.
+    const ready = await page.evaluate(() =>
+      document.querySelectorAll('[data-testid="list-item"]').length > 0 ||
+      document.querySelectorAll('[role="treeitem"]').length > 5
+    ).catch(() => false);
+    if (!ready) await page.waitForTimeout(800);
     return;
   }
   // Always go to homepage — v2 SPA loads reliably from there
@@ -937,7 +1084,7 @@ export async function navigateToChatInSidebar(
       }
 
       await searchTrigger.click();
-      await page.waitForTimeout(1_500);
+      await page.waitForTimeout(400);
 
       const searchInput = page.locator(
         '[data-tid="AUTOSUGGEST_INPUT"], input[placeholder*="Search"], input[placeholder*="Tìm kiếm"], ' +
@@ -952,7 +1099,7 @@ export async function navigateToChatInSidebar(
 
       await searchInput.click();
       await searchInput.fill(name);
-      await page.waitForTimeout(3_000);
+      await page.waitForTimeout(1_200);
 
       // Results usually appear as list items with the person's name.
       // Teams v2 shows people as `AUTOSUGGEST_SUGGESTION_TOPHITS<orgid>` options
@@ -1042,7 +1189,7 @@ export async function navigateToChatInSidebar(
 
       if (clicked) {
         log(`Search: da click vao ket qua "${clicked}"`);
-        await page.waitForTimeout(4_000);
+        await waitForChatHeader(2_500);
         return true;
       }
 
@@ -1056,19 +1203,23 @@ export async function navigateToChatInSidebar(
     }
   }
 
-  // Attempt 0: Use Teams search box first (finds people/chats not in recent list)
-  const searchOpened = await trySearchChat(chatName);
-  if (searchOpened) {
-    log(`Da mo chat qua search: "${chatName}"`);
+  // Fast path: nhóm đã nằm trong sidebar (dự án đang mở) — click ngay,
+  // không mở ô Search (Search tốn 8–15s dù chat đã hiện).
+  let found = await tryClickChat(chatName);
+  if (found) {
+    log(`Da click vao chat (sidebar): "${found}"`);
     await waitForChatHeader(4_000);
     return true;
   }
 
-  // Attempt 1: Direct search
-  let found = await tryClickChat(chatName);
-  if (found) {
-    log(`Da click vao chat: "${found}"`);
+  // Chat chưa có trong recent list → search theo tên.
+  const searchOpened = await trySearchChat(chatName);
+  if (searchOpened) {
+    log(`Da mo chat qua search: "${chatName}"`);
     await waitForChatHeader(4_000);
+    // Search overlay che compose box — đóng trước khi caller tìm ô soạn tin.
+    await page.keyboard.press("Escape").catch(() => {});
+    await page.waitForTimeout(250);
     return true;
   }
 
@@ -1432,15 +1583,29 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
     // Do NOT scroll away — that would unload the wrappers + <img> we need.
     // Small "nudge" scroll (a few px) to trigger lazy loading without moving
     // far enough to recycle messages, then restore position.
-    await page.evaluate(() => {
-      const container = document.querySelector('[data-tid="message-pane-list-viewport"]') ||
-        document.querySelector('[role="log"]') || document.documentElement;
-      const pos = container.scrollTop;
-      container.scrollBy({ top: -60, behavior: 'instant' as any });
-      container.scrollBy({ top: 60, behavior: 'instant' as any });
-      container.scrollTop = pos;
-    });
-    await page.waitForTimeout(4_000);
+    const isInc = config.incrementalSince !== undefined && config.incrementalSince > 0;
+    if (isInc) {
+      // Incremental: KHÔNG nudge — nudge (-60/+60px) có thể trigger Teams virtual
+      // DOM unload tin mới nhất, làm extractor bỏ sót tin gửi sau watermark.
+      // Chỉ scroll xuống đáy và chờ để đảm bảo tin mới nhất render.
+      await page.evaluate(() => {
+        const container = document.querySelector('[data-tid="message-pane-list-viewport"]') ||
+          document.querySelector('[role="log"]') || document.documentElement;
+        container.scrollTop = container.scrollHeight;
+      });
+      await page.waitForTimeout(2_000);
+    } else {
+      // Full sync: nudge để trigger image lazy-load (giữ nguyên behavior cũ).
+      await page.evaluate(() => {
+        const container = document.querySelector('[data-tid="message-pane-list-viewport"]') ||
+          document.querySelector('[role="log"]') || document.documentElement;
+        const pos = container.scrollTop;
+        container.scrollBy({ top: -60, behavior: 'instant' as any });
+        container.scrollBy({ top: 60, behavior: 'instant' as any });
+        container.scrollTop = pos;
+      });
+      await page.waitForTimeout(4_000);
+    }
   } else {
     // Pass 2 (text pass): Scroll to bottom + kick lazy loading (safe because
     // the text content of messages persists even when images are unloaded).
@@ -1873,7 +2038,12 @@ export async function extractMessages(page: Page, config: AutomatorConfig, skipL
 
       if ((!content && images.length === 0) || !sender) continue;
 
-      const key = `${sender}|${content.slice(0, 80)}|${images.join(',')}`;
+      // Dedup key PHẢI bao gồm timestampMs. Trước đây key = sender|content|images
+      // (không có timestamp) → 2 tin cùng nội dung nhưng khác thời điểm (vd tin
+      // "Chào chị To Thi..." gửi lại nhiều lần lúc 10:44, 11:33, 11:37) bị coi
+      // là 1, chỉ giữ tin đầu tiên → các tin mới hơn watermark bị bỏ sót, sync
+      // báo saved=0 dù Teams có tin mới. Thêm timestampMs để phân biệt.
+      const key = `${sender}|${content.slice(0, 80)}|${images.join(',')}|${timestampMs ?? ''}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -2138,7 +2308,9 @@ export async function extractTextOnly(page: Page, config: AutomatorConfig): Prom
 
       if (!content || !sender) continue;
 
-      const key = `${sender}|${content.slice(0, 80)}`;
+      // Dedup key bao gồm timestampMs (giống extractMessages) để không bỏ sót
+      // tin cùng nội dung nhưng khác thời điểm (tin gửi lại sau watermark).
+      const key = `${sender}|${content.slice(0, 80)}|${timestampMs ?? ''}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -2230,10 +2402,21 @@ export async function incrementalScrollAndExtract(
   const domHasIncrementalSince = async (): Promise<boolean> => {
     if (config.incrementalSince === undefined || config.incrementalSince <= 0) return false;
     return page.evaluate((since) => {
-      const t = document.querySelector<HTMLTimeElement>('time[datetime]');
-      if (!t) return false;
-      const ts = new Date(t.getAttribute("datetime") || "").getTime();
-      return !isNaN(ts) && ts > 0 && ts <= since;
+      // Kiểm tra xem DOM có còn tin mới hơn watermark không. Nếu TẤT CẢ
+      // time[datetime] đều <= watermark → đã chạm vùng đã lưu → early-stop.
+      // Trước đây dùng querySelector (element đầu tiên) — sai khi DOM chứa
+      // cả tin cũ (<= watermark) lẫn tin mới (> watermark): element đầu tiên
+      // là tin cũ → trả true → EARLY-STOP sai, bỏ sót tin mới.
+      const times = Array.from(document.querySelectorAll<HTMLTimeElement>('time[datetime]'));
+      if (times.length === 0) return false;
+      let hasNewer = false;
+      for (const t of times) {
+        const ts = new Date(t.getAttribute("datetime") || "").getTime();
+        if (!isNaN(ts) && ts > 0 && ts > since) { hasNewer = true; break; }
+      }
+      // Có tin mới hơn watermark trong DOM → chưa nên dừng.
+      if (hasNewer) return false;
+      return true;
     }, config.incrementalSince).catch(() => false);
   };
 
@@ -2315,6 +2498,11 @@ export async function incrementalScrollAndExtract(
 
   // ── Step 1: Fast Timestamp Check & Extract at BOTTOM ──
   log("[Incremental] Step 1: Checking timestamps at bottom...");
+  // Scroll xuống đáy NHIỀU LẦN với thời gian chờ giữa các lần. Teams v2 dùng
+  // virtual DOM — khi chat vừa mở, scrollHeight chưa cập nhật đầy đủ, và tin
+  // mới nhất chỉ render sau khi scroll + chờ. Scroll 1 lần + chờ 1s (trước đây)
+  // thường KHÔNG đưa được tin mới nhất (vd tin gửi sau watermark) vào DOM →
+  // extractor bỏ sót, sync báo saved=0 dù Teams có tin mới.
   await page.evaluate(() => {
     const c =
       document.querySelector('[data-tid="message-pane-list-viewport"]') ||
@@ -2322,7 +2510,17 @@ export async function incrementalScrollAndExtract(
       document.documentElement;
     c.scrollTop = c.scrollHeight;
   });
-  await page.waitForTimeout(1_000); // Short wait for DOM to settle
+  await page.waitForTimeout(1_200);
+  for (let i = 0; i < 3; i++) {
+    await page.evaluate(() => {
+      const c =
+        document.querySelector('[data-tid="message-pane-list-viewport"]') ||
+        document.querySelector('[role="log"]') ||
+        document.documentElement;
+      c.scrollTop = c.scrollHeight;
+    });
+    await page.waitForTimeout(900);
+  }
 
   if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
     const tsInfo = await page.evaluate(() => {
@@ -2814,6 +3012,79 @@ export interface TeamsSendResult {
  * - CHỈ gửi khi xác minh được chat đang mở đúng tên mục tiêu
  * - Dry run: nhập tin rồi xoá, KHÔNG gửi
  */
+const TEAMS_COMPOSE_SELECTORS = [
+  '[data-tid="compose-content"] [contenteditable="true"]',
+  '[data-tid="ckeditor-text-input"] [contenteditable="true"]',
+  '[data-tid="ckeditor"] [contenteditable="true"]',
+  '[data-tid*="compose"] [contenteditable="true"]',
+  'div[role="textbox"][contenteditable="true"]',
+  '[aria-label*="Type a message" i][contenteditable="true"]',
+  '[aria-label*="soạn" i][contenteditable="true"]',
+  '[aria-placeholder*="Type a message" i]',
+  '[aria-placeholder*="soạn" i]',
+];
+
+/**
+ * Tìm ô soạn tin Teams ĐANG HIỆN — không dùng `.first()` trên `[contenteditable]`
+ * (DOM có nhiều contenteditable ẩn: search, quote, edit) nên isVisible() fail.
+ */
+async function findTeamsComposeInput(page: Page, timeoutMs = 12_000): Promise<ReturnType<Page["locator"]> | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.evaluate(() => {
+      const panes = document.querySelectorAll(
+        '[data-tid="message-pane"], [data-tid="chat-pane"], [role="log"], [data-tid="chat-pane-list"]'
+      );
+      panes.forEach((p) => {
+        (p as HTMLElement).scrollTop = (p as HTMLElement).scrollHeight;
+      });
+    }).catch(() => {});
+
+    for (const sel of TEAMS_COMPOSE_SELECTORS) {
+      const loc = page.locator(sel);
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < n; i++) {
+        const item = loc.nth(i);
+        if (await item.isVisible().catch(() => false)) {
+          await item.scrollIntoViewIfNeeded().catch(() => {});
+          return item;
+        }
+      }
+    }
+
+    // Fallback: contenteditable visible nằm thấp nhất (ô soạn tin ở đáy chat)
+    const idx = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll('[contenteditable="true"]')) as HTMLElement[];
+      const visible = nodes
+        .map((el, i) => ({ el, i, r: el.getBoundingClientRect() }))
+        .filter(({ r, el }) => {
+          const st = getComputedStyle(el);
+          return (
+            r.width > 80 &&
+            r.height > 18 &&
+            st.visibility !== "hidden" &&
+            st.display !== "none" &&
+            r.bottom > 0 &&
+            r.top < window.innerHeight
+          );
+        });
+      if (visible.length === 0) return -1;
+      visible.sort((a, b) => b.r.top - a.r.top);
+      return visible[0].i;
+    }).catch(() => -1);
+    if (typeof idx === "number" && idx >= 0) {
+      const item = page.locator('[contenteditable="true"]').nth(idx);
+      if (await item.isVisible().catch(() => false)) {
+        await item.scrollIntoViewIfNeeded().catch(() => {});
+        return item;
+      }
+    }
+
+    await page.waitForTimeout(400);
+  }
+  return null;
+}
+
 export async function sendTeamsMessage(
   page: Page,
   options: TeamsSendOptions
@@ -2856,29 +3127,71 @@ export async function sendTeamsMessage(
   }
   log(`Verify OK: chat="${verify.headerName || chatName}"`);
 
-  // ── 3. Find the compose input and type the message ──────────
-  const input = page.locator(
-    '[data-tid="compose-content"] [contenteditable="true"], ' +
-    '[aria-label*="message"] [contenteditable="true"], ' +
-    'div[contenteditable="true"][data-tid*="compose"], ' +
-    '[contenteditable="true"]'
-  ).first();
+  // Đóng overlay Search (nếu vừa mở chat qua Search) — overlay che ô soạn tin.
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Escape").catch(() => {});
 
-  const inputVisible = await input.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (!inputVisible) {
+  // ── 3. Find the VISIBLE compose input (không lấy contenteditable ẩn đầu DOM) ──
+  const input = await findTeamsComposeInput(page, 12_000);
+  if (!input) {
+    if (screenshots) {
+      await page.screenshot({ path: path.join(shotDir, `send-no-compose-${stamp}.png`) }).catch(() => {});
+    }
     return { ok: false, error: "Không thấy ô nhập tin nhắn Teams (compose box). Không gửi gì cả." };
   }
 
   await input.click();
   await page.waitForTimeout(200);
-  await input.fill(message);
-  await page.waitForTimeout(400);
 
-  // Confirm the text actually landed in the input
-  const typedText = await page.evaluate(() => {
-    const el = document.querySelector('[data-tid="compose-content"] [contenteditable="true"], [contenteditable="true"]') as HTMLElement | null;
-    return el?.innerText || "";
-  });
+  // Paste tin nhắn qua clipboard (Cmd+V) thay vì input.fill() — Teams compose box
+  // là rich contenteditable; fill() đặt innerText trực tiếp KHÔNG trigger React
+  // onInput/onPaste events → React state vẫn rỗng → nút Send disabled → Enter
+  // không gửi được (đặc biệt lỗi ở lần gửi thứ 2 trở đi). Paste thật qua clipboard
+  // mô phỏng user thật, trigger đầy đủ events.
+  let typedOk = false;
+  // Cách 1 (ưu tiên): clipboard paste (Cmd+V) — trigger onPaste của React/CKEditor.
+  // Verified trên Chrome thật 12/08: execCommand insertText bị CKEditor Teams reset
+  // (nội dung biến mất sau ~500ms, nút Send không enabled). Paste thật qua clipboard
+  // giữ nội dung ổn định và bật nút Send.
+  try {
+    await page.evaluate(async (text: string) => {
+      await navigator.clipboard.writeText(text);
+    }, message);
+    await input.click();
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Meta+V");
+    await page.waitForTimeout(600);
+    typedOk = true;
+    log(`Da paste ${message.length} ky tu vao o input (clipboard).`);
+  } catch (e) {
+    log(`Paste clipboard loi (${String(e).slice(0, 140)}) — fallback execCommand insertText.`);
+  }
+  // Cách 2: execCommand insertText — trigger input event chuẩn cho contenteditable
+  if (!typedOk) {
+    try {
+      await input.evaluate((el: HTMLElement, text: string) => {
+        el.focus();
+        (document as any).execCommand("selectAll", false);
+        (document as any).execCommand("insertText", false, text);
+      }, message);
+      await page.waitForTimeout(400);
+      typedOk = true;
+      log(`Da insert ${message.length} ky tu (execCommand insertText).`);
+    } catch (e) {
+      log(`execCommand insertText loi (${String(e).slice(0, 100)}) — fallback fill().`);
+    }
+  }
+  // Cách 3 (fallback cuối): fill() — có thể không trigger React events
+  if (!typedOk) {
+    await input.fill(message);
+    await page.waitForTimeout(400);
+  }
+
+  // Confirm the text actually landed in the input — đọc từ cùng locator `input`
+  // (không query lại bằng document.querySelector vì có thể chọn sai contenteditable
+  // — Teams CKEditor tạo nhiều [contenteditable] trên trang).
+  const typedText = await input.evaluate((el: HTMLElement) => el.innerText || "").catch(() => "");
   if (!typedText.trim()) {
     return { ok: false, error: "Không thể nhập tin nhắn vào ô input. Không gửi gì cả." };
   }
@@ -2903,49 +3216,85 @@ export async function sendTeamsMessage(
   }
 
   // ── 5. Send via Enter ───────────────────────────────────────
-  log("Nhan Enter de gui tin nhan...");
+  // Đợi nút Send ENABLED trước khi Enter. Teams CKEditor cần vài trăm ms để
+  // cập nhật state sau khi paste — nếu Enter ngay khi nút còn disabled thì
+  // tin nhắn không gửi (user thấy "paste được nhưng không enter"). Poll tối
+  // đa 8s, mỗi lượt 300ms.
+  log("Cho nut Send enabled sau khi paste...");
+  const sendEnabled = await page
+    .waitForFunction(
+      () => {
+        const btn = document.querySelector(
+          '[data-tid="newMessageCommands-send"], button[aria-label*="Send"], button[data-tid*="send"]'
+        ) as HTMLElement | null;
+        if (!btn) return false;
+        const disabled =
+          btn.hasAttribute("disabled") ||
+          btn.getAttribute("aria-disabled") === "true" ||
+          btn.getAttribute("tabindex") === "-1";
+        return !disabled;
+      },
+      { timeout: 8_000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+
+  if (!sendEnabled) {
+    if (screenshots) {
+      await page.screenshot({ path: path.join(shotDir, `send-btn-disabled-${stamp}.png`) }).catch(() => {});
+    }
+    return {
+      ok: false,
+      error: "Nút Send vẫn disabled sau khi paste (CKEditor chưa nhận nội dung). Không gửi.",
+      targetChat: chatName,
+    };
+  }
+  log("Nut Send da enabled — nhan Enter de gui.");
+
+  await input.click().catch(() => {});
+  await page.waitForTimeout(200);
   await input.press("Enter");
 
   // ── 6. Verify send succeeded ────────────────────────────────
-  const inputNow = await page.evaluate(() => {
-    const el = document.querySelector('[data-tid="compose-content"] [contenteditable="true"], [contenteditable="true"]') as HTMLElement | null;
-    return el?.innerText || "";
+  // Đếm số message wrapper TRƯỚC khi Enter — sau Enter, wrapper phải TĂNG lên
+  // (tin nhắn mới thực sự xuất hiện). KHÔNG dùng "wrapper cuối có chứa text"
+  // vì gửi lần 2 cùng nội dung → wrapper cuối vẫn là tin lần 1 → false positive.
+  const wrapperCountBefore = await page.evaluate(() => {
+    return document.querySelectorAll(
+      '[data-testid="comfy-message-wrapper"], .fui-ChatMessage, .fui-ChatMyMessage, [data-tid="chat-pane-message"]'
+    ).length;
   });
+
+  const inputNow = await input.evaluate((el: HTMLElement) => el.innerText || "").catch(() => "");
   const inputCleared = inputNow.trim() === "";
 
-  // Check the LAST message wrapper in the pane contains our text. Teams v2
-  // message wrappers are `.fui-ChatMessage` / `.fui-ChatMyMessage` /
-  // `[data-testid="comfy-message-wrapper"]` / `[data-tid="chat-pane-message"]`
-  // — the old `[data-tid="message-list-item"]` selector no longer exists.
-  // Poll a few times: the new bubble needs a moment to render after Enter.
-  // Mỗi lượt 500ms — dừng ngay khi thấy bubble (không chờ đủ 6 lượt).
-  let sentTextVisible = false;
-  for (let attempt = 0; attempt < 6 && !sentTextVisible; attempt++) {
-    sentTextVisible = await page.evaluate((msg: string) => {
-      const wrappers = Array.from(
-        document.querySelectorAll<HTMLElement>(
-          '[data-testid="comfy-message-wrapper"], .fui-ChatMessage, .fui-ChatMyMessage, [data-tid="chat-pane-message"]'
-        )
-      );
-      const last = wrappers[wrappers.length - 1];
-      if (!last) return false;
-      return (last.textContent || "").includes(msg.slice(0, 80));
-    }, message);
-    if (!sentTextVisible) await page.waitForTimeout(500);
+  // Poll: chờ wrapper count tăng (tin nhắn mới render). Tối đa 6 lượt × 500ms.
+  let sentCountIncreased = false;
+  for (let attempt = 0; attempt < 6 && !sentCountIncreased; attempt++) {
+    const countNow = await page.evaluate(() => {
+      return document.querySelectorAll(
+        '[data-testid="comfy-message-wrapper"], .fui-ChatMessage, .fui-ChatMyMessage, [data-tid="chat-pane-message"]'
+      ).length;
+    });
+    if (countNow > wrapperCountBefore) {
+      sentCountIncreased = true;
+      break;
+    }
+    await page.waitForTimeout(500);
   }
 
   if (screenshots) {
     await page.screenshot({ path: path.join(shotDir, `send-result-${stamp}.png`) }).catch(() => {});
   }
 
-  if (sentTextVisible || inputCleared) {
+  if (sentCountIncreased || inputCleared) {
     log("GUI THANH CONG.");
     return { ok: true, targetChat: chatName, screenshot: path.join(shotDir, `send-result-${stamp}.png`) };
   }
 
   return {
     ok: false,
-    error: `Chua xac nhan tin nhan da gui (inputCleared=${inputCleared}, textVisible=${sentTextVisible}).`,
+    error: `Chua xac nhan tin nhan da gui (inputCleared=${inputCleared}, countIncreased=${sentCountIncreased}).`,
     targetChat: chatName,
   };
 }

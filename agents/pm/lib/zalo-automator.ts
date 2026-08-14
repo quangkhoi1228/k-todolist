@@ -84,6 +84,7 @@ export const DEFAULT_ZALO_CONFIG: ZaloAutomatorConfig = {
   scrollWaitMs: 2_000,
   loginTimeoutMs: 120_000,
   headless: false,
+  useRealChrome: true,
 };
 
 // ─── Types ──────────────────────────────────────────────────
@@ -137,6 +138,10 @@ function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+/** Outer Chrome window — vừa laptop 13/14" (avail ~1440×900 / 1512×982). */
+const CHROME_WINDOW_WIDTH = 1280;
+const CHROME_WINDOW_HEIGHT = 800;
+
 /**
  * Patch page to avoid bot detection.
  * Overrides navigator.webdriver, adds chrome runtime, etc.
@@ -174,25 +179,77 @@ export async function applyStealthPatches(page: Page): Promise<void> {
     Object.defineProperty(navigator, "languages", { get: () => ["vi", "en-US", "en"] });
   });
 
-  // Randomize viewport slightly
-  await page.setViewportSize({ width: randomInt(1250, 1280), height: randomInt(780, 800) });
+  // Không gọi setViewportSize ở đây. Persistent Chrome dùng viewport:null
+  // (layout theo inner size thật). Ép viewport lớn hơn cửa sổ → UI Zalo
+  // tràn, ô nhập tin (#richInput) ở đáy bị cắt không nhìn thấy.
+}
+
+/**
+ * Đặt cửa sổ Chrome vừa màn hình thật (không tràn, ô input ở đáy còn nhìn thấy).
+ * Chrome persistent profile hay restore kích thước cũ (vd 1600×1000) nên cần
+ * ghi đè sau khi launch. Bỏ qua khi sync nền / headless.
+ */
+export async function fitWindowToScreen(page: Page): Promise<void> {
+  if (process.env.SYNC_BACKGROUND === "1") return;
+  if (process.env.HEADLESS === "true" || process.env.HEADLESS === "1") return;
+  try {
+    // Bỏ emulated viewport (nếu Playwright từng setViewportSize) — phải gọi
+    // trên page session. Layout sẽ theo inner size thật của cửa sổ.
+    try {
+      const pageSession = await page.context().newCDPSession(page);
+      await pageSession.send("Emulation.clearDeviceMetricsOverride");
+      await pageSession.detach().catch(() => {});
+    } catch {
+      /* no override */
+    }
+
+    const screenInfo = await page.evaluate(() => ({
+      availW: window.screen.availWidth,
+      availH: window.screen.availHeight,
+    }));
+
+    const marginX = 48;
+    const marginY = 72; // menu bar + dock
+    const maxW = Math.max(1024, screenInfo.availW - marginX);
+    const maxH = Math.max(700, screenInfo.availH - marginY);
+    const width = Math.min(CHROME_WINDOW_WIDTH, maxW);
+    const height = Math.min(CHROME_WINDOW_HEIGHT, maxH);
+    const left = Math.max(16, Math.floor((screenInfo.availW - width) / 2));
+    const top = Math.max(28, Math.floor((screenInfo.availH - height) / 5));
+
+    // Browser.setWindowBounds cần browser-level CDP session (giống minimizeZaloCdpWindow).
+    const browser = page.context().browser();
+    const session = browser
+      ? await (browser as any).newBrowserCDPSession()
+      : await page.context().newCDPSession(page);
+    const targetId = (page as any)._target?._targetId;
+    const { windowId } = await session.send(
+      "Browser.getWindowForTarget",
+      targetId ? { targetId } : {}
+    );
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "normal", left, top, width, height },
+    });
+    await session.detach().catch(() => {});
+    log(`Fit window ${width}x${height} (screen avail ${screenInfo.availW}x${screenInfo.availH})`);
+  } catch (e) {
+    log(`Fit window CDP loi (${String(e).slice(0, 100)}) — fallback resizeTo.`);
+    try {
+      await page.evaluate(
+        ({ w, h }) => {
+          window.moveTo(24, 40);
+          window.resizeTo(w, h);
+        },
+        { w: CHROME_WINDOW_WIDTH, h: CHROME_WINDOW_HEIGHT }
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 // ─── Browser Helpers ────────────────────────────────────────
-
-function getChromePath(): string {
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return "google-chrome";
-}
 
 export async function createZaloStealthContext(config: ZaloAutomatorConfig): Promise<{
   browser: Browser;
@@ -201,13 +258,19 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
   ensureDir(config.sessionDir);
   ensureDir(config.screenshotDir);
 
-  // ── CDP mode: connect to a REAL Chrome already running (opened manually) ──
-  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+  // ── CDP mode: CHỈ khi ZALO_ALLOW_CDP=1 ──
+  // Port 9222 gần như luôn là Chrome profile TEAMS. Zalo connect nhầm vào đó
+  // → tab Zalo trong profile sai (QR / "Đổi thiết bị") rồi fallback Chromium
+  // test — đúng triệu chứng "mở thừa 1 profile test trước, chưa thành công".
+  if (
+    (process.env.ZALO_ALLOW_CDP === "1" || process.env.ZALO_ALLOW_CDP === "true") &&
+    (process.env.USE_CDP === "1" || process.env.USE_CDP === "true")
+  ) {
     const port = Number(process.env.CDP_PORT || 9222);
     const cdpUrl = `http://127.0.0.1:${port}`;
     log(`CDP mode: connecting to real Chrome at ${cdpUrl}`);
     try {
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      const browser = await chromium.connectOverCDP(cdpUrl, { timeout: 2_500 });
       const context = browser.contexts()[0];
       if (!context) throw new Error("CDP browser has no default context.");
 
@@ -244,7 +307,7 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
     }
   }
 
-  if (config.useRealChrome) {
+  if (config.useRealChrome !== false) {
     const profileDir = path.join(config.sessionDir, "chrome-profile");
     ensureDir(profileDir);
 
@@ -360,6 +423,7 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
         const lines = execSync("pgrep -fl 'Google Chrome'", { encoding: "utf8" }).split("\n");
         for (const line of lines) {
           if (!line.includes(profileDir)) continue;
+          if (/\s--type=/.test(line) || /Google Chrome Helper/.test(line)) continue; // GPU/Renderer Helper
           if (line.includes("--remote-debugging-pipe")) continue; // pipe-cùng script khác, sẽ được cleanup
           const m = line.match(/^(\d+)\s/);
           if (!m) continue;
@@ -390,7 +454,7 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--window-size=1280,800",
+        `--window-size=${CHROME_WINDOW_WIDTH},${CHROME_WINDOW_HEIGHT}`,
         "--lang=vi-VN",
         // ── Suppress "Restore pages?" crash bubble ──
         "--disable-session-crashed-bubble",
@@ -398,6 +462,12 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
         // ── Fix macOS headless cookie decryption issue ──
         "--password-store=basic",
         "--use-mock-keychain",
+        // ── Sync nền (queue): minimized để không bật popup gây lag khi
+        // user đang làm việc. Khi chạy tay (scan QR / debug) không set
+        // SYNC_BACKGROUND → Chrome hiện bình thường. ──
+        ...(process.env.SYNC_BACKGROUND === "1"
+          ? ["--window-position=-32000,-32000"]
+          : ["--window-position=40,60"]),
       ],
       viewport: null, // De window-size tu config hoat dong
       locale: "vi-VN",
@@ -410,6 +480,7 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
     const pages = persistentContext.pages();
     const page = pages.length > 0 ? pages[0] : await persistentContext.newPage();
     await applyStealthPatches(page);
+    if (!config.headless) await fitWindowToScreen(page).catch(() => {});
 
     // Dismiss any browser dialogs automatically
     persistentContext.on("page", (newPage) => {
@@ -471,43 +542,9 @@ export async function createZaloStealthContext(config: ZaloAutomatorConfig): Pro
     return { browser: fakeBrowser, context: persistentContext };
   }
 
-  // Fallback: bundled Chromium
-  log(`Khoi dong Playwright Chromium (headless=${config.headless})...`);
-
-  const browser = await chromium.launch({
-    headless: config.headless,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--disable-features=IsolateOrigins,site-per-process",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-infobars",
-      "--disable-dev-shm-usage",
-      "--window-size=1280,800",
-      "--lang=vi",
-    ],
-  });
-
-  const context = await browser.newContext({
-    storageState: fs.existsSync(path.join(config.sessionDir, "state.json"))
-      ? path.join(config.sessionDir, "state.json")
-      : undefined,
-    viewport: { width: 1280, height: 800 },
-    locale: "vi-VN",
-    timezoneId: "Asia/Ho_Chi_Minh",
-    bypassCSP: true,
-    ignoreHTTPSErrors: true,
-    colorScheme: "light",
-  });
-
-  context.on("page", (newPage) => {
-    newPage.on("dialog", async (dialog) => {
-      log("Phat hien dialog (tab moi): " + dialog.message().slice(0, 80));
-      await dialog.dismiss().catch(() => {});
-    });
-  });
-
-  return { browser, context };
+  throw new Error(
+    "Zalo cần Google Chrome + profile `.zalo-session/chrome-profile` (không mở Chromium test)."
+  );
 }
 
 // ─── Helper: mở tab nền (tránh popup khi sync nền) ──────────
@@ -778,6 +815,34 @@ export async function verifyZaloOpenChat(
 }
 
 /**
+ * Poll the open chat header until it matches `expectedName` (or timeout).
+ * Faster than a fixed wait: returns as soon as the header matches, so a chat
+ * that renders instantly doesn't waste the full wait; still gives lazy-loaded
+ * chats up to `timeoutMs` to appear. Falls back to a single verify on timeout.
+ */
+export async function waitForZaloOpenChat(
+  page: Page,
+  expectedName: string,
+  timeoutMs = 3_000
+): Promise<{ verified: boolean; openName: string; reason: string }> {
+  const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+  const target = normalize(expectedName);
+  const deadline = Date.now() + timeoutMs;
+  let last: { verified: boolean; openName: string; reason: string } = {
+    verified: false,
+    openName: "",
+    reason: "no chat header visible",
+  };
+  while (Date.now() < deadline) {
+    last = await verifyZaloOpenChat(page, expectedName);
+    if (last.verified) return last;
+    // Header chưa match — có thể chat đang lazy render, chờ ngắn rồi thử lại
+    await page.waitForTimeout(250);
+  }
+  return last;
+}
+
+/**
  * Navigate to a specific group chat by clicking it in the sidebar.
  *
  * IMPORTANT: clicks are REAL Playwright clicks (page.locator().click()).
@@ -810,8 +875,9 @@ export async function navigateToZaloGroup(
     try {
       await item.scrollIntoViewIfNeeded({ timeout: 3_000 });
       await item.click({ timeout: 8_000, force: false });
-      await page.waitForTimeout(3_000);
-      const check = await verifyZaloOpenChat(page, groupName);
+      // Chờ chat render — poll header thay vì wait cứng 3s (nhanh hơn khi
+      // chat đã sẵn trong DOM, đủ thời gian khi chat cần lazy render).
+      const check = await waitForZaloOpenChat(page, groupName, 3_000);
       if (check.verified) {
         log(`Da mo dung nhom Zalo: "${check.openName}"`);
         return true;
@@ -1038,9 +1104,12 @@ export async function scrollZaloChatContainer(
   // afterwards never move the scroll position down). Repeat until the
   // container truly reaches the bottom — i.e. the scroll offset stops
   // growing AND the newest visible message timestamp stops advancing.
+  // 10s đủ: chat đã được navigateToZaloGroup mở + verify header trước đó nên
+  // message pane render nhanh. Nhóm RỖNG (không có tin) sẽ timeout — trước đây
+  // chờ tận 20s vô ích mỗi lần sync nhóm rỗng.
   await page
     .waitForSelector('[id^="bb_msg_id_"], [class*="message-wrapper"], [class*="chat-message"]', {
-      timeout: 20_000,
+      timeout: 10_000,
     })
     .catch(() => log("[Zalo] Không thấy message nào sau khi mở chat — tiếp tục..."));
   await page.waitForTimeout(1_500);
@@ -1135,28 +1204,43 @@ export async function scrollZaloChatContainer(
 
   if (config.incrementalSince !== undefined && config.incrementalSince > 0) {
     const tsInfo = await page.evaluate(() => {
-      let minTs = Infinity;
+      let maxTs = -1;
       document.querySelectorAll<HTMLElement>('[id^="bb_msg_id_"]').forEach((el) => {
         const m = (el.id || "").match(/bb_msg_id_(\d+)/);
         if (m) {
           const ts = parseInt(m[1], 10);
-          if (ts < minTs) minTs = ts;
+          if (ts > maxTs) maxTs = ts;
         }
       });
-      return { minTs: minTs === Infinity ? -1 : minTs };
+      return { maxTs };
     });
 
-    if (tsInfo.minTs > 0 && tsInfo.minTs <= config.incrementalSince) {
-      log(`[Incremental] EARLY-STOP after bottom extract: min visible time ${tsInfo.minTs} <= watermark ${config.incrementalSince}.`);
+    // Chỉ EARLY-STOP khi tin MỚI NHẤT trong cửa sổ <= watermark (mọi tin đã
+    // sync). KHÔNG dùng minTs: cửa sổ DOM hiển thị cả tin cũ lẫn tin mới —
+    // nếu dựa vào minTs (tin cũ nhất) sẽ dừng sớm và BỎ SÓT tin mới ở cuối
+    // cửa sổ (vd nhóm vừa có tin mới sau watermark nhưng cửa sổ vẫn chứa
+    // tin "Hello" cũ hơn watermark).
+    if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince) {
+      log(`[Incremental] EARLY-STOP after bottom extract: max visible time ${tsInfo.maxTs} <= watermark ${config.incrementalSince}.`);
       return collected;
     }
   }
 
   let scrollsDone = 0;
-  // Incremental: collect định kỳ để không mất do ReactVirtualized unmount,
-  // nhưng KHÔNG collect mỗi scroll (nặng ~1-2s). Chỉ đo watermark (nhẹ ~ms)
-  // mỗi window; khi chạm watermark → collect window đó 1 lần rồi dừng.
-  const INCREMENTAL_COLLECT_EVERY = 5;
+  // Incremental: collect mỗi scroll để không mất tin do ReactVirtualized
+  // unmount. Zalo virtualizes rất mạnh — tin mới nằm giữa đáy và vùng cũ
+  // (vd tin vừa gửi cách vài tin từ đáy) bị unmount sau 1-2 scroll, collect
+  // thưa (mỗi 2/5 scroll) sẽ bỏ sót. Collect mỗi scroll chậm hơn (~1-2s)
+  // nhưng đảm bảo bắt đủ mọi tin mới — đúng trọng tâm của incremental.
+  const INCREMENTAL_COLLECT_EVERY = 1;
+  // FULL-SYNC early-stop: nhóm RỖNG hoặc đã cuộn tới ĐỈNH thì scroll thêm vô
+  // ích. Trước đây full sync scroll đủ 40/200 lần (~2.5 phút) dù extract 0 tin.
+  // Theo dõi số tin thu được — nếu không tăng qua vài lần scroll liên tiếp VÀ
+  // container đã ở đỉnh (hoặc rỗng) thì dừng sớm.
+  let prevFullLen = collected.length;
+  let fullNoGrowth = 0;
+  let earlyStopFull = false;
+  const FULL_NOGROWTH_LIMIT = 3;
   while (scrollsDone < totalScrolled) {
     const chunkStart = scrollsDone;
     const chunkEnd = Math.min(chunkStart + CHUNK_SCROLLS, totalScrolled);
@@ -1203,7 +1287,9 @@ export async function scrollZaloChatContainer(
           return { maxTs, minTs: minTs === Infinity ? -1 : minTs };
         });
 
-        // Cả window đều là tin cũ → đã chạm vùng đã sync: collect 1 lần rồi dừng
+        // Cả window đều là tin cũ → đã chạm vùng đã sync: collect 1 lần rồi dừng.
+        // Dựa trên maxTs (tin MỚI NHẤT trong window) — nếu maxTs <= watermark
+        // thì mọi tin còn lại đều là tin cũ đã sync, không cần scroll tiếp.
         if (tsInfo.maxTs > 0 && tsInfo.maxTs <= config.incrementalSince!) {
            log(`[Incremental] EARLY-STOP at scroll ${i + 1}: max visible timestamp ${tsInfo.maxTs} <= watermark ${config.incrementalSince}`);
            pushUnique(await collectZaloMessagesFromPage(page, config));
@@ -1215,18 +1301,37 @@ export async function scrollZaloChatContainer(
         if ((scrollsDone + 1) % INCREMENTAL_COLLECT_EVERY === 0) {
           pushUnique(await collectZaloMessagesFromPage(page, config));
         }
-
-        // Có tin cũ xuất hiện ở đáy window → sắp chạm watermark → collect rồi dừng
-        if (tsInfo.minTs > 0 && tsInfo.minTs <= config.incrementalSince!) {
-           log(`[Incremental] EARLY-STOP at scroll ${i + 1}: min visible timestamp ${tsInfo.minTs} <= watermark ${config.incrementalSince}`);
-           pushUnique(await collectZaloMessagesFromPage(page, config));
-           return collected;
-        }
       } else {
         // COLLECT sau khi scroll (FULL SYNC)
         pushUnique(await collectZaloMessagesFromPage(page, config));
+
+        // Early-stop: dừng khi không thu thêm tin qua nhiều scroll liên tiếp
+        // VÀ đã chạm đỉnh (scrollTop ~ 0) — hoặc nhóm rỗng (collected === 0).
+        // Tránh scroll đủ 40/200 lần vô ích khi nhóm ít/không có tin.
+        if (collected.length > prevFullLen) {
+          fullNoGrowth = 0;
+          prevFullLen = collected.length;
+        } else {
+          fullNoGrowth++;
+        }
+        if (fullNoGrowth >= FULL_NOGROWTH_LIMIT) {
+          const atTop = (await page.evaluate(`
+            const __getZaloScrollContainer = ${getScrollContainer.toString()};
+            (function() { return __getZaloScrollContainer().scrollTop <= 4; })();
+          `)) as boolean;
+          if (atTop || collected.length === 0) {
+            log(`[Zalo] FULL early-stop tại scroll ${i + 1}/${totalScrolled}: ${fullNoGrowth} lần không thêm tin${atTop ? " + đã ở đỉnh" : ""} (collected=${collected.length}).`);
+            earlyStopFull = true;
+            scrollsDone = i + 1;
+            break;
+          }
+          // Chưa ở đỉnh mà không tăng (có thể đang lazy-load chậm) — reset đếm
+          // để cho thêm cơ hội, tránh dừng non giữa chat dài.
+          fullNoGrowth = 0;
+        }
       }
     }
+    if (earlyStopFull) break;
     scrollsDone = chunkEnd;
 
     if (scrollsDone >= totalScrolled) break;
@@ -1236,7 +1341,9 @@ export async function scrollZaloChatContainer(
   // Kick lazy loading on all images with a small nudge (down then back up).
   // We do NOT scroll all the way to the bottom — that would unload the old
   // messages from ReactVirtualized's DOM and we'd lose them for extraction.
-  if (config.incrementalSince === undefined || config.incrementalSince <= 0) {
+  // Bỏ qua nudge (và chờ 4s) khi nhóm RỖNG (không có tin) — không có ảnh nào
+  // để lazy-load, chờ 4s là vô ích.
+  if ((config.incrementalSince === undefined || config.incrementalSince <= 0) && collected.length > 0) {
     await page.evaluate(`
       const __getZaloScrollContainer = ${getScrollContainer.toString()};
       (function() {
@@ -1738,7 +1845,9 @@ function isUsableZaloAvatarSrc(src) {
 
       if ((!finalContent && images.length === 0) || !sender) continue;
 
-      const key = `${sender}|${finalContent.slice(0, 80)}|${images.join(',')}`;
+      const key = platformMsgId
+        ? `id:${platformMsgId}`
+        : `${sender}|${finalContent.slice(0, 80)}|${images.join(',')}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -2082,6 +2191,17 @@ export async function sendZaloMessage(
   log(`Verify OK: chat="${verify.headerName || chatName}" (msgCount=${verify.msgCount})`);
 
   // ── 3. Find the input and type the message ──────────────────
+  // Scroll chat xuống đáy để ô soạn tin chắc chắn hiển thị trong viewport
+  // (nhất là khi cửa sổ to — ô input nằm sát đáy màn hình).
+  await page.evaluate(() => {
+    const container =
+      document.querySelector<HTMLElement>('#messageViewScroll') ||
+      document.querySelector<HTMLElement>('#messageViewContainer') ||
+      document.querySelector<HTMLElement>('[class*="message-view"]');
+    if (container) container.scrollTop = container.scrollHeight;
+  }).catch(() => {});
+  await page.waitForTimeout(300);
+
   const input = page.locator('#richInput, [contenteditable="true"]').first();
   const inputVisible = await input.isVisible({ timeout: 3_000 }).catch(() => false);
   if (!inputVisible) {
@@ -2091,7 +2211,9 @@ export async function sendZaloMessage(
   await input.click();
   await page.waitForTimeout(150);
   await input.fill(message);
-  await page.waitForTimeout(300);
+  // Chờ lâu hơn sau khi fill để user nhìn thấy text trong ô input
+  // (trước khi Enter gửi — nhất là khi chạy headfull để quan sát thao tác).
+  await page.waitForTimeout(1_200);
 
   // Confirm the text actually landed in the input
   const typedText = await page.evaluate(() => {
@@ -2117,6 +2239,8 @@ export async function sendZaloMessage(
 
   // ── 5. Send via Enter ───────────────────────────────────────
   log("Nhan Enter de gui tin nhan...");
+  // Chờ thêm 1 chút để user quan sát text đã vào ô input trước khi gửi
+  await page.waitForTimeout(800);
   await input.press("Enter");
 
   // ── 6. Verify send succeeded ────────────────────────────────

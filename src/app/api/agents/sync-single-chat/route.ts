@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { enqueueJob } from "@/lib/sync-queue";
+import { getProject } from "@/lib/repo/projects";
 
 /**
  * POST /api/agents/sync-single-chat
@@ -23,6 +24,20 @@ export async function POST(req: NextRequest) {
 
     if (!projectId || !chatName) {
       return NextResponse.json({ ok: false, error: "Missing projectId or chatName" }, { status: 400 });
+    }
+
+    // Không sync project đã archive/delete — từ chối sớm để không enqueue
+    // và mở Chrome vô ích.
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        return NextResponse.json({ ok: false, error: "Dự án không tồn tại." }, { status: 404 });
+      }
+      if ((project as any)?.archived || (project as any)?.deletedAt) {
+        return NextResponse.json({ ok: false, error: "Dự án đã lưu trữ hoặc xoá — không đồng bộ." }, { status: 400 });
+      }
+    } catch (e) {
+      console.warn("[SyncSingleChat API] Could not check project status:", e);
     }
 
     const result = enqueueJob({

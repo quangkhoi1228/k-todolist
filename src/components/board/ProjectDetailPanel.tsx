@@ -4,10 +4,11 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
-import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, ChevronDown, ListPlus, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal, History, ShieldCheck } from "lucide-react";
+import { ListTodo, FileText, BarChart3, Copy, Check, StickyNote, Plus, ChevronRight, Trash2, X, MessageSquare, MessagesSquare, Users, Loader2, Quote, Sparkles, ImageIcon, Mail, Download, CheckCircle2, XCircle, ExternalLink, Save, AlertTriangle, Edit3, Search, Send, BrainCircuit, ChevronDown, ListPlus, FileSpreadsheet, RefreshCcw, RefreshCw, MoreHorizontal, History, ShieldCheck, Snowflake, Pause, Target } from "lucide-react";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import { SowImportDialog } from "./SowImportDialog";
 import { TaskListImportPanel } from "./TaskListImportPanel";
+import { DebatePipelineViewer } from "./DebatePipelineViewer";
 import { format } from "date-fns";
 import { WysiwygEditor } from "./WysiwygEditor";
 import type { Doc } from "@/lib/types";
@@ -34,6 +35,11 @@ import {
   useProjectWorkflowMutations,
   useIsdByProject,
   useUnresolvedCountByProject,
+  useDebateRuns,
+  useDebateRunMutations,
+  useSuggestionsByProject,
+  useSuggestionMutations,
+  useTaskMutations,
 } from "@/hooks/useDomain";
 import { useInvalidate } from "@/hooks/useData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -50,6 +56,26 @@ interface ChatMessage {
   isMine?: boolean;
   timestampMs?: number | string | null;
   timestamp?: number | string | null;
+}
+
+interface SuggestionRow {
+  _id?: string;
+  type?: string;
+  title?: string;
+  description?: string;
+  suggestionData?: string;
+  priority?: string;
+  sourceChatName?: string;
+  sourceMessage?: string;
+  sourceSender?: string;
+  sourceTimestamp?: number;
+  actionLabel?: string;
+  actionUrl?: string;
+  input?: string;
+  reasoning?: string;
+  expectedOutcome?: string;
+  isRead?: boolean;
+  isResolved?: boolean;
 }
 
 const DEFAULT_NOTES = `<h2>Thông tin chung</h2>
@@ -70,10 +96,11 @@ interface ProjectDetailPanelProps {
     notes?: string | null;
     archived?: boolean | null;
     deletedAt?: number | null;
+    pauseAutoSync?: boolean | null;
     teamsGroups?: Array<{ name: string; type: "internal" | "customer"; platform?: "teams" | "zalo" | string; url?: string }>;
   };
-  tab?: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks";
-  onTabChange?: (tab: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks") => void;
+  tab?: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks" | "ai-debate" | "debate-history";
+  onTabChange?: (tab: "info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks" | "ai-debate" | "debate-history") => void;
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string; short: string }> = {  todo: { label: "Chưa thực hiện", color: "text-neutral-500", short: "Todo" },
@@ -138,6 +165,17 @@ function PriorityBadge({ priority }: { priority?: string }) {
 function proxyImageUrl(src: string): string {
   if (src.startsWith("blob:") || src.startsWith("data:") || src.startsWith("storage:")) return src;
   return `/api/proxy-image?url=${encodeURIComponent(src)}`;
+}
+
+/** Lấy groupAction từ suggestionData (vd: add_groups — cần thêm nhóm vào dự án) */
+function getGroupAction(s: SuggestionRow): string | undefined {
+  try {
+    if (s.suggestionData) {
+      const parsed = JSON.parse(s.suggestionData);
+      if (parsed?.groupAction) return parsed.groupAction;
+    }
+  } catch { /* ignore malformed data */ }
+  return undefined;
 }
 
 /** Từ deep link Teams/Zalo → { platform, name } để lưu làm tên nhóm.
@@ -1106,9 +1144,164 @@ function SummaryContentView({
   );
 }
 
+// ─── Debate run history entry (lịch sử AI Debate) ─────────────
+const DEBATE_CONFIDENCE_COLOR: Record<string, string> = {
+  high: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/30",
+  medium: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-500/30",
+  low: "bg-slate-500/10 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-500/30",
+};
+
+function DebateRunEntry({ run, date, debug, suggestions, conflicts, trace, onDelete }: {
+  run: any;
+  date: Date | null;
+  debug?: { stage0Ms?: number; stage1Ms?: number; stage2Ms?: number; stage3Ms?: number; totalMs?: number; groupCount?: number };
+  suggestions: any[];
+  conflicts: any[];
+  trace?: { groups?: any[]; synthesis?: any; critic?: any; processSelection?: any };
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const groups = trace?.groups ?? [];
+
+  return (
+    <div className="rounded-lg border border-border/30 bg-background/60 dark:bg-zinc-900/60 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-2.5 py-2 text-left cursor-pointer hover:bg-muted/20 transition-colors"
+      >
+        <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0 ${open ? "rotate-180" : ""}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold text-foreground dark:text-zinc-100">
+              {date ? format(date, "dd/MM/yyyy HH:mm") : "—"}
+            </span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-500/30">
+              {suggestions.length} gợi ý
+            </span>
+            {conflicts.length > 0 && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/30">
+                {conflicts.length} mâu thuẫn
+              </span>
+            )}
+            {debug?.totalMs != null && (
+              <span className="text-[9px] text-muted-foreground/60">
+                {(debug.totalMs / 1000).toFixed(1)}s · {debug.groupCount ?? groups.length} nhóm
+              </span>
+            )}
+          </div>
+        </div>
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="text-muted-foreground/40 hover:text-red-500 cursor-pointer shrink-0"
+          title="Xoá lần chạy này"
+        >
+          <Trash2 className="w-3 h-3" />
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-2.5 pb-2.5 space-y-2">
+          {/* Timing */}
+          {debug && (
+            <div className="flex items-center gap-2 flex-wrap text-[9px] text-muted-foreground bg-muted/20 rounded-lg px-2 py-1.5">
+              <span>S0: {debug.stage0Ms ?? 0}ms</span>
+              <span>·</span>
+              <span>S1: {debug.stage1Ms ?? 0}ms</span>
+              <span>·</span>
+              <span>S2: {debug.stage2Ms ?? 0}ms</span>
+              <span>·</span>
+              <span>S3: {debug.stage3Ms ?? 0}ms</span>
+              <span>·</span>
+              <span>Tổng: {debug.totalMs ?? 0}ms</span>
+            </div>
+          )}
+
+          {/* Process selection (Stage 0) */}
+          {trace?.processSelection && (trace.processSelection.selected?.length > 0) && (
+            <div className="rounded-lg border border-border/20 p-2">
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Stage 0 — Quy trình nghiệp vụ khớp</p>
+              <div className="flex flex-wrap gap-1">
+                {(trace.processSelection.selected as any[]).map((p: any, i: number) => (
+                  <span key={i} className="text-[9px] px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30">
+                    {p.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Groups (Stage 1) */}
+          {groups.length > 0 && (
+            <div className="rounded-lg border border-border/20 p-2">
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Stage 1 — Nhóm ({groups.length})</p>
+              <div className="space-y-1">
+                {groups.map((g: any, i: number) => (
+                  <div key={i} className="flex items-center gap-2 text-[10px]">
+                    <span className="text-foreground dark:text-zinc-200 font-medium truncate flex-1">{g.chatName}</span>
+                    <span className="text-[9px] text-muted-foreground/60">{g.groupType}</span>
+                    <span className="text-[9px] text-muted-foreground/60">{g.findings?.length ?? 0} findings</span>
+                    {g.status === "ok"
+                      ? <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                      : <XCircle className="w-3 h-3 text-red-500 shrink-0" />}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Conflicts (Stage 2) */}
+          {conflicts.length > 0 && (
+            <div className="rounded-lg border border-red-300/40 bg-red-500/5 p-2">
+              <p className="text-[9px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider mb-1 flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3" /> Mâu thuẫn ({conflicts.length})
+              </p>
+              <div className="space-y-1">
+                {conflicts.map((c: any, i: number) => (
+                  <p key={i} className="text-[10px] text-muted-foreground dark:text-zinc-400">
+                    <span className="font-semibold text-foreground dark:text-zinc-200">{c.description}</span>
+                    <span className="text-muted-foreground/60"> ({c.group1} ↔ {c.group2})</span>
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Verified suggestions (Stage 3) */}
+          {suggestions.length > 0 && (
+            <div className="rounded-lg border border-border/20 p-2">
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Gợi ý cuối ({suggestions.length})</p>
+              <div className="space-y-1">
+                {suggestions.map((s: any, i: number) => (
+                  <div key={i} className="rounded border border-border/20 p-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${DEBATE_CONFIDENCE_COLOR[s.confidence] || DEBATE_CONFIDENCE_COLOR.medium}`}>
+                        {s.confidence || "medium"}
+                      </span>
+                      <span className="text-[10px] font-semibold text-foreground dark:text-zinc-200">{s.title || "Gợi ý"}</span>
+                    </div>
+                    {s.description && (
+                      <p className="text-[9px] text-muted-foreground dark:text-zinc-400 mt-0.5 line-clamp-2">{s.description}</p>
+                    )}
+                    {s.sourceChatName && (
+                      <p className="text-[9px] text-muted-foreground/50 mt-0.5">Nguồn: {s.sourceChatName}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnTabChange }: ProjectDetailPanelProps) {
   const { userId } = useAuth();
-  const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks">("info");
+  const [localTab, setLocalTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks" | "ai-debate" | "debate-history">("info");
   const tab = propTab ?? localTab;
   const handleTabChange = propOnTabChange ?? setLocalTab;
   const searchParams = useSearchParams();
@@ -1125,6 +1318,8 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
 // ─── Chats State ───────────────────────────────────
   const [activeTeamsGroups, setActiveTeamsGroups] = useState<{name: string, type: "internal" | "customer", platform?: string, url?: string}[]>(project.teamsGroups || []);
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
+  const [groupAddError, setGroupAddError] = useState<string | null>(null);
+  const [addingGroups, setAddingGroups] = useState(false);
   // Danh sách nhóm đang được nhập trong dialog — cho phép thêm nhiều nhóm Teams/Zalo cùng lúc
   const [pendingGroups, setPendingGroups] = useState<{id: string; name: string; type: "internal" | "customer"; platform: "teams" | "zalo"}[]>([]);
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
@@ -1133,9 +1328,12 @@ export function ProjectDetailPanel({ project, tab: propTab, onTabChange: propOnT
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
   const updateDropdownAnchor = useCallback((rowId: string) => {
     const input = document.querySelector<HTMLInputElement>(`[data-dropdown-row="${rowId}"]`);
-    if (!input) { setDropdownAnchor(null); return; }
+    const dialog = input?.closest<HTMLElement>("[data-group-manager-dialog]");
+    if (!input || !dialog) { setDropdownAnchor(null); return; }
     const r = input.getBoundingClientRect();
-    setDropdownAnchor({ top: r.bottom + 4, left: r.left, width: r.width });
+    const d = dialog.getBoundingClientRect();
+    // DialogContent dùng transform nên position:fixed bị lệch — neo absolute theo hộp dialog.
+    setDropdownAnchor({ top: r.bottom - d.top + 4, left: r.left - d.left, width: r.width });
   }, []);
   const [selectedChatGroup, setSelectedChatGroup] = useState<string>("");
   const [fetchingChats, setFetchingChats] = useState(false);
@@ -1320,6 +1518,98 @@ ${resourceTicketsLinks}
   const { data: projectChatsData } = useMessagesByProject(project._id ?? null, chatGroupNames);
   const projectChats = projectChatsData ?? [];
 
+  // ─── Suggestions State ────────────────────────
+  const { data: projectSuggestions } = useSuggestionsByProject(project._id ?? null);
+  const smx = useSuggestionMutations();
+  const tmx = useTaskMutations();
+  const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
+  const [addingTaskId, setAddingTaskId] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [taskAddedId, setTaskAddedId] = useState<string | null>(null);
+  const [analysingSuggestions, setAnalysingSuggestions] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+
+  const runSuggestionAnalysis = useCallback(async () => {
+    if (!project._id || !userId) return;
+    setAnalysingSuggestions(true);
+    setSuggestionsError(null);
+    try {
+      const res = await fetch("/api/agents/analyse-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectName: project?.name || "",
+          projectId: project._id,
+          messages: projectChats,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to analyse suggestions");
+      const data = await res.json();
+      if (data.ok && data.suggestions && data.suggestions.length > 0) {
+        await smx.addSuggestionsBatch({
+          projectId: project._id,
+          userId,
+          suggestions: data.suggestions.map((s: SuggestionRow) => ({
+            type: s.type || "info",
+            title: s.title || "Gợi ý",
+            description: s.description || "",
+            sourceMessage: s.sourceMessage || undefined,
+            sourceSender: s.sourceSender || undefined,
+            sourceChatName: s.sourceChatName || undefined,
+            sourceTimestamp: s.sourceTimestamp ? String(s.sourceTimestamp) : undefined,
+            actionLabel: s.actionLabel || undefined,
+            actionUrl: s.actionUrl || undefined,
+            suggestionData:
+              s.input || s.reasoning || s.expectedOutcome
+                ? JSON.stringify({
+                    input: s.input,
+                    reasoning: s.reasoning,
+                    expectedOutcome: s.expectedOutcome,
+                  })
+                : undefined,
+          })),
+        });
+      }
+    } catch (err) {
+      console.error("[Suggestions] Error:", err);
+      setSuggestionsError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setAnalysingSuggestions(false);
+    }
+  }, [project._id, project?.name, userId, smx, projectChats]);
+
+  // Thêm suggestion vào tasklist của project
+  const handleAddSuggestionTask = useCallback(async (s: SuggestionRow) => {
+    if (addingTaskId) return;
+    setAddingTaskId(s._id ?? null);
+    setTaskError(null);
+    setTaskAddedId(null);
+    try {
+      let priority: string | undefined;
+      try {
+        if (s.suggestionData) {
+          const parsed = JSON.parse(s.suggestionData);
+          priority = parsed?.priority;
+        }
+      } catch { /* ignore */ }
+      await tmx.createTask({
+        userId,
+        title: s.title,
+        estimatedTime: 0,
+        notes: s.description,
+        project: project._id,
+        status: "todo",
+        priority: priority === "high" ? "high" : priority === "low" ? "low" : "normal",
+      });
+      setTaskAddedId(s._id ?? null);
+    } catch (err) {
+      console.error("[Suggestions] Add task failed:", err);
+      setTaskError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setAddingTaskId(null);
+    }
+  }, [addingTaskId, tmx, userId, project._id]);
+
   const [showSyncLogs, setShowSyncLogs] = useState(false);
   // Fetch sync logs for this project — refresh only while the logs panel
   // is actually visible (prevents constant 5s polling → page flicker).
@@ -1328,6 +1618,12 @@ ${resourceTicketsLinks}
     userId,
   });
   const [isClearing, setIsClearing] = useState(false);
+
+  // Fetch debate run history for this project (lịch sử AI Debate)
+  const { data: debateRunsData } = useDebateRuns(project._id ?? null, 30);
+  const debateRunsList = debateRunsData ?? [];
+  const debateRunsMutations = useDebateRunMutations();
+  const invalidateAll = useInvalidate();
 
   // Fetch emails for this project
   const { data: projectEmailsData } = useEmails(userId, { projectId: project._id });
@@ -1412,9 +1708,30 @@ ${resourceTicketsLinks}
     }
   }, [activeTeamsGroups, selectedChatGroup]);
 
+  // Dropdown gợi ý được portal ra document.body (thoát transform của dialog) nên
+  // Base UI coi click vào list là outside-press → đóng dialog trước khi chọn/lưu.
+  const handleGroupManagerOpenChange = (open: boolean, eventDetails?: { reason?: string; event?: Event; cancel?: () => void }) => {
+    if (!open && eventDetails?.reason === "outside-press") {
+      const target = eventDetails.event?.target;
+      if (target instanceof Element && target.closest("[data-group-suggest-dropdown]")) {
+        eventDetails.cancel?.();
+        return;
+      }
+    }
+    setIsGroupManagerOpen(open);
+    if (!open) {
+      setOpenDropdownId(null);
+      setDropdownAnchor(null);
+      setGroupAddError(null);
+    }
+  };
+
   const handleAddGroup = async () => {
     const valid = pendingGroups.filter((g) => g.name.trim() !== "");
     if (valid.length === 0) return;
+    setGroupAddError(null);
+    setOpenDropdownId(null);
+    setDropdownAnchor(null);
 
     // Chuyển URL deep link (Teams/Zalo) dán vào ô tên → thêm platform + tên/ID nhận diện.
     // Không lưu URL làm tên nhóm (gây lỗi sync "Không tìm thấy chat").
@@ -1434,31 +1751,35 @@ ${resourceTicketsLinks}
     const names = new Set(activeTeamsGroups.map((g) => g.name));
     // Bỏ qua nhóm trùng tên với nhóm đã có
     const newPending = normalized.filter((g) => !names.has(g.name));
-    const skipped = valid.length - newPending.length;
     if (newPending.length === 0) {
-      setPendingGroups([]);
-      setIsGroupManagerOpen(false);
+      setGroupAddError("Nhóm này đã có trong dự án.");
       return;
     }
+
+    const prevGroups = activeTeamsGroups;
     const newGroups = [
       ...activeTeamsGroups,
       ...newPending.map((g) => ({ name: g.name, type: g.type, platform: g.platform })),
     ];
     setActiveTeamsGroups(newGroups);
-    setPendingGroups([]);
-    setOpenDropdownId(null);
-    setDropdownAnchor(null);
-    setIsGroupManagerOpen(false); // Close modal on success
-
-    await pm.updateProject({
-      id: project._id,
-      teamsGroups: newGroups,
-    });
-
-    // Tự động đồng bộ chat cho từng nhóm vừa thêm (hiện animation trạng thái trên UI)
-    newPending.forEach((g) => {
-      syncChat(g.name, g.platform);
-    });
+    setAddingGroups(true);
+    try {
+      await pm.updateProject({
+        id: project._id,
+        teamsGroups: newGroups,
+      });
+      setPendingGroups([]);
+      setIsGroupManagerOpen(false);
+      // Tự động đồng bộ chat cho từng nhóm vừa thêm (hiện animation trạng thái trên UI)
+      newPending.forEach((g) => {
+        syncChat(g.name, g.platform);
+      });
+    } catch (err) {
+      setActiveTeamsGroups(prevGroups);
+      setGroupAddError(err instanceof Error ? err.message : "Không lưu được nhóm. Thử lại.");
+    } finally {
+      setAddingGroups(false);
+    }
   };
 
   const handleRemoveGroup = async (idx: number) => {
@@ -1496,6 +1817,20 @@ ${resourceTicketsLinks}
     await pm.updateProject({ id: project._id, teamsGroups: merged });
     newOnes.forEach((g) => syncChat(g.name.trim(), g.platform));
   };
+
+  // ─── Tạm dừng auto-sync (demo: giữ data chat cố định) ───
+  const [pausingAutoSync, setPausingAutoSync] = useState(false);
+  const handleTogglePauseAutoSync = useCallback(async () => {
+    if (!project?._id || pausingAutoSync) return;
+    setPausingAutoSync(true);
+    try {
+      await pm.updateProject({ id: project._id, pauseAutoSync: !project.pauseAutoSync });
+    } catch (err) {
+      console.error("[Project] Toggle pauseAutoSync lỗi:", err);
+    } finally {
+      setPausingAutoSync(false);
+    }
+  }, [project?._id, project?.pauseAutoSync, pausingAutoSync, pm]);
 
   // Thêm một dòng nhập nhóm mới vào dialog (Enter ở dòng cuối / nút "Thêm dòng")
   const addPendingRow = (platform: "teams" | "zalo") => {
@@ -1682,6 +2017,9 @@ ${resourceTicketsLinks}
     if (!project?._id || autoReloadIntervalConfig === 0) return;
     // Không auto-reload/sync khi project đã archive hoặc xoá
     if (project.archived || project.deletedAt) return;
+    // Project đang pause auto-sync → không tự quét tin mới (demo giữ state cố định).
+    // User vẫn sync thủ công qua nút "Đồng bộ mới nhất".
+    if (project.pauseAutoSync) return;
 
     setAutoReloadCountdown(autoReloadIntervalConfig);
     const intervalId = setInterval(() => {
@@ -2078,7 +2416,7 @@ ${resourceTicketsLinks}
   }, [sending]);
 
   return (
-    <div className={`border border-border/50 rounded-xl bg-card/50 backdrop-blur-sm shadow-inner ${tab === "chats" ? "h-full flex flex-col" : "overflow-hidden"}`}>
+    <div className={`border border-border/50 rounded-xl bg-card/50 backdrop-blur-sm shadow-inner ${tab === "chats" || tab === "import-tasks" ? "h-full flex flex-col" : "overflow-hidden"}`}>
       {/* Tabs */}
       <div className="flex items-center gap-1 px-2 pt-2 pb-0 border-b border-border/30">
         <button
@@ -2104,6 +2442,12 @@ ${resourceTicketsLinks}
         >
           <MessageSquare className="w-3 h-3" />
           Chats ({activeTeamsGroups.length || 0})
+          {project.pauseAutoSync && (
+            <span className="ml-1 inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20" title="Auto-sync đã tạm dừng. Bấm 'Đồng bộ mới nhất' để sync thủ công.">
+              <Snowflake className="w-2.5 h-2.5" />
+              Auto-sync đã tạm dừng
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -2119,56 +2463,32 @@ ${resourceTicketsLinks}
         </button>
         <button
           type="button"
-          onClick={() => handleTabChange("notes")}
+          onClick={() => handleTabChange("ai-debate")}
           className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-            tab === "notes"
+            tab === "ai-debate"
               ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
               : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
           }`}
         >
-          <StickyNote className="w-3 h-3" />
-          Ghi chú ({projectNotes.length})
+          <BrainCircuit className="w-3 h-3" />
+          AI Debate
         </button>
         <button
           type="button"
-          onClick={() => handleTabChange("emails")}
+          onClick={() => handleTabChange("debate-history")}
           className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-            tab === "emails"
+            tab === "debate-history"
               ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
               : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
           }`}
         >
-          <Mail className="w-3 h-3" />
-          Email ({projectEmails?.length || 0})
-        </button>
-        <button
-          type="button"
-          onClick={() => handleTabChange("members")}
-          className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-            tab === "members"
-              ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
-          }`}
-        >
-          <Users className="w-3 h-3" />
-          Members ({projectMembers?.length || 0})
-        </button>
-        <button
-          type="button"
-          onClick={() => handleTabChange("summaries")}
-          className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-            tab === "summaries"
-              ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
-          }`}
-        >
-          <Save className="w-3 h-3" />
-          KB dự án {summaries && summaries.length > 0 ? `(${summaries.length})` : ""}
+          <History className="w-3 h-3" />
+          Lịch sử debate {debateRunsList.length > 0 ? `(${debateRunsList.length})` : ""}
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger
             className={`px-3 py-1.5 text-[11px] font-semibold rounded-t-lg transition-all cursor-pointer flex items-center gap-1 ${
-              ["summary", "history"].includes(tab)
+              ["summary", "history", "notes", "emails", "members", "summaries"].includes(tab)
                 ? "bg-background text-foreground border border-border/60 border-b-background -mb-px shadow-sm"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
             }`}
@@ -2177,6 +2497,22 @@ ${resourceTicketsLinks}
             Khác <ChevronDown className="w-3 h-3 opacity-50" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48 text-[11px]">
+            <DropdownMenuItem onClick={() => handleTabChange("notes")} className="cursor-pointer gap-2">
+              <StickyNote className="w-3 h-3" />
+              Ghi chú ({projectNotes.length})
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleTabChange("emails")} className="cursor-pointer gap-2">
+              <Mail className="w-3 h-3" />
+              Email ({projectEmails?.length || 0})
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleTabChange("members")} className="cursor-pointer gap-2">
+              <Users className="w-3 h-3" />
+              Members ({projectMembers?.length || 0})
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleTabChange("summaries")} className="cursor-pointer gap-2">
+              <Save className="w-3 h-3" />
+              KB dự án {summaries && summaries.length > 0 ? `(${summaries.length})` : ""}
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleTabChange("summary")} className="cursor-pointer gap-2">
               <BarChart3 className="w-3 h-3" />
               Summary JIRA
@@ -2193,6 +2529,95 @@ ${resourceTicketsLinks}
       <div className={`p-3 ${tab === "chats" || tab === "import-tasks" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
         {tab === "info" ? (
           <div className="space-y-1.5">
+            {/* Phase Workflow (init → kick-off) */}
+            <PhaseWorkflowCard
+              project={{
+                _id: project._id,
+                name: project.name,
+                ticketId: (project as any).ticketId ?? undefined,
+              }}
+              userId={userId ?? undefined}
+              saleName={isdSaleName || undefined}
+              saleEmail={isdSaleEmail || undefined}
+              presaleName={memberPresaleName || undefined}
+              presaleMemberEmail={memberPresaleEmail || undefined}
+              projectDescription={project.notes ? (() => {
+                try {
+                  const parsed = JSON.parse(project.notes);
+                  if (parsed && typeof parsed === "object" && parsed.ticketId) {
+                    return `${parsed.summary || ""} ${parsed.requester || ""} ${parsed.description || ""}`.trim();
+                  }
+                } catch { /* not json */ }
+                return project.notes;
+              })() : undefined}
+              workflow={workflow}
+              loading={workflowLoading}
+              onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
+              onUpdateStep={(stepKey, status) =>
+                wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status: status ?? null })
+              }
+              onGenerateTasks={(items, prefix) =>
+                wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
+              }
+              onGenerateSowTasks={(items) =>
+                wfmx.generateSowTasks({ projectId: project._id, userId, items })
+              }
+              onSwitchTab={(t) => handleTabChange(t as any)}
+              fetchChatLists={(platforms) =>
+                fetchChats(platforms?.[0] as any).then(() => ({
+                  teams: availableTeamsChats.map((c) => c.name),
+                  zalo: availableZaloChats.map((c) => c.name),
+                }))
+              }
+              onSaveGroups={handleSaveWorkflowGroups}
+              onAddMember={async (args) => {
+                // Tìm role "Pre-sale" của user để gán roleId (nếu có)
+                const presaleRole = (projectRolesList || []).find(
+                  (r: any) => String(r.name || "").toLowerCase() === "pre-sale"
+                );
+                // Upsert (không duplicate) — member presale đã tồn tại thì cập nhật lại
+                return mmx.addOrUpdateMember({
+                  projectId: args.projectId,
+                  userId: args.userId,
+                  name: args.name,
+                  email: args.email,
+                  roleId: presaleRole?._id || undefined,
+                  roleName: "Pre-sale",
+                  source: args.source || "teams-search",
+                });
+              }}
+              projectTasks={projectTasks}
+              projectChats={projectChats}
+              projectGroups={activeTeamsGroups}
+            />
+            {/* Tạm dừng auto-sync — demo giữ data chat cố định */}
+            <div className="flex items-center justify-between gap-2 border border-border/50 rounded-lg px-2.5 py-2 bg-card/40">
+              <div className="flex items-center gap-1.5 min-w-0">
+                {project.pauseAutoSync ? (
+                  <Snowflake className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                ) : (
+                  <Pause className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                )}
+                <span className="text-[10px] font-medium text-foreground leading-tight">Tạm dừng auto-sync</span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!!project.pauseAutoSync}
+                title="Khi bật, project không tự quét tin nhắn mới. Data chat giữ nguyên để demo. Bấm 'Đồng bộ mới nhất' để sync thủ công."
+                onClick={handleTogglePauseAutoSync}
+                disabled={pausingAutoSync}
+                className={`relative w-8 h-[18px] rounded-full transition-colors shrink-0 cursor-pointer disabled:opacity-50 ${
+                  project.pauseAutoSync ? "bg-sky-500" : "bg-muted"
+                }`}
+              >
+                <span
+                  className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${
+                    project.pauseAutoSync ? "translate-x-[16px]" : "translate-x-[2px]"
+                  }`}
+                />
+              </button>
+            </div>
             {/* WYSIWYG Editor — compact */}
             <div className="relative min-h-[120px] max-h-[250px] overflow-y-auto border border-border/50 rounded-lg">
               <WysiwygEditor
@@ -2599,14 +3024,19 @@ ${resourceTicketsLinks}
                   <Users className="w-3.5 h-3.5" />
                   Danh sách nhóm
                 </span>
-                <Dialog open={isGroupManagerOpen} onOpenChange={setIsGroupManagerOpen}>
+                <Dialog
+                  open={isGroupManagerOpen}
+                  onOpenChange={handleGroupManagerOpenChange}
+                  disablePointerDismissal={openDropdownId !== null}
+                >
                   <DialogTrigger
-                    className="p-1 hover:bg-muted rounded text-muted-foreground transition-colors"
+                    type="button"
+                    className="p-1 hover:bg-muted rounded text-muted-foreground transition-colors cursor-pointer"
                     title="Thêm nhóm"
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </DialogTrigger>
-                  <DialogContent className="sm:max-w-xl bg-card border-border">
+                  <DialogContent data-group-manager-dialog className="sm:max-w-xl bg-card border-border overflow-visible">
                     <DialogHeader>
                       <DialogTitle className="text-lg font-bold flex items-center gap-2">
                         <MessageSquare className="w-5 h-5 text-primary" />
@@ -2735,17 +3165,22 @@ ${resourceTicketsLinks}
                       {openDropdownId && dropdownAnchor && (() => {
                         const activeRow = pendingGroups.find((r) => r.id === openDropdownId);
                         if (!activeRow) return null;
+                        const dialogEl = document.querySelector("[data-group-manager-dialog]");
+                        if (!dialogEl) return null;
                         const chatList = activeRow.platform === "zalo" ? availableZaloChats : availableTeamsChats;
                         const matches = chatList.filter((c) =>
                           c.name.toLowerCase().includes(activeRow.name.toLowerCase())
                         );
-                        // Portal ra document.body để thoát khỏi containing block của Radix Dialog
-                        // (position:fixed bên trong dialog bị tính sai vị trí khi dialog có transform/zoom)
+                        // Portal vào chính dialog popup (không phải document.body): click vẫn
+                        // nằm trong popup nên Base UI không đóng dialog; absolute tránh lệch
+                        // do transform trên DialogContent.
                         return createPortal(
                           <div
-                            className="fixed bg-background border border-border rounded-md shadow-lg max-h-40 overflow-y-auto z-[100] custom-scrollbar"
+                            data-group-suggest-dropdown
+                            className="absolute bg-background border border-border rounded-md shadow-lg max-h-40 overflow-y-auto z-[60] pointer-events-auto custom-scrollbar"
                             style={{ top: dropdownAnchor.top, left: dropdownAnchor.left, width: dropdownAnchor.width }}
                             onMouseDown={(e) => e.preventDefault() /* keep input focus while clicking list */}
+                            onPointerDown={(e) => e.stopPropagation()}
                             onScroll={() => updateDropdownAnchor(openDropdownId)}
                           >
                             <div className="sticky top-0 bg-background/95 backdrop-blur px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border/40">
@@ -2798,7 +3233,7 @@ ${resourceTicketsLinks}
                               </div>
                             )}
                           </div>,
-                          document.body
+                          dialogEl
                         );
                       })()}
 
@@ -2821,6 +3256,12 @@ ${resourceTicketsLinks}
                         </button>
                       </div>
 
+                      {groupAddError && (
+                        <p className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-md px-2.5 py-1.5">
+                          {groupAddError}
+                        </p>
+                      )}
+
                       <div className="flex justify-end gap-2 pt-2 border-t border-border/40">
                         <button
                           type="button"
@@ -2828,18 +3269,24 @@ ${resourceTicketsLinks}
                             setPendingGroups([]);
                             setOpenDropdownId(null);
                             setDropdownAnchor(null);
+                            setGroupAddError(null);
                             setIsGroupManagerOpen(false);
                           }}
-                          className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted transition-colors"
+                          className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted transition-colors cursor-pointer"
                         >
                           Hủy
                         </button>
                         <button
                           type="button"
+                          onMouseDown={() => {
+                            setOpenDropdownId(null);
+                            setDropdownAnchor(null);
+                          }}
                           onClick={handleAddGroup}
-                          disabled={pendingGroups.every((g) => g.name.trim() === "")}
-                          className="px-4 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                          disabled={addingGroups || pendingGroups.every((g) => g.name.trim() === "")}
+                          className="px-4 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors cursor-pointer inline-flex items-center gap-1.5"
                         >
+                          {addingGroups && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                           Thêm {pendingGroups.filter((g) => g.name.trim() !== "").length} nhóm
                         </button>
                       </div>
@@ -3106,25 +3553,21 @@ ${resourceTicketsLinks}
             <div className="flex-1 min-w-0 flex flex-col gap-2 pr-1">
               {/* Chat header */}
               <div className="shrink-0 flex items-center gap-2 pb-2 border-b border-border/30">
-                <MessageSquare className="w-3.5 h-3.5 text-primary" />
-                <span className="text-[12px] font-semibold text-foreground/90">
+                <MessageSquare className="w-3.5 h-3.5 text-primary shrink-0" />
+                <span className="text-[12px] font-semibold text-foreground/90 truncate">
                   {selectedChatGroup || "Chọn nhóm chat"}
-                </span>
-                <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded-full">
-                  {projectChats?.filter((m) => m.chatName === selectedChatGroup)?.length || 0
-                  } tin nhắn
                 </span>
 
                 {selectedChatGroup && syncErrors[selectedChatGroup] && !syncingGroups.has(selectedChatGroup) && (
                   <span
-                    className="inline-flex items-center gap-1 text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full"
+                    className="inline-flex items-center gap-1 text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full shrink-0 whitespace-nowrap"
                     title={syncErrors[selectedChatGroup]}
                   >
                     <AlertTriangle className="w-2.5 h-2.5" />
                     Lỗi đồng bộ
                   </span>
                 )}
-                <div className="ml-auto flex items-center gap-1.5">
+                <div className="ml-auto flex items-center gap-1.5 shrink-0">
                   <div className="relative w-48 shrink-0 mr-1">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none" />
                     <input
@@ -3149,7 +3592,7 @@ ${resourceTicketsLinks}
                     type="button"
                     onClick={handleReloadChat}
                     disabled={syncingGroups.has(selectedChatGroup)}
-                    className="h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 cursor-pointer bg-primary/10 text-primary hover:bg-primary/20 hover:shadow-sm border border-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 cursor-pointer bg-primary/10 text-primary hover:bg-primary/20 hover:shadow-sm border border-primary/20 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
                     title={syncingGroups.has(selectedChatGroup)
                       ? `Đang tải lại tin nhắn của "${selectedChatGroup}" từ Teams/Zalo...`
                       : `Tải lại tin nhắn của "${selectedChatGroup}" từ Teams/Zalo`}
@@ -3180,10 +3623,10 @@ ${resourceTicketsLinks}
                       }
                     }}
                     disabled={isClearing || !selectedChatGroup || syncingGroups.has(selectedChatGroup)}
-                    className="h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-red-600 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="h-7 px-2.5 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-red-600 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
                     title={selectedChatGroup ? `Xóa dữ liệu chat của "${selectedChatGroup}" và đồng bộ lại` : "Chọn nhóm chat trước"}
                   >
-                    {isClearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    {isClearing ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Trash2 className="w-3.5 h-3.5 shrink-0" />}
                     <span>Xóa & đ.bộ</span>
                   </button>
                 </div>
@@ -3530,66 +3973,332 @@ ${resourceTicketsLinks}
             </div>
           </div>
         ) : tab === "suggestions" ? (
-          <PhaseWorkflowCard
-            project={{
-              _id: project._id,
-              name: project.name,
-              ticketId: (project as any).ticketId ?? undefined,
-            }}
-            userId={userId ?? undefined}
-            saleName={isdSaleName || undefined}
-            saleEmail={isdSaleEmail || undefined}
-            presaleName={memberPresaleName || undefined}
-            presaleMemberEmail={memberPresaleEmail || undefined}
-            projectDescription={project.notes ? (() => {
-              try {
-                const parsed = JSON.parse(project.notes);
-                if (parsed && typeof parsed === "object" && parsed.ticketId) {
-                  return `${parsed.summary || ""} ${parsed.requester || ""} ${parsed.description || ""}`.trim();
-                }
-              } catch { /* not json */ }
-              return project.notes;
-            })() : undefined}
-            workflow={workflow}
-            loading={workflowLoading}
-            onUpdateWorkflow={wfmx.updateWorkflowPhase ? (body) => (body.phase ? wfmx.updateWorkflowPhase(body) : wfmx.updateWorkflowData(body)) : wfmx.updateWorkflowData}
-            onUpdateStep={(stepKey, status) =>
-              wfmx.updateWorkflowStep({ projectId: project._id, userId, stepKey, status: status ?? null })
-            }
-            onGenerateTasks={(items, prefix) =>
-              wfmx.generateTrackingTasks({ projectId: project._id, userId, items, prefix })
-            }
-            onGenerateSowTasks={(items) =>
-              wfmx.generateSowTasks({ projectId: project._id, userId, items })
-            }
-            onSwitchTab={(t) => handleTabChange(t as any)}
-            fetchChatLists={(platforms) =>
-              fetchChats(platforms?.[0] as any).then(() => ({
-                teams: availableTeamsChats.map((c) => c.name),
-                zalo: availableZaloChats.map((c) => c.name),
-              }))
-            }
-            onSaveGroups={handleSaveWorkflowGroups}
-            onAddMember={async (args) => {
-              // Tìm role "Pre-sale" của user để gán roleId (nếu có)
-              const presaleRole = (projectRolesList || []).find(
-                (r: any) => String(r.name || "").toLowerCase() === "pre-sale"
-              );
-              // Upsert (không duplicate) — member presale đã tồn tại thì cập nhật lại
-              return mmx.addOrUpdateMember({
-                projectId: args.projectId,
-                userId: args.userId,
-                name: args.name,
-                email: args.email,
-                roleId: presaleRole?._id || undefined,
-                roleName: "Pre-sale",
-                source: args.source || "teams-search",
-              });
-            }}
-            projectTasks={projectTasks}
-            projectChats={projectChats}
-            projectGroups={activeTeamsGroups}
-          />
+          <div className="flex flex-col gap-2 max-h-[500px] overflow-y-auto custom-scrollbar">
+            {/* Header */}
+            <div className="flex items-center justify-between shrink-0 border-b border-border/40 pb-2 mb-1">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-primary" />
+                <span className="text-[12px] font-semibold text-foreground/90">
+                  Gợi ý hành động
+                </span>
+                <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded-full">
+                  {projectSuggestions?.length || 0}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={runSuggestionAnalysis}
+                disabled={analysingSuggestions}
+                className={`text-[10px] px-2 py-1 rounded border transition-all flex items-center gap-1 cursor-pointer ${
+                  analysingSuggestions
+                    ? "bg-muted text-muted-foreground border-border/50"
+                    : "bg-primary/10 text-primary border-primary/20 hover:bg-primary/20"
+                }`}
+              >
+                {analysingSuggestions ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                Phân tích
+              </button>
+            </div>
+
+            {/* Error */}
+            {suggestionsError && (
+              <div className="p-2 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-[11px] text-red-700 dark:text-red-300">
+                {suggestionsError}
+              </div>
+            )}
+
+            {/* Suggestions List */}
+            {projectSuggestions && projectSuggestions.length > 0 ? (
+              <div className="space-y-1.5 pr-1">
+                {projectSuggestions.map((s: SuggestionRow) => (
+                  <div
+                    key={s._id}
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      s.isResolved
+                        ? "bg-muted/20 border-border/20 opacity-60"
+                        : !s.isRead
+                          ? "bg-primary/5 border-primary/30 shadow-sm"
+                          : s.type === "warning"
+                            ? "bg-red-50/60 dark:bg-red-500/10 border-red-200 dark:border-red-500/30"
+                            : s.type === "transfer_request"
+                              ? "bg-blue-50/60 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30"
+                              : s.type === "mention"
+                                ? "bg-amber-50/60 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30"
+                                : s.type === "deadline"
+                                  ? "bg-orange-50/60 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/30"
+                                  : s.type === "action_item"
+                                    ? "bg-purple-50/60 dark:bg-purple-500/10 border-purple-200 dark:border-purple-500/30"
+                                    : "bg-card/50 border-border/30"
+                    }`}
+                    onClick={() => {
+                      if (!s.isRead && s._id) smx.markSuggestionAsRead(s._id);
+                      setExpandedSuggestionId(expandedSuggestionId === s._id ? null : s._id ?? null);
+                    }}
+                  >
+                    <div className="flex items-start gap-2">
+                      <div className="flex flex-col items-center gap-0.5 mt-0.5 shrink-0">
+                        <div className={`w-2 h-2 rounded-full ${
+                          !s.isRead ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
+                        }`} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${
+                            s.type === "warning" ? "bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300"
+                              : s.type === "transfer_request" ? "bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300"
+                              : s.type === "mention" ? "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                              : s.type === "deadline" ? "bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-300"
+                              : s.type === "action_item" ? "bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300"
+                              : "bg-slate-100 dark:bg-slate-500/20 text-slate-700 dark:text-slate-300"
+                          }`}>
+                            {s.type === "transfer_request" ? "Bàn giao"
+                              : s.type === "mention" ? "Đề cập"
+                              : s.type === "action_item" ? "Hành động"
+                              : s.type === "deadline" ? "Hạn chót"
+                              : s.type === "warning" ? "Cảnh báo"
+                              : "Thông tin"}
+                          </span>
+                          <span className="text-[11px] font-semibold text-foreground">{s.title}</span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{s.description}</p>
+
+                        {/* Source info */}
+                        {(s.sourceSender || s.sourceChatName) && (
+                          <div className="flex items-center gap-2 mt-1.5">
+                            {s.sourceSender && (
+                              <span className="text-[9px] text-muted-foreground/60 bg-muted/40 px-1.5 py-0.5 rounded">
+                                {s.sourceSender}
+                              </span>
+                            )}
+                            {s.sourceChatName && (
+                              <span className="text-[9px] text-muted-foreground/60 bg-muted/40 px-1.5 py-0.5 rounded">
+                                {s.sourceChatName}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Reason details (input / reasoning / expected outcome) */}
+                        {(() => {
+                          let reason: { input?: string; reasoning?: string; expectedOutcome?: string } = {};
+                          try {
+                            if (s.suggestionData) {
+                              const parsed = JSON.parse(s.suggestionData);
+                              reason = {
+                                input: parsed?.input,
+                                reasoning: parsed?.reasoning,
+                                expectedOutcome: parsed?.expectedOutcome,
+                              };
+                            }
+                          } catch { /* ignore malformed data */ }
+                          const hasReason = Boolean(reason.input || reason.reasoning || reason.expectedOutcome);
+                          const expanded = expandedSuggestionId === s._id;
+                          return (
+                            <div className="mt-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedSuggestionId(expanded ? null : (s._id ?? null));
+                                }}
+                                className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                                  expanded
+                                    ? "bg-primary/10 text-primary border-primary/30"
+                                    : "bg-muted/30 text-muted-foreground border-border/40 hover:bg-muted/50 hover:text-foreground"
+                                }`}
+                              >
+                                <BrainCircuit className="w-2.5 h-2.5" />
+                                {expanded ? "Thu gọn" : "Xem nguyên nhân"}
+                                <ChevronDown className={`w-2.5 h-2.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+                              </button>
+                              {expanded && (
+                                <div className="mt-1.5 space-y-1.5 rounded-lg border border-border/30 bg-background/60 dark:bg-zinc-900/60 p-2">
+                                  {reason.input && (
+                                    <div className="flex gap-1.5">
+                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Input</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.input}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {reason.reasoning && (
+                                    <div className="flex gap-1.5">
+                                      <BrainCircuit className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wide">Suy luận</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.reasoning}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {reason.expectedOutcome && (
+                                    <div className="flex gap-1.5">
+                                      <Target className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">Kết quả mong muốn</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{reason.expectedOutcome}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {!hasReason && s.sourceMessage && (
+                                    <div className="flex gap-1.5">
+                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Tin nhắn gốc</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{s.sourceMessage}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {!hasReason && !s.sourceMessage && (
+                                    <div className="flex gap-1.5">
+                                      <Quote className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <div className="min-w-0">
+                                        <p className="text-[8px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Nguyên nhân</p>
+                                        <p className="text-[10px] text-muted-foreground dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{s.description}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                          {!s.isRead && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (s._id) smx.markSuggestionAsRead(s._id);
+                              }}
+                              className="text-[9px] px-2 py-1 rounded-md bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+                            >
+                              Đã đọc
+                            </button>
+                          )}
+                          {!s.isResolved && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (s._id) smx.markSuggestionAsResolved(s._id);
+                              }}
+                              className="text-[9px] px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+                            >
+                              Đã xử lý
+                            </button>
+                          )}
+                          {s.actionLabel && s.actionUrl && (
+                            <a
+                              href={s.actionUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[9px] px-2 py-1 rounded-md bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors cursor-pointer"
+                            >
+                              {s.actionLabel}
+                            </a>
+                          )}
+                          {/* Thêm vào tasklist */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAddSuggestionTask(s);
+                            }}
+                            disabled={addingTaskId !== null}
+                            className="text-[9px] px-2 py-1 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 hover:bg-indigo-500/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                            title="Thêm gợi ý này vào danh sách công việc"
+                          >
+                            {addingTaskId === s._id ? (
+                              <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang thêm...</>
+                            ) : taskAddedId === s._id ? (
+                              <><CheckCircle2 className="w-2.5 h-2.5" /> Đã thêm task</>
+                            ) : (
+                              <><ListPlus className="w-2.5 h-2.5" /> Thêm task</>
+                            )}
+                          </button>
+                          {/* Thêm nhóm nội bộ & khách hàng — chuyển tới panel quản lý nhóm của dự án */}
+                          {getGroupAction(s) === "add_groups" && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTabChange("chats");
+                                setIsGroupManagerOpen(true);
+                              }}
+                              className="text-[9px] px-2 py-1 rounded-md bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-500/30 hover:bg-orange-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                              title="Mở panel quản lý nhóm của dự án để thêm nhóm nội bộ và nhóm khách hàng"
+                            >
+                              <><Users className="w-2.5 h-2.5" /> Thêm nhóm vào dự án</>
+                            </button>
+                          )}
+                          {/* Gửi tin nhắn qua Teams — mở deep link chat 1:1 với Sale, tin nhắn điền sẵn */}
+                          {(() => {
+                            let teamsDeepLink: string | undefined;
+                            let saleEmail: string | undefined;
+                            try {
+                              if (s.suggestionData) {
+                                const parsed = JSON.parse(s.suggestionData);
+                                teamsDeepLink = parsed?.teamsDeepLink;
+                                saleEmail = parsed?.saleEmail;
+                              }
+                            } catch { /* ignore malformed data */ }
+                            if (!teamsDeepLink) return null;
+                            const deepLink = (() => {
+                              try {
+                                const base = new URL(teamsDeepLink);
+                                base.searchParams.set("message", s.description || "");
+                                return base.toString();
+                              } catch {
+                                return teamsDeepLink;
+                              }
+                            })();
+                            return (
+                              <a
+                                href={deepLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[9px] px-2 py-1 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 hover:bg-sky-500/20 transition-colors cursor-pointer inline-flex items-center gap-1"
+                                title={`Mở chat Teams với Sale: ${saleEmail || ""} — tin nhắn được điền sẵn`}
+                              >
+                                <><MessagesSquare className="w-2.5 h-2.5" /> Gửi tin nhắn qua Teams</>
+                              </a>
+                            );
+                          })()}
+                          {taskError && (
+                            <span className={`text-[9px] ml-1 flex items-center gap-1 text-red-600 dark:text-red-400`}>
+                              <AlertTriangle className="w-2.5 h-2.5" />
+                              {taskError}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-40 text-muted-foreground text-center p-4">
+                {analysingSuggestions ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin text-primary/60 mb-2" />
+                    <span className="text-[11px]">Đang phân tích tin nhắn...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5 text-muted-foreground/30 mb-2" />
+                    <span className="text-[11px]">Chưa có gợi ý nào</span>
+                    <span className="text-[10px] text-muted-foreground/50 mt-1">
+                      Nhấn &quot;Phân tích&quot; để AI gợi ý hành động từ tin nhắn Teams
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         ) : tab === "emails" ? (
           /* Emails Tab */
           <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
@@ -3824,6 +4533,68 @@ ${resourceTicketsLinks}
                   );
                 })}
               </div>
+            )}
+          </div>
+        ) : tab === "ai-debate" ? (
+          <div className="p-3 max-h-[440px] overflow-y-auto">
+            <DebatePipelineViewer
+              projectId={String(project._id ?? "")}
+              projectName={project.name ?? ""}
+              messages={projectChats.map((m: any) => ({
+                sender: m.sender,
+                chatName: m.chatName,
+                content: m.content,
+                timestampMs: m.timestampMs ?? m.timestamp,
+                platform: m.platform,
+                groupType: (activeTeamsGroups.find((g) => g.name === m.chatName)?.type) as "customer" | "internal" | undefined,
+              }))}
+              projectContext={project.notes ?? undefined}
+              userId={userId ?? undefined}
+              onComplete={() => debateRunsMutations ? undefined : undefined}
+            />
+          </div>
+        ) : tab === "debate-history" ? (
+          <div className="p-3 max-h-[440px] overflow-y-auto space-y-2">
+            {debateRunsList.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 text-center">
+                <History className="w-8 h-8 text-muted-foreground/30 mb-2" />
+                <p className="text-xs font-medium text-muted-foreground/70">
+                  Chưa có lần chạy debate nào.
+                </p>
+                <p className="text-[10px] text-muted-foreground/40 mt-1">
+                  Mở tab "AI Debate" và bấm "Chạy phân tích" — kết quả sẽ được lưu lại đây.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] text-muted-foreground">
+                    {debateRunsList.length} lần chạy · bấm vào để xem chi tiết (trace 3-stage)
+                  </p>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!confirm("Xoá toàn bộ lịch sử debate của dự án này?")) return;
+                      await debateRunsMutations.deleteByProject({ projectId: project._id });
+                    }}
+                    className="text-[10px] text-red-500/70 hover:text-red-600"
+                  >
+                    Xoá tất cả
+                  </button>
+                </div>
+                {debateRunsList.map((run: any) => {
+                  const date = run._creationTime ? new Date(run._creationTime) : null;
+                  const debug = run.result?.debugInfo as
+                    | { stage0Ms?: number; stage1Ms?: number; stage2Ms?: number; stage3Ms?: number; totalMs?: number; groupCount?: number }
+                    | undefined;
+                  const suggestions = (run.result?.suggestions as any[]) ?? [];
+                  const conflicts = (run.result?.conflicts as any[]) ?? [];
+                  const trace = run.result?.trace as
+                    | { groups?: any[]; synthesis?: any; critic?: any; processSelection?: any }
+                    | undefined;
+                  return <DebateRunEntry key={run._id} run={run} date={date} debug={debug} suggestions={suggestions} conflicts={conflicts} trace={trace} onDelete={() => debateRunsMutations.deleteRun({ id: String(run._id) })} />;
+                })}
+              </>
             )}
           </div>
         ) : null}

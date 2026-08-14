@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useRoles, useRoleUsageCounts, useRoleMutations } from "@/hooks/useDomain";
 import { CAPABILITY_CATALOG, type RoleCapability } from "@/lib/roleCapabilities";
@@ -57,10 +57,22 @@ export default function RolesSettingsPage() {
 
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
+  // Ngăn seed lặp: sau khi seed, không seed lại trong cùng phiên dù roles refetch
+  const seededRef = useRef(false);
+
   // Seed roles on first load if empty
   useEffect(() => {
-    if (roles !== undefined && roles.length === 0 && userId) {
-      rm.seedDefaultRoles(userId);
+    if (roles !== undefined && userId && !seededRef.current) {
+      const defaultNames = ["Sale", "Pre-sale", "Tech Infras", "Project Manager", "Khách hàng", "Firewall License Manager"];
+      const hasAllDefaults = defaultNames.every((n) =>
+        roles.some((r) => r.name === n)
+      );
+      // Seed khi chưa có role nào HOẶC thiếu role mặc định (backfill role mới
+      // như "Khách hàng" cho user đã có sẵn role cũ)
+      if (roles.length === 0 || !hasAllDefaults) {
+        seededRef.current = true;
+        rm.seedDefaultRoles(userId);
+      }
     }
   }, [roles, userId, rm]);
 
@@ -126,7 +138,7 @@ export default function RolesSettingsPage() {
   }, []);
 
   const isDefaultRole = (name: string) =>
-    ["Sale", "Pre-sale", "Tech Infras", "Project Manager"].includes(name);
+    ["Sale", "Pre-sale", "Tech Infras", "Project Manager", "Khách hàng", "Firewall License Manager"].includes(name);
 
   return (
     <div className="p-3 h-full min-h-0 flex flex-col gap-3">

@@ -45,6 +45,8 @@ function getRunningPid(): number | null {
 }
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
@@ -61,7 +63,13 @@ export async function POST(req: NextRequest) {
     if (action === "health") {
       const exec = require("util").promisify(require("child_process").exec);
       const scriptPath = path.join(process.cwd(), "agents/pm/scripts/outlook-send.ts");
-      const env = { ...process.env };
+      const env = {
+        ...process.env,
+        // Dùng CDP Chrome thật đang mở (nếu có) — không mở Chrome thứ 2 cùng
+        // profile, không kill → không mất login Outlook/Teams.
+        USE_CDP: process.env.USE_CDP ?? "1",
+        CDP_PORT: process.env.CDP_PORT ?? "9222",
+      };
 
       try {
         const { stdout } = await exec(`npx tsx "${scriptPath}" --health`, {
@@ -147,6 +155,11 @@ export async function POST(req: NextRequest) {
 
       const env: Record<string, string | undefined> = {
         ...process.env,
+        // Ưu tiên CDP: nếu Chrome thật đang mở profile `.teams-session` (CDP 9222)
+        // thì connect dùng luôn — KHÔNG mở Chrome riêng, KHÔNG kill, giữ nguyên
+        // login Outlook/Teams. Fallback persistent profile nếu không có CDP.
+        USE_CDP: process.env.USE_CDP ?? "1",
+        CDP_PORT: process.env.CDP_PORT ?? "9222",
       };
 
       // Promisify the child process so we wait for the actual send result

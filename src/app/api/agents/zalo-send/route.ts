@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
       const chatName = body.chatName as string | undefined;
       const message = body.message as string | undefined;
       const dryRun = body.dryRun === true;
-      const headless = body.headless === true; // default headfull so user sees the send
+      const headless = body.headless !== false; // mặc định headless; headfull khi body.headless === false
 
       // Validate
       if (!chatName || !chatName.trim()) {
@@ -131,6 +131,7 @@ export async function POST(req: NextRequest) {
 
       const env: Record<string, string | undefined> = {
         ...process.env,
+        USE_CDP: "0",
       };
 
       // Wait for the actual send result

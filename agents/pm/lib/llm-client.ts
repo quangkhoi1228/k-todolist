@@ -7,7 +7,7 @@
 import { parseIntent, generateAgentResponse } from "./intent-parser";
 import type { ParsedIntent } from "./intent-parser";
 
-export type LLMAction = "create_project" | "lookup_ticket" | "view_project" | "goto_project" | "chat" | "add_personnel" | "create_meeting" | "update_sow" | "add_task";
+export type LLMAction = "create_project" | "lookup_ticket" | "view_project" | "goto_project" | "chat" | "add_personnel" | "create_meeting" | "update_sow" | "add_task" | "send_message" | "send_email";
 
 export interface LLMTaskItem {
   title: string;
@@ -26,12 +26,23 @@ export interface LLMResult {
   reply: string;
   confidence: number;
   tasks?: LLMTaskItem[] | null;
+  // send_message
+  platform?: "teams" | "zalo";
+  chatName?: string;
+  messageBody?: string;
+  memberName?: string;
+  // send_email
+  emailTo?: string[];
+  emailSubject?: string;
+  emailBody?: string;
 }
 
 export async function analyzeWithLLM(
   text: string,
   history?: Array<{ role: "user" | "agent" | "system"; content: string }>,
-  contextProject?: { name: string; ticketId?: string | null } | null
+  contextProject?: { name: string; ticketId?: string | null } | null,
+  members?: Array<{ name: string; roleName: string; email?: string | null }> | null,
+  groups?: Array<{ name: string; type: string; platform?: string }> | null
 ): Promise<LLMResult> {
   try {
     const res = await fetch("/api/agents/parse-intent", {
@@ -41,6 +52,8 @@ export async function analyzeWithLLM(
         text,
         history: (history || []).slice(-10),
         contextProject: contextProject || null,
+        members: members || null,
+        groups: groups || null,
       }),
     });
 
@@ -52,7 +65,7 @@ export async function analyzeWithLLM(
     const data: LLMResult = await res.json();
 
     // Validate response
-    const validActions = ["create_project", "lookup_ticket", "view_project", "goto_project", "chat", "add_personnel", "create_meeting", "update_sow", "add_task"];
+    const validActions = ["create_project", "lookup_ticket", "view_project", "goto_project", "chat", "add_personnel", "create_meeting", "update_sow", "add_task", "send_message", "send_email"];
     if (!data.action || !validActions.includes(data.action)) {
       return fallbackParse(text);
     }
@@ -115,5 +128,12 @@ function fallbackParse(text: string): LLMResult {
             priority: (["low", "normal", "high"].includes(t.priority ?? "") ? t.priority : undefined) as LLMTaskItem["priority"],
           }))
       : undefined,
+    platform: intent.platform,
+    chatName: intent.chatName,
+    messageBody: intent.messageBody,
+    memberName: intent.memberName,
+    emailTo: intent.emailTo,
+    emailSubject: intent.emailSubject,
+    emailBody: intent.emailBody,
   };
 }

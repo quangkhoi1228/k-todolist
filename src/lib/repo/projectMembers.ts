@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { projectMembers } from "../db";
 import { resolveMemberCapabilities, type RoleCapability } from "../roleCapabilities";
+import { patchLatestSummary, type NextStepItem } from "./projectSummaries";
 
 export { resolveMemberCapabilities };
 export type { RoleCapability };
@@ -50,7 +51,19 @@ export async function addMember(args: {
       createdAt: Date.now(),
     })
     .returning();
-  return mapMember(res[0]);
+  const created = mapMember(res[0]);
+
+  // Ghi KB chung dự án: thêm member mới vào nextSteps
+  try {
+    const nextSteps: NextStepItem[] = [
+      { text: `Thêm member: ${created.name} (${created.roleName || ""})`, done: true, source: "auto:member" },
+    ];
+    await patchLatestSummary(args.projectId, { nextSteps }, { userId: args.userId });
+  } catch (err) {
+    console.error("[addMember] Ghi KB nextSteps lỗi:", err);
+  }
+
+  return created;
 }
 
 /**

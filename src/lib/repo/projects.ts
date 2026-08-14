@@ -1,6 +1,19 @@
-import { desc, eq, isNull } from "drizzle-orm";
+import { desc, eq, isNull, inArray } from "drizzle-orm";
 import { getDb } from "../db";
-import { projects, tasks, notes } from "../db";
+import {
+  projects,
+  tasks,
+  notes,
+  taskDependencies,
+  projectChats,
+  projectSuggestions,
+  projectWorkflows,
+  projectSummaries,
+  projectMembers,
+  projectIsdData,
+  debateRuns,
+  syncLogs,
+} from "../db";
 
 // ─── Row types ─────────────────────────────────────────────
 export interface TeamGroup {
@@ -26,6 +39,7 @@ export interface ProjectRow {
   isdStatus: string | null;
   isdUpdatedAt: number | null;
   phase: string | null;
+  pauseAutoSync: boolean | null;
 }
 
 export interface InsertProject {
@@ -111,6 +125,7 @@ export async function updateProject(id: number | string, updates: {
   ticketId?: string;
   teamsGroups?: TeamGroup[];
   phase?: string;
+  pauseAutoSync?: boolean;
 }) {
   const db = getDb();
   const pid = Number(id);
@@ -121,6 +136,7 @@ export async function updateProject(id: number | string, updates: {
   if (updates.ticketId !== undefined) patch.ticketId = updates.ticketId;
   if (updates.teamsGroups !== undefined) patch.teamsGroups = updates.teamsGroups;
   if (updates.phase !== undefined) patch.phase = updates.phase;
+  if (updates.pauseAutoSync !== undefined) patch.pauseAutoSync = updates.pauseAutoSync;
   await db.update(projects).set(patch).where(eq(projects.id, pid));
 }
 
@@ -184,15 +200,40 @@ export async function deleteProject(id: number | string) {
   const db = getDb();
   const pid = Number(id);
 
-  // 1. Delete all tasks
+  // 1. Delete task dependencies of this project's tasks, then the tasks
+  const taskRows = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(eq(tasks.project, pid));
+  const taskIds = taskRows.map((t) => t.id);
+  if (taskIds.length > 0) {
+    await db.delete(taskDependencies).where(inArray(taskDependencies.taskId, taskIds));
+    await db.delete(taskDependencies).where(inArray(taskDependencies.dependsOnTaskId, taskIds));
+  }
   await db.delete(tasks).where(eq(tasks.project, pid));
-  // Also delete task dependencies for those tasks
-  const rows = await db.select().from(notes).where(eq(notes.projectId, pid));
-  for (const row of rows) {
+
+  // 2. Delete notes (recursively)
+  const noteRows = await db.select().from(notes).where(eq(notes.projectId, pid));
+  for (const row of noteRows) {
     await deleteAllChildNotes(row.id);
     await db.delete(notes).where(eq(notes.id, row.id));
   }
-  // 2. Delete the project
+
+  // 3. Delete all other project-scoped data so we never leave orphans
+  //    (synced chats, suggestions, workflows, summaries, members, ISD data,
+  //    debate runs, sync logs). Missing any of these previously caused stale
+  //    data to linger under a dead projectId and appear to "leak" into new
+  //    projects that reused a group name.
+  await db.delete(projectChats).where(eq(projectChats.projectId, pid));
+  await db.delete(projectSuggestions).where(eq(projectSuggestions.projectId, pid));
+  await db.delete(projectWorkflows).where(eq(projectWorkflows.projectId, pid));
+  await db.delete(projectSummaries).where(eq(projectSummaries.projectId, pid));
+  await db.delete(projectMembers).where(eq(projectMembers.projectId, pid));
+  await db.delete(projectIsdData).where(eq(projectIsdData.projectId, pid));
+  await db.delete(debateRuns).where(eq(debateRuns.projectId, pid));
+  await db.delete(syncLogs).where(eq(syncLogs.projectId, pid));
+
+  // 4. Delete the project itself
   await db.delete(projects).where(eq(projects.id, pid));
 }
 

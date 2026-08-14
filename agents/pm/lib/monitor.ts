@@ -5,7 +5,16 @@
  */
 
 import { getMessagesByProject } from "../../../src/lib/repo/projectChats";
-import { addSuggestionsBatch } from "../../../src/lib/repo/projectSuggestions";
+import {
+  addSuggestionsBatch,
+  collapseOlderPendingDuplicatesByProject,
+  getSuggestionsByProject,
+} from "../../../src/lib/repo/projectSuggestions";
+import { runDebatePipeline } from "../../../src/lib/ai/debate";
+import { getSessionByProject, getGeneralSession, addMessage, getMessages } from "../../../src/lib/repo/agentsPm";
+import { getProject } from "../../../src/lib/repo/projects";
+import { getMembersByProject } from "../../../src/lib/repo/projectMembers";
+import { isPendingDuplicate, isPendingItem } from "../../../src/lib/suggestionDedup";
 
 export interface MonitorMessage {
   sender?: string;
@@ -37,23 +46,31 @@ export async function runMonitor(
 ) {
   if (!savedMessages || savedMessages.length === 0) return;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  const apiBase = process.env.OPENAI_BASE_URL;
-  const model = process.env.LLM_MODEL || "deepsseek-v4_mimo_combo";
-
-  if (!apiKey || !apiBase) {
-    console.log(`[Monitor] Skipped: no LLM credentials`);
-    return;
-  }
-
   try {
+    // Không monitor project đã archive/delete — user không còn theo dõi dự án
+    // này nữa, không nên tốn LLM call hay tạo gợi ý cho nó.
+    let projectGroups: Array<{ name: string; platform?: string; type?: string }> = [];
+    try {
+      const proj = await getProject(projectId);
+      if (proj && ((proj as any)?.archived || (proj as any)?.deletedAt)) {
+        console.log(`[Monitor] Skip project ${projectId} — archived/deleted.`);
+        return;
+      }
+      if (Array.isArray((proj as any)?.teamsGroups)) {
+        projectGroups = (proj as any).teamsGroups
+          .filter((g: any) => g && g.name)
+          .map((g: any) => ({ name: g.name, platform: g.platform, type: g.type }));
+      }
+    } catch { /* DB lỗi thì vẫn tiếp tục như cũ */ }
+
     console.log(`[Monitor] Analysing ${savedMessages.length} new messages for PM action...`);
 
     // Merge recent messages from BOTH platforms for full context
     let crossPlatformLog: string[] = [];
+    let recent: any[] = [];
     try {
-      const recent = await getMessagesByProject(projectId, undefined);
-      crossPlatformLog = (recent || [])
+      recent = (await getMessagesByProject(projectId, undefined)) || [];
+      crossPlatformLog = recent
         .map((m: any) => `[${m.platform || ""}] [${m.chatName || ""}] ${m.sender || "Unknown"}: ${(m.content || "").slice(0, 400)}`)
         .filter((s: string) => s.length > 0);
     } catch (e) {
@@ -61,154 +78,81 @@ export async function runMonitor(
     }
     // Fall back to the just-saved messages if DB query failed
     if (crossPlatformLog.length === 0) {
-      crossPlatformLog = savedMessages
-        .slice(-30)
+      recent = savedMessages.slice(-30);
+      crossPlatformLog = recent
         .map((m: any) => `[${m.sender || "Unknown"}]: ${(m.content || "").slice(0, 500)}`)
         .filter((s: string) => s.length > 0);
     }
 
     const messageLog = crossPlatformLog.join("\n");
 
-    const systemPrompt = `Bạn là PM Agent - trợ lý quản lý dự án thông minh.
+    // Tải danh sách thành viên dự án (đặc biệt Sale) để LLM điền tên/xưng hô trong checklist message
+    let members: Array<{ name?: string; email?: string; roleName?: string }> = [];
+    try {
+      const m = await getMembersByProject(projectId);
+      members = (m || []).map((mm: any) => ({
+        name: mm.name,
+        email: mm.email,
+        roleName: mm.roleName,
+      }));
+    } catch (e) {
+      console.warn(`[Monitor] Could not load project members: ${e}`);
+    }
 
-Phân tích tin nhắn từ nhóm chat dự án (có thể gồm cả Teams nội bộ và Zalo với khách hàng) và xác định:
-1. Có cần PM tham gia giải quyết vấn đề gì không?
-2. Nếu có, cần hành động gì?
+    // ── Phân tích bằng multi-agent debate pipeline ──
+    // Stage 0 (LLM chọn quy trình từ kho — semantic, KHÔNG keyword-match)
+    // + Stage 1/2/3 (per-group → synthesis → critic). Trả về suggestions
+    // đã verified kèm confidence.
+    // Giới hạn 20 tin gần nhất để tránh timeout LLM khi project có nhiều lịch sử.
+    // Gộp bản trùng chưa làm + tải gợi ý pending để không báo lại cùng chủ đề.
+    try {
+      const n = await collapseOlderPendingDuplicatesByProject(projectId);
+      if (n > 0) console.log(`[Monitor] Collapsed ${n} older pending duplicate suggestion(s).`);
+    } catch (e) {
+      console.warn(`[Monitor] Collapse pending duplicates failed: ${e}`);
+    }
+    let pendingSuggestions: any[] = [];
+    try {
+      const existing = await getSuggestionsByProject(projectId);
+      pendingSuggestions = (existing || []).filter((s: any) => isPendingItem(s));
+    } catch (e) {
+      console.warn(`[Monitor] Could not load existing suggestions: ${e}`);
+    }
 
-Phân loại action theo 4 nhóm:
-- "action_item" — việc cần PM làm/chỉ đạo (vd: tạo task, cập nhật tiến độ, gửi email)
-- "risk" — rủi ro tiềm ẩn cần PM theo dõi (vd: dịch vụ ngừng hỗ trợ, thay đổi scope)
-- "blocker" — việc đang vướng/chặn, cần PM xử lý để gỡ (vd: khách kết nối lỗi chưa fix, chờ bên khác mà không phản hồi)
-- "decision" — cần chốt quyết định giữa các bên (vd: chọn phương án, chốt timeline, chốt IP plan)
-
-Mỗi action cần có:
-- priority: "high" | "medium" | "low" (high = đang chặn tiến độ/ảnh hưởng KH, medium = cần làm trong ngày, low = theo dõi)
-- title: ngắn gọn, rõ ràng
-- description: giải thích VÌ SAO cần PM + bối cảnh cụ thể từ tin nhắn
-- sourceSender: người gửi tin nhắn liên quan
-- sourceMessage: trích nguyên văn tin nhắn quan trọng nhất (tối đa 200 ký tự)
-- actionLabel: hành động cụ thể PM nên làm (vd: "Theo dõi với Đạt và Minh Long", "Xác nhận với KH qua Zalo")
-- input: tóm tắt ngắn gọn dữ liệu/tin nhắn gốc đã dùng làm căn cứ (2-3 câu, trích dẫn nội dung liên quan)
-- reasoning: suy luận/tại sao đi đến kết luận này, căn cứ vào điều gì trong tin nhắn (2-4 câu)
-- expectedOutcome: kết quả mong muốn nếu PM thực hiện hành động (1-2 câu, mô tả trạng thái hoàn thành)
-
-QUAN TRỌNG: Chỉ đề xuất hành động KHI THỰC SỰ CẦN THIẾT. Nếu tin nhắn là trao đổi thông thường hoặc đã được xử lý xong, trả về [].
-QUAN TRỌNG: Tất cả nội dung text (title, description, sourceSender, actionLabel, input, reasoning, expectedOutcome) PHẢI viết tiếng Việt CÓ DẤU đầy đủ. NGHIÊM CẤM viết tiếng Việt không dấu (vd "du an", "ban muon lam gi").
-
-Output là JSON array, không markdown, không code block:
-[{"type":"action_item","priority":"high","title":"...","description":"...","sourceSender":"...","sourceMessage":"...","actionLabel":"...","input":"...","reasoning":"...","expectedOutcome":"..."}]`;
-
-    const response = await fetch(`${apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Phân tích tin nhắn:\n\n${messageLog}` },
-        ],
-        temperature: 0.1,
-        max_tokens: 8192,
-        // IMPORTANT: this router appends "data: [DONE]" + a trailing JSON object
-        // to non-streamed responses, which breaks JSON.parse. Force stream:false
-        // AND handle the merged-trailer case defensively below.
-        stream: false,
+    const recentForAnalysis = recent.slice(-20);
+    const debate = await runDebatePipeline({
+      projectName: projectName || `Dự án ${projectId}`,
+      projectId,
+      messages: recentForAnalysis.map((m: any) => {
+        const g = projectGroups.find((x) => x.name === m.chatName);
+        return {
+          sender: m.sender,
+          chatName: m.chatName,
+          content: m.content,
+          platform: m.platform || g?.platform,
+          timestampMs: m.timestampMs,
+          groupType: g?.type === "customer" || g?.type === "internal" ? g.type : undefined,
+        };
       }),
-      signal: AbortSignal.timeout(240000),
+      projectContext: messageLog,
+      userId,
+      members,
+      projectGroups,
+      pendingSuggestions,
+      includeTrace: false,
     });
 
-    if (!response.ok) {
-      console.warn(`[Monitor] LLM error: ${response.status}`);
-      return;
-    }
+    let actions: any[] = debate.suggestions || [];
 
-    const rawText = await response.text();
-
-    // Strip SSE trailers. Some proxies append "data: [DONE]" glued straight
-    // onto the closing "}" (e.g. `...cost":"0"}data: [DONE]`). Remove the
-    // trailer AND any text after the last complete JSON object.
-    let content = rawText
-      .replace(/data:\s*\[DONE\]\s*$/i, "")
-      .replace(/(\]|\})\s*data:\s*\[DONE\]\s*$/i, "$1")
-      .trim();
-
-    // If there is still junk after the JSON (defensive), grab the largest
-    // balanced block that parses as JSON.
-    const parseJson = (s: string): any => {
-      try { return { ok: true, value: JSON.parse(s) }; } catch { return { ok: false }; }
-    };
-
-    try {
-      const parsed = JSON.parse(content);
-      const msg = parsed.choices?.[0]?.message;
-      if (msg?.content && msg.content.trim().length > 0) {
-        content = msg.content;
-      } else if (msg?.reasoning_content) {
-        // DeepSeek reasoning models put the final answer at the END of
-        // reasoning_content. Take the LAST [...] block (the final answer),
-        // not the first (which is usually a description of the task).
-        content = msg.reasoning_content;
-      }
-    } catch {}
-
-    content = content.trim();
-
-    let actions: any[] = [];
-    // Try direct JSON array parse first (content may already be the array
-    // string, or the full OpenAI envelope we unwrap below).
-    const envelope = parseJson(content);
-    if (envelope.ok) {
-      const msg = envelope.value?.choices?.[0]?.message;
-      if (msg?.content && typeof msg.content === "string" && msg.content.trim().length > 0) {
-        content = msg.content.trim();
-      } else if (msg?.reasoning_content) {
-        content = msg.reasoning_content;
-      }
-    }
-
-    try {
-      actions = JSON.parse(content);
-      if (!Array.isArray(actions)) throw new Error("not array");
-    } catch {
-      // Fallback: for reasoning content, prefer the LAST [...] block (final answer)
-      const matches = content.match(/\[[\s\S]*?\]/g) || [];
-      // Keep only blocks that look like JSON arrays of objects
-      const candidates = matches.filter(m => {
-        const r = parseJson(m);
-        return r.ok && Array.isArray(r.value) && r.value.every((x: any) => x && typeof x === "object");
-      });
-      const best = candidates.length > 0 ? candidates[candidates.length - 1] : null;
-      if (best) {
-        const r = parseJson(best);
-        if (r.ok) {
-          actions = r.value;
-        } else {
-          console.log(`[Monitor] Could not parse JSON from LLM response`);
-          return;
-        }
-      }
-    }
-
-    // Keep only actions with a meaningful title (LLM sometimes returns
-    // placeholder objects like {actionLabel: ""} for "no action needed")
-    actions = actions.filter((a: any) => a && typeof a.title === "string" && a.title.trim().length > 0);
-
-    // Normalize type + priority
-    actions = actions.map((a: any) => ({
-      ...a,
-      type: ["action_item", "risk", "blocker", "decision"].includes(a.type) ? a.type : "action_item",
-      priority: ["high", "medium", "low"].includes(a.priority) ? a.priority : "medium",
-    }));
-
-    if (!Array.isArray(actions) || actions.length === 0) {
+    if (actions.length === 0) {
       console.log(`[Monitor] No PM action needed`);
       return;
     }
 
     console.log(`[Monitor] Found ${actions.length} action(s) needing PM:`);
-    actions.forEach((a: any) => console.log(`  - [${a.priority}] ${a.title}: ${a.actionLabel}`));
+    actions.forEach((a: any) => console.log(`  - [${a.confidence || "medium"}] ${a.title}: ${a.actionLabel || ""}`));
 
-    await addSuggestionsBatch({
+    const saved = await addSuggestionsBatch({
       projectId: projectId,
       userId,
       suggestions: actions.map((a: any) => ({
@@ -219,19 +163,174 @@ Output là JSON array, không markdown, không code block:
         sourceChatName: a.sourceChatName || chatName,
         sourceMessage: a.sourceMessage,
         actionLabel: a.actionLabel,
-        // Encode priority + detected time + reasoning details in suggestionData for UI display
+        // Encode priority + confidence + detected time + reasoning details in suggestionData for UI display
         suggestionData: JSON.stringify({
-          priority: a.priority || "medium",
+          priority: a.priority || a.confidence || "medium",
+          confidence: a.confidence || "medium",
           detectedAt: Date.now(),
           input: a.input,
           reasoning: a.reasoning,
           expectedOutcome: a.expectedOutcome,
+          checklist: Array.isArray(a.checklist) ? a.checklist : null,
         }),
       })),
     });
 
-    console.log(`[Monitor] Saved ${actions.length} suggestion(s) to Postgres.`);
+    console.log(`[Monitor] Saved ${saved.saved} new suggestion(s) to Postgres${saved.skipped ? `, skipped ${saved.skipped} pending duplicate(s)` : ""}.`);
+
+    // Chỉ báo chat những gợi ý THẬT SỰ mới lưu — không nhắn lại card pending chưa làm.
+    const newActions = actions.filter((a: any) =>
+      (saved.inserted || []).some(
+        (s) => s.title === (a.title || "Cần PM xử lý") && s.description === (a.description || "")
+      )
+    );
+    if (newActions.length > 0) {
+      await notifyPmChat({ actions: newActions, projectId, userId, projectName });
+    }
   } catch (err) {
     console.warn(`[Monitor] Error:`, err);
+  }
+}
+
+/**
+ * Gửi tin nhắn thông báo gợi ý mới vào khung chat PM Agent.
+ * Ưu tiên session của project; nếu chưa có thì dùng general session.
+ * Nếu không có session nào → bỏ qua (tin nhắn sẽ chỉ hiện ở panel Gợi ý).
+ */
+async function notifyPmChat(opts: {
+  actions: any[];
+  projectId: string | number;
+  userId: string;
+  projectName?: string;
+}): Promise<void> {
+  try {
+    let { actions, projectId, userId, projectName } = opts;
+
+    let sessionId: number | null = null;
+    try {
+      const projectSession = await getSessionByProject(userId, projectId);
+      if (projectSession) {
+        sessionId = Number(projectSession._id);
+      } else {
+        const general = await getGeneralSession(userId);
+        if (general) sessionId = Number(general._id);
+      }
+    } catch (e) {
+      console.warn(`[Monitor] Could not resolve PM session: ${e}`);
+      return;
+    }
+
+    if (!sessionId) {
+      console.log(`[Monitor] No PM session found — skip chat notification.`);
+      return;
+    }
+
+    // Nếu khung chat đã có card cùng chủ đề chưa thực thi → không nhắn lại.
+    try {
+      const recent = await getMessages(sessionId);
+      const pendingNotifs: any[] = [];
+      for (const m of (recent || []).slice(-40)) {
+        if (!m.metadata) continue;
+        let meta: any;
+        try {
+          meta = JSON.parse(m.metadata);
+        } catch {
+          continue;
+        }
+        if (meta?.action !== "suggestion_notification" || !Array.isArray(meta.suggestions)) continue;
+        for (const s of meta.suggestions) {
+          pendingNotifs.push({
+            title: s.title,
+            description: s.description,
+            sourceMessage: s.sourceMessage,
+            checklist: s.checklist,
+            isResolved: false,
+          });
+        }
+      }
+      const fresh = actions.filter((a: any) => !isPendingDuplicate(a, pendingNotifs));
+      if (fresh.length === 0) {
+        console.log(`[Monitor] Skip chat notification — pending unexecuted card already in session ${sessionId}.`);
+        return;
+      }
+      actions = fresh;
+    } catch (e) {
+      console.warn(`[Monitor] Could not check existing chat notifications: ${e}`);
+    }
+
+    // Tên dự án để hiển thị trong tin nhắn
+    let displayName = projectName || `Dự án ${projectId}`;
+    if (!projectName) {
+      try {
+        const proj = await getProject(projectId);
+        if (proj) displayName = proj.name;
+      } catch { /* ignore */ }
+    }
+
+    const lines = actions.slice(0, 5).map((a: any) => {
+      const conf = a.confidence || "medium";
+      const confLabel = conf === "high" ? "🔴" : conf === "low" ? "🟢" : "🟡";
+      const src = a.sourceChatName ? ` (${a.sourceChatName})` : "";
+      return `- ${confLabel} **${a.title || "Gợi ý"}**${src}\n  ${(a.description || "").slice(0, 180)}`;
+    });
+
+    // Checklist (các bước hành động cụ thể) — từ steps quy trình nghiệp vụ khớp.
+    // Hiển thị dạng checkbox để PM biết việc cần làm ngay.
+    const checklistLines = actions
+      .slice(0, 5)
+      .flatMap((a: any) => {
+        const cl = Array.isArray(a.checklist) ? a.checklist : [];
+        if (cl.length === 0) return [];
+        return [
+          `  📋 **${a.title || "Gợi ý"}**:`,
+          ...cl.map((c: any) => {
+            const grp = c.targetGroup ? ` → **${c.targetGroup}**` : "";
+            const msg = c.messageContent ? `\n      \`${c.messageContent}\`` : "";
+            return `    - ☐ ${c.title || ""}${grp}${msg}`;
+          }),
+        ];
+      });
+
+    const extra = actions.length > 5 ? `\n\n... và ${actions.length - 5} gợi ý khác.` : "";
+
+    const content =
+      `📬 **PM Agents phát hiện ${actions.length} gợi ý mới** cho dự án **${displayName}**:\n\n` +
+      lines.join("\n") +
+      (checklistLines.length > 0 ? `\n\n${checklistLines.join("\n")}` : "") +
+      `${extra}\n\nBạn có thể xem chi tiết & xử lý trong mục **Gợi ý** (biểu tượng ✨ bên trái).`;
+
+    // Metadata chứa đầy đủ thông tin chi tiết từng gợi ý (reasoning + checklist)
+    // để frontend render nguyên nhân, checklist action và nút Duyệt/Từ chối.
+    const suggestionItems = actions.map((a: any) => ({
+      title: a.title || "Gợi ý",
+      description: a.description || "",
+      type: a.type || "action_item",
+      confidence: a.confidence || "medium",
+      priority: a.priority || a.confidence || "medium",
+      sourceSender: a.sourceSender || null,
+      sourceChatName: a.sourceChatName || null,
+      sourceMessage: a.sourceMessage || null,
+      actionLabel: a.actionLabel || null,
+      input: a.input || null,
+      reasoning: a.reasoning || null,
+      expectedOutcome: a.expectedOutcome || null,
+      checklist: Array.isArray(a.checklist) ? a.checklist : null,
+    }));
+
+    await addMessage({
+      sessionId,
+      role: "agent",
+      content,
+      metadata: JSON.stringify({
+        action: "suggestion_notification",
+        projectId: String(projectId),
+        projectName: displayName,
+        suggestionCount: actions.length,
+        suggestions: suggestionItems,
+      }),
+    });
+    console.log(`[Monitor] Sent chat notification to PM session ${sessionId}.`);
+  } catch (err) {
+    console.warn(`[Monitor] Chat notification failed (non-fatal):`, err);
   }
 }

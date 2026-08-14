@@ -11,9 +11,12 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import TextareaAutosize from "react-textarea-autosize";
-import { usePmMessages, usePmSessionById, usePmMutations, useProjects, useSuggestionMutations, useTaskMutations, useTasksByProject } from "@/hooks/useDomain";
+import { usePmMessages, usePmSessionById, usePmMutations, useProjects, useSuggestionMutations, useTaskMutations, useTasksByProject, useMembersByProject } from "@/hooks/useDomain";
+import { SuggestionNotificationCard, parseSuggestionNotification } from "@/components/chat/SuggestionNotificationCard";
 import { analyzeWithLLM } from "../../../../../agents/pm/lib/llm-client";
 import type { LLMAction, LLMTaskItem } from "../../../../../agents/pm/lib/llm-client";
+import { resolveSendTarget, sendChatMessage, platformLabel, resolveEmailTarget, sendOutlookEmail } from "@/lib/chatSend";
+import { supersededSuggestionMessageIds } from "@/lib/suggestionDedup";
 
 interface PendingAction {
   text: string;
@@ -21,6 +24,15 @@ interface PendingAction {
   ticketId: string | null;
   reply: string;
   tasks?: LLMTaskItem[];
+  // send_message
+  platform?: "teams" | "zalo";
+  chatName?: string;
+  messageBody?: string;
+  memberName?: string;
+  // send_email
+  emailTo?: string[];
+  emailSubject?: string;
+  emailBody?: string;
 }
 
 const ISD_ENDPOINT = process.env.NEXT_PUBLIC_ISD_ENDPOINT || "https://servicedesk.fci.vn/rest";
@@ -85,10 +97,11 @@ export default function PMAgentChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [temporaryMsg, setShowTemporaryMessage] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [pendingLocal, setPendingLocal] = useState<Array<{ tempId: string; role: "user" | "agent"; content: string; createdAt: number }>>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const { data: messages } = usePmMessages(sessionId ?? undefined);
+  const { data: messages, mutate: mutateMessages } = usePmMessages(sessionId ?? undefined);
   const { data: session } = usePmSessionById(sessionId ?? undefined);
   const pmx = usePmMutations();
   const smx = useSuggestionMutations();
@@ -98,7 +111,20 @@ export default function PMAgentChatPage() {
   // ─── Auto-detect current project context from URL ─────
   const pathname = usePathname();
   const { data: allProjects } = useProjects(userId, { includeArchived: true, includeTrashed: false });
-  const contextProjectId = pathname?.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
+
+  // Ưu tiên project từ session (linkedProjectId / projectId) khi đang trong phiên,
+  // fallback sang project trên URL (/projects/:id).
+  const sessionLinkedProjectId = (() => {
+    if (!session) return null;
+    try {
+      const wf = JSON.parse(session.workflowData || "{}");
+      if (wf.linkedProjectId) return String(wf.linkedProjectId);
+    } catch {}
+    if (session.projectId) return String(session.projectId);
+    return null;
+  })();
+
+  const contextProjectId = sessionLinkedProjectId ?? pathname?.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
   const contextProject = contextProjectId && allProjects
     ? allProjects.find((p) => p._id === contextProjectId)
     : null;
@@ -107,6 +133,7 @@ export default function PMAgentChatPage() {
   const showContextBadge = contextProject && !session;
 
   const { data: contextProjectTasks } = useTasksByProject(contextProjectId);
+  const { data: contextProjectMembers } = useMembersByProject(contextProjectId ?? null);
 
   // ─── Auto-scroll to bottom when new messages arrive ──────
   useEffect(() => {
@@ -114,6 +141,13 @@ export default function PMAgentChatPage() {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }, 100);
     return () => clearTimeout(timer);
+  }, [messages, pendingLocal]);
+
+  // Bỏ tin optimistic khi DB đã có cùng role+content (tránh nhân đôi / đảo thứ tự).
+  useEffect(() => {
+    if (!messages || messages.length === 0) return;
+    const persisted = new Set(messages.map((m) => `${m.role}|${m.content}`));
+    setPendingLocal((prev) => prev.filter((p) => !persisted.has(`${p.role}|${p.content}`)));
   }, [messages]);
 
   // Focus input on session load
@@ -138,8 +172,18 @@ export default function PMAgentChatPage() {
   // ─── Action detection (returns PendingAction for high-impact actions) ──
 
   const detectAction = useCallback(async (text: string): Promise<PendingAction | null> => {
-    const llmResult = await analyzeWithLLM(text, [...chatHistory.slice(-6)], contextProject);
-    const { action, ticketId, reply, tasks } = llmResult;
+    const memberList = (contextProjectMembers ?? []).map((m: any) => ({
+      name: m.name,
+      roleName: m.roleName,
+      email: m.email ?? null,
+    }));
+    const groupList = (contextProject?.teamsGroups ?? []).map((g: any) => ({
+      name: g.name,
+      type: g.type,
+      platform: g.platform,
+    }));
+    const llmResult = await analyzeWithLLM(text, [...chatHistory.slice(-6)], contextProject, memberList, groupList);
+    const { action, ticketId, reply, tasks, platform, chatName, messageBody, memberName, emailTo, emailSubject, emailBody } = llmResult;
 
     // ── Auto-handle actions that match the current context ──────
     if (action === "view_project" && contextProject) {
@@ -151,9 +195,44 @@ export default function PMAgentChatPage() {
       "create_project", "lookup_ticket",
       "add_personnel", "create_meeting", "update_sow",
       "add_task",
+      "send_message", "send_email",
     ];
     if (needsConfirmation.includes(action)) {
-      return { text, action, ticketId, reply, tasks: tasks ?? undefined };
+      let resolvedChatName = chatName;
+      let resolvedPlatform = platform;
+      let resolutionNote: string | undefined;
+
+      // ── send_message: resolve memberName / tên người trong chatName → nhóm phù hợp ──
+      if (action === "send_message") {
+        const resolved = resolveSendTarget({
+          memberName,
+          chatName,
+          platform,
+          members: memberList,
+          groups: groupList,
+          projectName: contextProject?.name,
+        });
+        if (resolved.chatName) resolvedChatName = resolved.chatName;
+        resolvedPlatform = resolved.platform;
+        resolutionNote = resolved.note || resolved.error;
+      }
+
+      let resolvedEmailTo = emailTo;
+      let resolvedMemberName = memberName;
+      if (action === "send_email") {
+        const resolved = resolveEmailTarget({
+          emailTo,
+          memberName,
+          members: memberList,
+          projectName: contextProject?.name,
+        });
+        if (resolved.emailTo.length > 0) resolvedEmailTo = resolved.emailTo;
+        if (resolved.memberName) resolvedMemberName = resolved.memberName;
+        resolutionNote = resolved.note || resolved.error;
+      }
+
+      const finalReply = resolutionNote ? `${reply}\n\n💡 ${resolutionNote}` : reply;
+      return { text, action, ticketId, reply: finalReply, tasks: tasks ?? undefined, platform: resolvedPlatform, chatName: resolvedChatName, messageBody, memberName: resolvedMemberName, emailTo: resolvedEmailTo, emailSubject, emailBody };
     }
 
     // For "chat" action, execute immediately
@@ -164,7 +243,7 @@ export default function PMAgentChatPage() {
       await pmx.addMessage({ sessionId, role: "agent", content: reply || `Tôi đã nhận: "${text}". Bạn muốn làm gì tiếp?` });
     }
     return null;
-  }, [sessionId, chatHistory, pmx, contextProject]);
+  }, [sessionId, chatHistory, pmx, contextProject, contextProjectMembers]);
 
   // ─── Execute confirmed action ──────────────────────────
 
@@ -237,14 +316,85 @@ export default function PMAgentChatPage() {
       return { redirect: true, sessionId: result.sessionId };
     }
 
+    // ── send_message / send_email: gửi thật, không bị chặn bởi thiếu sessionId ──
+    // Tin user đã được persist lúc handleSend (trước confirm) — không ghi lại.
+    if (action === "send_message") {
+      const post = async (content: string) => {
+        if (sessionId) await pmx.addMessage({ sessionId, role: "agent", content });
+        else return { message: content };
+        return {};
+      };
+      const messageBody = (pa.messageBody || "").trim();
+      if (!messageBody) {
+        return post(`Tôi cần thêm **nội dung tin nhắn**.\n\nVD: "Nhắn cho Kang Chan 'Đã nhận yêu cầu' trên Zalo"`);
+      }
+      const resolved = resolveSendTarget({
+        memberName: pa.memberName,
+        chatName: pa.chatName,
+        platform: pa.platform,
+        members: contextProjectMembers ?? [],
+        groups: contextProject?.teamsGroups ?? [],
+        projectName: contextProject?.name,
+      });
+      if (resolved.error || !resolved.chatName) {
+        return post(resolved.error || "Không xác định được nhóm đích.");
+      }
+      await post(`⏳ Đang gửi tin nhắn đến nhóm **${resolved.chatName}** trên ${platformLabel(resolved.platform)}...`);
+      try {
+        const result = await sendChatMessage({
+          platform: resolved.platform,
+          chatName: resolved.chatName,
+          message: messageBody,
+        });
+        if (result.ok) {
+          return post(
+            `✅ Đã gửi tin nhắn đến nhóm **${resolved.chatName}**` +
+            (resolved.memberName ? ` (${resolved.memberName})` : "") +
+            ` trên ${platformLabel(resolved.platform)}:\n\n> ${messageBody}`
+          );
+        }
+        return post(`❌ Gửi tin nhắn đến **${resolved.chatName}** thất bại: ${result.error || "Lỗi không xác định"}`);
+      } catch (err) {
+        return post(`❌ Lỗi khi gửi tin nhắn: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
+      }
+    }
+
+    if (action === "send_email") {
+      const post = async (content: string) => {
+        if (sessionId) await pmx.addMessage({ sessionId, role: "agent", content });
+        else return { message: content };
+        return {};
+      };
+      const resolved = resolveEmailTarget({
+        emailTo: pa.emailTo,
+        memberName: pa.memberName,
+        members: contextProjectMembers ?? [],
+        projectName: contextProject?.name,
+      });
+      const to = resolved.emailTo;
+      const subject = (pa.emailSubject || "").trim() || "Tin nhắn từ PM Agent";
+      const emailBody = (pa.emailBody || "").trim();
+      if (to.length === 0) {
+        return post(resolved.error || `Tôi cần địa chỉ email để gửi.\n\nVD: "Gửi email đến abc@gmail.com với tiêu đề Test và nội dung Xin chào"`);
+      }
+      await post(`⏳ Đang gửi email đến **${to.join(", ")}**${resolved.memberName ? ` (${resolved.memberName})` : ""}...`);
+      try {
+        const result = await sendOutlookEmail({ to, subject, body: emailBody });
+        if (result.ok) {
+          return post(`✅ Đã gửi email đến **${to.join(", ")}** với tiêu đề **${subject}**.`);
+        }
+        return post(`❌ Gửi email đến **${to.join(", ")}** thất bại: ${result.error || "Lỗi không xác định"}`);
+      } catch (err) {
+        return post(`❌ Lỗi khi gửi email: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
+      }
+    }
+
     if (!sessionId) {
       if (contextProject && action !== "create_project") {
         return { message: `Bạn đang xem dự án **${contextProject.name}**. Tôi có thể giúp gì cho dự án này?` };
       }
       return { message: `Tôi tìm thấy ticket **${ticketId}**. Bạn muốn tạo dự án mới không?` };
     }
-
-    await pmx.addMessage({ sessionId, role: "user", content: text });
 
     // ── add_task: tạo task cho dự án (context project / session project) ──
     if (action === "add_task") {
@@ -381,7 +531,7 @@ export default function PMAgentChatPage() {
       content: pa.reply || `Tôi đã nhận: "${text}". Tôi có thể giúp bạn tiếp với dự án **${session?.projectName}**. Bạn muốn làm gì?`,
     });
     return {};
-  }, [sessionId, userId, session, pmx, smx, router, contextProject]);
+  }, [sessionId, userId, session, pmx, smx, router, contextProject, contextProjectMembers]);
 
   const cancelAction = useCallback(() => {
     setPendingAction(null);
@@ -416,10 +566,20 @@ export default function PMAgentChatPage() {
     setInput("");
     setProcessing(true);
 
+    // Hiện tin user ngay (cuối list) — không đợi confirm rồi mới ghi DB.
+    const userPending = {
+      tempId: `u_${Date.now()}`,
+      role: "user" as const,
+      content: text,
+      createdAt: Date.now(),
+    };
+    setPendingLocal((prev) => [...prev, userPending]);
+
     try {
       const pa = await detectAction(text);
       if (pa) {
-        // Show confirmation UI instead of executing immediately
+        // Confirmation actions: persist user now so agent replies luôn đứng sau.
+        if (sessionId) await pmx.addMessage({ sessionId, role: "user", content: text });
         setPendingAction(pa);
         setProcessing(false);
         return;
@@ -444,7 +604,21 @@ export default function PMAgentChatPage() {
     }
   };
 
-  const displayMessages = messages ?? [];
+  const persistedMessages = messages ?? [];
+  const persistedKeys = new Set(persistedMessages.map((m) => `${m.role}|${m.content}`));
+  const extraPending = pendingLocal.filter((p) => !persistedKeys.has(`${p.role}|${p.content}`));
+  // DB đã ORDER BY createdAt, id — pending chỉ append cuối, KHÔNG sort lẫn (tránh đảo thứ tự).
+  const rawDisplayMessages: ChatMessage[] = [
+    ...persistedMessages,
+    ...extraPending.map((p) => ({
+      _id: p.tempId,
+      role: p.role,
+      content: p.content,
+      createdAt: p.createdAt,
+    })),
+  ];
+  const hiddenNotifs = supersededSuggestionMessageIds(rawDisplayMessages);
+  const displayMessages: ChatMessage[] = rawDisplayMessages.filter((m) => !hiddenNotifs.has(String(m._id)));
   const isNewSession = !sessionId;
 
   return (
@@ -514,7 +688,7 @@ export default function PMAgentChatPage() {
       {/* ─── Messages Area ─────────────────────────────── */}
       <div className="flex-1 min-h-0 overflow-y-auto scroll-smooth">
         <div className="px-6 py-6 max-w-5xl mx-auto space-y-4">
-          {isNewSession && !temporaryMsg && (
+          {isNewSession && !temporaryMsg && pendingLocal.length === 0 && (
             <div className="py-12 px-4 animate-in fade-in slide-in-from-bottom-8 duration-700">
               {/* Welcome Card */}
               <div className="max-w-2xl mx-auto text-center mb-10">
@@ -535,12 +709,19 @@ export default function PMAgentChatPage() {
                   { label: "Xem thông tin ticket", icon: "🎫", desc: "Tra cứu nhanh" },
                   { label: "Thêm nhân sự", icon: "👥", desc: "Phân công nguồn lực" },
                   { label: "Tạo meeting kickoff", icon: "📅", desc: "Lịch họp dự án" },
+                  { label: "Gửi tin nhắn Teams", icon: "💬", desc: "Nhắn tin nhóm" },
+                  { label: "Gửi email", icon: "📧", desc: "Soán và gửi" },
                 ].map((s) => (
                   <button
                     key={s.label}
                     type="button"
                     onClick={() => {
-                      setInput(s.label === "Tạo dự án mới" ? "Tạo dự án mới từ ticket ISD-90335" : s.label);
+                      const preset =
+                        s.label === "Tạo dự án mới" ? "Tạo dự án mới từ ticket ISD-90335" :
+                        s.label === "Gửi tin nhắn Teams" ? "Gửi tin nhắn 'Đã nhận yêu cầu, đội triển khai sẽ liên hệ' vào nhóm [FPT Cloud] trên Teams" :
+                        s.label === "Gửi email" ? "Gửi email đến quangkhoi1228@gmail.com với tiêu đề Test và nội dung Xin chào" :
+                        s.label;
+                      setInput(preset);
                       inputRef.current?.focus();
                     }}
                     className="flex items-center gap-4 p-5 rounded-2xl border border-border/40 dark:border-zinc-700/60 bg-card/50 dark:bg-zinc-800/60 backdrop-blur-sm hover:bg-card dark:hover:bg-zinc-800 hover:border-primary/40 transition-all duration-300 cursor-pointer text-left group hover:-translate-y-1"
@@ -552,20 +733,6 @@ export default function PMAgentChatPage() {
                     </div>
                   </button>
                 ))}
-              </div>
-            </div>
-          )}
-
-          {isNewSession && temporaryMsg && (
-            <div className="flex items-start gap-3.5 px-2 py-3 animate-in fade-in zoom-in-95 duration-300">
-              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center ring-2 ring-primary/20 shrink-0 shadow-sm">
-                <Bot className="w-5 h-5 text-primary" />
-              </div>
-              <div className="bg-card rounded-[1.25rem] rounded-tl-md border border-border/40 px-5 py-4 shadow-sm max-w-[85%]">
-                <p className="text-[11px] font-bold text-primary mb-1.5 uppercase tracking-wider">PM Agent</p>
-                <p className="text-[15px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
-                  {renderMessage(temporaryMsg, true)}
-                </p>
               </div>
             </div>
           )}
@@ -620,6 +787,11 @@ export default function PMAgentChatPage() {
                       }`}>
                         {renderMessage(msg.content, isAgent)}
                       </p>
+                      {isAgent && (() => {
+                        const notifMeta = parseSuggestionNotification(msg.metadata);
+                        if (!notifMeta) return null;
+                        return <SuggestionNotificationCard meta={notifMeta} messageId={msg._id} onRefresh={mutateMessages} />;
+                      })()}
                     </div>
                     <div className={`flex items-center gap-2 mt-1.5 ${isAgent ? "" : "flex-row-reverse"}`}>
                       <span className={`text-[10px] font-medium ${isAgent ? "text-muted-foreground/60 dark:text-zinc-400/80" : "text-muted-foreground/80 dark:text-zinc-400/80"}`}>{formatTime(msg.createdAt)}</span>
@@ -630,6 +802,20 @@ export default function PMAgentChatPage() {
               </div>
             );
           })}
+
+          {isNewSession && temporaryMsg && (
+            <div className="flex items-start gap-3.5 px-2 py-3 animate-in fade-in zoom-in-95 duration-300">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center ring-2 ring-primary/20 shrink-0 shadow-sm">
+                <Bot className="w-5 h-5 text-primary" />
+              </div>
+              <div className="bg-card rounded-[1.25rem] rounded-tl-md border border-border/40 px-5 py-4 shadow-sm max-w-[85%]">
+                <p className="text-[11px] font-bold text-primary mb-1.5 uppercase tracking-wider">PM Agent</p>
+                <p className="text-[15px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                  {renderMessage(temporaryMsg, true)}
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Typing indicator */}
           {processing && isTyping && (
@@ -667,7 +853,7 @@ export default function PMAgentChatPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-amber-800 dark:text-amber-300 mb-1">Xác nhận thao tác</p>
-                  <p className="text-[13px] text-amber-700/80 dark:text-amber-400/80 leading-relaxed">
+                  <p className="text-[13px] text-amber-700/80 dark:text-amber-400/80 leading-relaxed whitespace-pre-wrap">
                     {renderActionDescription(pendingAction)}
                   </p>
                 </div>
@@ -760,6 +946,8 @@ const ACTION_LABELS: Record<string, string> = {
   create_meeting: "Tạo meeting kickoff",
   update_sow: "Cập nhật SOW",
   add_task: "Tạo task cho dự án",
+  send_message: "Gửi tin nhắn",
+  send_email: "Gửi email",
 };
 
 function renderActionDescription(pa: PendingAction): string {
@@ -775,6 +963,19 @@ function renderActionDescription(pa: PendingAction): string {
       .map((t) => `• ${t.title}${t.priority === "high" ? " (ưu tiên cao)" : ""}${t.dueDate ? ` — hạn ${t.dueDate}` : ""}`)
       .join("\n");
     base += `\n\nSẽ tạo **${pa.tasks.length} task**:\n${list}`;
+  }
+  if (pa.action === "send_message") {
+    const plat = pa.platform ? pa.platform.toUpperCase() : "Teams/Zalo";
+    base += `\n\nNền tảng: **${plat}**`;
+    if (pa.chatName) base += `\nNhóm: **${pa.chatName}**`;
+    if (pa.memberName) base += `\nNgười nhận: **${pa.memberName}**`;
+    if (pa.messageBody) base += `\nNội dung: "${pa.messageBody}"`;
+  }
+  if (pa.action === "send_email") {
+    if (pa.memberName) base += `\nNgười nhận: **${pa.memberName}**`;
+    if (pa.emailTo && pa.emailTo.length > 0) base += `\nĐến: **${pa.emailTo.join(", ")}**`;
+    if (pa.emailSubject) base += `\nTiêu đề: **${pa.emailSubject}**`;
+    if (pa.emailBody) base += `\nNội dung: "${pa.emailBody}"`;
   }
   return base;
 }

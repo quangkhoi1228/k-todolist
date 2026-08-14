@@ -619,7 +619,9 @@ export function usePmMessages(sessionId?: string | null) {
   const key = sessionId ? `pmmessages:${sessionId}` : null;
   return useData<any[]>(
     key,
-    key ? () => apiGet("/agents-pm", { action: "getMessages", sessionId }) : null
+    key ? () => apiGet("/agents-pm", { action: "getMessages", sessionId }) : null,
+    // Poll 10s để tin nhắn agent mới (vd thông báo gợi ý) tự hiện lên khung chat
+    { refreshInterval: 10_000 }
   );
 }
 
@@ -792,6 +794,61 @@ export function useUploadFile() {
   }, []);
 }
 
+// ─── Business Processes (kho quy trình) ────────────────────
+export function useBusinessProcesses(userId?: string | null, includeInactive = false) {
+  const key = userId ? `business-processes:${userId}:${includeInactive ? "all" : "active"}` : null;
+  return useData<any[]>(
+    key,
+    key
+      ? () =>
+          apiGet("/business-processes", {
+            action: "getBusinessProcesses",
+            userId,
+            includeInactive: includeInactive ? "true" : "false",
+          })
+      : null
+  );
+}
+
+export function useSearchBusinessProcesses(userId?: string | null, keywords?: string[], category?: string, limit = 5) {
+  const stableKeywords = keywords?.join(",") ?? "";
+  const key = userId ? `business-processes:search:${userId}:${category ?? "*"}:${stableKeywords}:${limit}` : null;
+  return useData<any[]>(
+    key,
+    key
+      ? () =>
+          apiGet("/business-processes", {
+            action: "searchBusinessProcesses",
+            userId,
+            keywords: stableKeywords,
+            category,
+            limit: String(limit),
+          })
+      : null
+  );
+}
+
+export function useBusinessProcessMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    createBusinessProcess: async (body: any) => {
+      const res = await apiPost("/business-processes", { action: "createBusinessProcess", ...body });
+      await invalidate(["business-processes"]);
+      return res;
+    },
+    updateBusinessProcess: async (body: any) => {
+      const res = await apiPost("/business-processes", { action: "updateBusinessProcess", ...body });
+      await invalidate(["business-processes"]);
+      return res;
+    },
+    deleteBusinessProcess: async (body: any) => {
+      const res = await apiPost("/business-processes", { action: "deleteBusinessProcess", ...body });
+      await invalidate(["business-processes"]);
+      return res;
+    },
+  }), [invalidate]);
+}
+
 // ─── Task Templates (task list mẫu — DÙNG CHUNG cho mọi user) ─────────
 export function useTaskTemplates(_userId?: string | null, includeInactive = false) {
   const key = `task-templates:${includeInactive ? "all" : "active"}`;
@@ -897,6 +954,30 @@ export function useProjectSummaryMutations() {
     toggleNextStep: async (body: { projectId: string; index: number; done: boolean }) => {
       const res = await apiPost("/project-summaries", { action: "toggleNextStep", ...body });
       await invalidate(["summaries:"]);
+      return res;
+    },
+  }), [invalidate]);
+}
+// ─── Debate runs (lịch sử AI Debate) ─────────────────────────
+export function useDebateRuns(projectId?: string | null, limit = 30) {
+  const key = projectId ? `debate-runs:project:${projectId}` : null;
+  return useData<any[]>(
+    key,
+    key ? () => apiGet("/debate-runs", { action: "getByProject", projectId, limit }) : null
+  );
+}
+
+export function useDebateRunMutations() {
+  const invalidate = useInvalidate();
+  return useMemo(() => ({
+    deleteRun: async (body: { id: string }) => {
+      const res = await apiPost("/debate-runs", { action: "delete", ...body });
+      await invalidate(["debate-runs:"]);
+      return res;
+    },
+    deleteByProject: async (body: { projectId: string }) => {
+      const res = await apiPost("/debate-runs", { action: "deleteByProject", ...body });
+      await invalidate(["debate-runs:"]);
       return res;
     },
   }), [invalidate]);

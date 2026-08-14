@@ -129,6 +129,11 @@ async function main() {
   } else {
     log(`Loi: ${result.error}`);
   }
+
+  // Force-exit: CDP websocket / Playwright handle có thể giữ event loop →
+  // Node không tự exit → API route chờ child.on("exit") vô hạn. Giống
+  // teams-send.ts, luôn force-exit để script kết thúc đúng.
+  process.exit(result.ok ? 0 : 1);
 }
 
 main().catch((err) => {

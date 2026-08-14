@@ -300,6 +300,14 @@ async function main() {
     process.exit(1);
   }
 
+  // Không sync project đã archive/delete — user không còn theo dõi dự án
+  // này nữa, tránh mở Chrome và tạo log/gợi ý vô ích.
+  if ((project as any)?.archived || (project as any)?.deletedAt) {
+    console.log(`[SyncProject] Skip project ${projectId} — archived/deleted.`);
+    await log(projectId, undefined, "sync_end", "Bỏ qua đồng bộ: dự án đã lưu trữ/xoá");
+    return;
+  }
+
   const groups = ((project as any).teamsGroups || []) as Array<{ name: string; type: string; platform?: string }>;
   const tasks = groups
     .filter(g => g.name && !/^https?:\/\//i.test(String(g.name).trim()))

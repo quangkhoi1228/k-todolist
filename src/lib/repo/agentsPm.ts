@@ -56,7 +56,7 @@ export async function getMessages(sessionId: number | string) {
     .select()
     .from(pmAgentMessages)
     .where(eq(pmAgentMessages.sessionId, Number(sessionId)))
-    .orderBy(asc(pmAgentMessages.createdAt));
+    .orderBy(asc(pmAgentMessages.createdAt), asc(pmAgentMessages.id));
   return rows.map(mapMessage);
 }
 
@@ -87,6 +87,15 @@ export async function getProjectSessions(userId: string) {
 }
 
 // ─── Mutations ─────────────────────────────────────────────
+/** Đảm bảo createdAt tăng dần trong cùng process — tránh 2 tin cùng ms bị đảo ORDER BY. */
+let lastMessageCreatedAt = 0;
+function nextCreatedAt(explicit?: number): number {
+  const candidate = explicit ?? Date.now();
+  const next = candidate > lastMessageCreatedAt ? candidate : lastMessageCreatedAt + 1;
+  lastMessageCreatedAt = next;
+  return next;
+}
+
 async function insertMessage(sessionId: number, role: string, content: string, metadata?: string, createdAt?: number) {
   const db = getDb();
   await db.insert(pmAgentMessages).values({
@@ -94,7 +103,7 @@ async function insertMessage(sessionId: number, role: string, content: string, m
     role,
     content,
     metadata: metadata ?? null,
-    createdAt: createdAt ?? Date.now(),
+    createdAt: nextCreatedAt(createdAt),
   });
 }
 
@@ -232,10 +241,26 @@ export async function addMessage(args: {
       role: args.role,
       content: args.content,
       metadata: args.metadata ?? null,
-      createdAt: Date.now(),
+      createdAt: nextCreatedAt(),
     })
     .returning();
   return mapMessage(res[0]);
+}
+
+export async function updateMessageMetadata(id: number | string, metadata: string) {
+  const db = getDb();
+  await db
+    .update(pmAgentMessages)
+    .set({ metadata })
+    .where(eq(pmAgentMessages.id, Number(id)));
+}
+
+export async function getMessage(id: number | string) {
+  const db = getDb();
+  const row = await db.query.pmAgentMessages.findFirst({
+    where: eq(pmAgentMessages.id, Number(id)),
+  });
+  return row ? mapMessage(row) : null;
 }
 
 export async function advanceStep(id: number | string, step: string) {

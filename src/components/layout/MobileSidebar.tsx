@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Menu, Download, FileText, Bot, Sparkles, Headset, Mail } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Menu, Download, FileText, Bot, Sparkles, Headset, Mail, Boxes, Workflow } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
@@ -61,6 +61,24 @@ export default function MobileSidebar() {
               >
                 <Mail className="w-5 h-5" />
                 Email
+              </Link>
+
+              <Link 
+                href="/templates"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+              >
+                <Boxes className="w-5 h-5" />
+                Template
+              </Link>
+
+              <Link 
+                href="/business-processes"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+              >
+                <Workflow className="w-5 h-5" />
+                Kho quy trình
               </Link>
 
               <Link 

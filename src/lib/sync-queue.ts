@@ -17,8 +17,8 @@
  */
 
 import { spawn } from "child_process";
-import path from "path";
 import fs from "fs";
+import { runtimePath } from "./runtimePath";
 
 // ─── Repo imports (dùng trong trigger tóm tắt sau mỗi task sync) ───
 import { getLatestLogByProjectChat } from "./repo/syncLogs";
@@ -49,18 +49,18 @@ export type Platform = "teams" | "zalo";
 
 // ─── Cấu hình ─────────────────────────────────────────────────
 const LOCK_FILES: Record<Platform, string> = {
-  teams: path.join(process.cwd(), ".teams-sync-running"),
-  zalo: path.join(process.cwd(), ".zalo-sync-running"),
+  teams: runtimePath(".teams-sync-running"),
+  zalo: runtimePath(".zalo-sync-running"),
 };
 const SEND_LOCK_FILES: Record<Platform, string> = {
-  teams: path.join(process.cwd(), ".teams-send-running"),
-  zalo: path.join(process.cwd(), ".zalo-send-running"),
+  teams: runtimePath(".teams-send-running"),
+  zalo: runtimePath(".zalo-send-running"),
 };
 const WORKER_LOCK_FILES: Record<Platform, string> = {
-  teams: path.join(process.cwd(), ".sync-queue-teams-worker.lock"),
-  zalo: path.join(process.cwd(), ".sync-queue-zalo-worker.lock"),
+  teams: runtimePath(".sync-queue-teams-worker.lock"),
+  zalo: runtimePath(".sync-queue-zalo-worker.lock"),
 };
-const QUEUE_STATE_FILE = path.join(process.cwd(), ".sync-queue-state.json");
+const QUEUE_STATE_FILE = runtimePath(".sync-queue-state.json");
 
 /** Cooldown cho project sync: sau khi sync xong tất cả nhóm của 1 project
  *  trên 1 platform, nghỉ 3 phút trước khi sync lại platform đó. */
@@ -352,6 +352,19 @@ export function enqueueJob(job: SyncJob): { ok: boolean; reason?: string; merged
 function enqueueIntoPlatform(platform: Platform, job: SyncJob): { ok: boolean; merged: number; upgraded: number } {
   const state = workers[platform];
 
+  // Tự dọn currentJob bị kẹt: nếu worker đã chết (không active) nhưng vẫn
+  // còn currentJob/currentTask từ job cũ (jobStartTime quá 10 phút) → clear
+  // để task mới không bị coi là trùng và bị gộp vô hạn.
+  if (!state.isWorkerActive && state.currentJob && Date.now() - state.jobStartTime > 10 * 60 * 1000) {
+    console.log(`[Queue:${platform}] 🧹 Dọn currentJob kẹt: ${state.currentJob.label} (bắt đầu ${new Date(state.jobStartTime).toISOString()}) — worker không active.`);
+    state.currentJob = null;
+    state.currentTask = null;
+    state.jobStartTime = 0;
+    state.taskIndexInJob = 0;
+    state.taskStatuses = {};
+    state.refetchTasks = [];
+  }
+
   // Job project thay thế job project cũ cùng projectId trong queue
   if (job.type === "project") {
     const replaced = state.queue.filter(j => j.type === "project" && j.projectId === job.projectId);
@@ -419,6 +432,13 @@ function enqueueIntoPlatform(platform: Platform, job: SyncJob): { ok: boolean; m
 
   if (finalTasks.length === 0) {
     console.log(`[Queue:${platform}] 🔀 ${job.label}: tất cả ${merged} task đều trùng — gộp, không xếp mới.\n` + mergeLogs.map(l => `   ${l}`).join("\n"));
+    // Nếu worker đang không active (chết/không khởi động) nhưng vẫn còn
+    // currentJob/queue cũ bị kẹt → khởi động lại worker để nó dọn dẹp và
+    // xử lý phần việc còn tồn đọng. Nếu không, mọi lần sync sau đều trùng
+    // và không bao giờ chạy.
+    if (!state.isWorkerActive) {
+      void startWorker(platform);
+    }
     return { ok: true, merged, upgraded };
   }
 
@@ -560,6 +580,11 @@ export function isChatQueuedOrRunning(projectId: string, chatName: string, platf
 
 async function startWorker(platform: Platform) {
   const state = workers[platform];
+  // Bảo vệ: nếu workerStarted bị kẹt true nhưng worker thực tế đã chết
+  // (isWorkerActive = false) → reset để có thể khởi động lại.
+  if (state.workerStarted && !state.isWorkerActive) {
+    state.workerStarted = false;
+  }
   if (state.workerStarted) return;
   state.workerStarted = true;
   state.isWorkerActive = true;
@@ -642,17 +667,23 @@ async function runJob(platform: Platform, job: SyncJob, canParallel: boolean) {
   state.taskIndexInJob = 0;
   state.taskStatuses = {};
 
-  if (canParallel && job.chatTasks.length > 1) {
-    await runJobParallel(platform, job);
-  } else {
-    await runJobSequential(platform, job);
+  try {
+    if (canParallel && job.chatTasks.length > 1) {
+      await runJobParallel(platform, job);
+    } else {
+      await runJobSequential(platform, job);
+    }
+  } catch (err) {
+    // Lỗi bất ngờ KHÔNG được để currentJob kẹt — nếu không mọi task enqueue
+    // sau đó sẽ trùng currentJob và bị gộp, worker không bao giờ chạy.
+    console.error(`[Sync:${platform}] ❌ Job ${job.label} gặp lỗi — dọn state để không kẹt queue:`, err);
+  } finally {
+    state.currentJob = null;
+    state.currentTask = null;
+    state.jobStartTime = 0;
+    state.taskIndexInJob = 0;
+    state.taskStatuses = {};
   }
-
-  state.currentJob = null;
-  state.currentTask = null;
-  state.jobStartTime = 0;
-  state.taskIndexInJob = 0;
-  state.taskStatuses = {};
 
   // Đánh dấu cooldown khi project job xong (tất cả task)
   if (job.type === "project" && job.projectId) {
@@ -823,7 +854,7 @@ const PARALLEL_TASKS = Math.min(3, Math.max(1, parseInt(process.env.SYNC_PARALLE
 
 function spawnTask(platform: Platform, task: ChatTask): Promise<void> {
   const state = workers[platform];
-  const scriptPath = path.join(process.cwd(), "agents/pm/scripts/sync-single-chat.ts");
+  const scriptPath = runtimePath("agents/pm/scripts/sync-single-chat.ts");
   const userId = userIds[task.projectId] || currentRunnerUserId || "";
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -831,7 +862,14 @@ function spawnTask(platform: Platform, task: ChatTask): Promise<void> {
     PROJECT_ID: task.projectId,
     CHAT_NAME: task.chatName,
     PLATFORM: task.platform,
+    // Cả Teams lẫn Zalo chạy headless trên Chrome thật + persistent profile
+    // (`.zalo-session/chrome-profile` / `.teams-session/chrome-profile`).
+    // Verify 13/08: Zalo HEADLESS=true + channel chrome + profile session
+    // navigate đúng nhóm, extract OK, EARLY-STOP đúng watermark (~7.8s).
+    // Không dùng bundled Chromium (useRealChrome=false) — Zalo detect bot.
     HEADLESS: "true",
+    // Headless không bật popup — không cần đẩy window offscreen.
+    SYNC_BACKGROUND: undefined,
     SYNC_MODE: task.syncMode || "incremental",
     // QUAN TRỌNG: CDP 9222 thường là Chrome user mở với profile TEAMS.
     // Zalo LUÔN dùng persistent profile riêng (.zalo-session) — nếu
@@ -925,6 +963,9 @@ export async function buildChatTasksForProject(projectId: string, userId: string
   if (!project) return [];
   // Không sync project đã archive/delete — tránh mở Chrome khi user không còn theo dõi
   if ((project as any)?.archived || (project as any)?.deletedAt) return [];
+  // Project đang pause auto-sync → không build task auto-sync khi mở project.
+  // User chỉ sync thủ công qua nút "Đồng bộ mới nhất".
+  if ((project as any)?.pauseAutoSync) return [];
   const groups = ((project as any)?.teamsGroups || []) as Array<{ name: string; type: string; platform?: string }>;
   const tasks: ChatTask[] = [];
   for (const g of groups) {
@@ -951,6 +992,8 @@ export async function buildAllChatTasks(userId: string): Promise<ChatTask[]> {
   const projects = await getActiveProjectsWithTeamsGroups(userId);
   const tasks: ChatTask[] = [];
   for (const p of projects) {
+    // Project đang pause auto-sync → bỏ khỏi sync-all định kỳ 30 phút
+    if ((p as any)?.pauseAutoSync) continue;
     const groups = (p.teamsGroups || []) as Array<{ name: string; type: string; platform?: string }>;
     for (const g of groups) {
       if (!g.name) continue;
@@ -1039,6 +1082,8 @@ async function maybeAutoGenerateSummary(task: ChatTask): Promise<void> {
         import("./repo/projectChats").then(m => m.getMessagesByProject(task.projectId).catch(() => [])),
       ]);
       if (!project) return;
+      // Project đang pause auto-sync → không tự sinh summary
+      if ((project as any)?.pauseAutoSync) return;
 
       const newMessages = (messages || []).slice(-20).map((m: any) => ({
         sender: m.sender || "",

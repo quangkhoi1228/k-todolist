@@ -21,6 +21,7 @@ import * as path from "path";
 import {
   createStealthContext,
   applyStealthPatches,
+  fitWindowToScreen,
   log as teamsLog,
   type AutomatorConfig,
   DEFAULT_CONFIG,
@@ -114,53 +115,11 @@ async function humanDelay(page: Page, minMs = 300, maxMs = 800) {
 
 // ─── Browser Helpers ────────────────────────────────────────
 
-/**
- * Clean up stale Chrome lock files and kill old processes that may be
- * holding the profile directory lock. This prevents "Chrome failed to start"
- * errors when a previous Playwright session didn't shut down cleanly.
- */
-function cleanupChromeLocks(profileDir: string) {
-  const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
-  for (const lockFile of lockFiles) {
-    const lockPath = path.join(profileDir, lockFile);
-    try {
-      if (fs.existsSync(lockPath)) {
-        fs.unlinkSync(lockPath);
-        log(`Da xoa lock file: ${lockFile}`);
-      }
-    } catch {
-      // Ignore errors
-    }
-  }
-}
-
-/**
- * Kill any Chrome processes using a specific user-data-dir.
- */
-function killStaleChromeProcesses(sessionDir: string) {
-  try {
-    const { execSync } = require("child_process");
-    const profileDir = path.join(sessionDir, "chrome-profile");
-    // Find PIDs of Chrome processes using our profile dir
-    const result = execSync(
-      `ps aux | grep -E "user-data-dir.*${profileDir.replace(/\//g, "\\/")}" | grep -v grep | awk '{print $2}'`,
-      { encoding: "utf-8", timeout: 5000 }
-    ).trim();
-
-    if (result) {
-      const pids = result.split("\n").filter(Boolean);
-      if (pids.length > 0) {
-        log(`Tim thay ${pids.length} Chrome processes cu, dang kill...`);
-        execSync(`kill -9 ${pids.join(" ")} 2>/dev/null || true`, { timeout: 5000 });
-        // Wait a moment for processes to die
-        execSync("sleep 1", { timeout: 3000 });
-        log("Da kill Chrome processes cu.");
-      }
-    }
-  } catch {
-    // Ignore — ps/kill may fail on some systems
-  }
-}
+// Lưu ý: cleanupChromeLocks + killStaleChromeProcesses đã bị xoá — chúng kill
+// MỌI Chrome dùng `.teams-session/chrome-profile` (kể cả Chrome thật đang mở)
+// và xoá SingletonLock ngay cả khi pid trong lock còn sống → làm mất login
+// Teams/Outlook. createStealthContext (teams-automator.ts) đã tự xử lý an toàn:
+// CDP connect hoặc chỉ kill orphan ppid=1 + --remote-debugging-pipe.
 
 /**
  * Create a stealth browser context reusing the Teams session.
@@ -170,11 +129,14 @@ export async function createOutlookContext(config: OutlookConfig): Promise<{
   browser: Browser;
   context: BrowserContext;
 }> {
-  // Clean up stale locks before starting
-  const profileDir = path.join(config.sessionDir, "chrome-profile");
-  killStaleChromeProcesses(config.sessionDir);
-  cleanupChromeLocks(profileDir);
-
+  // KHÔNG gọi killStaleChromeProcesses/cleanupChromeLocks ở đây nữa.
+  // Hai hàm đó kill MỌI Chrome dùng `.teams-session/chrome-profile` (kể cả
+  // Chrome thật user đang mở) → làm mất login Teams/Outlook.
+  // createStealthContext bên dưới đã tự xử lý an toàn:
+  //   - CDP mode: connect vào Chrome thật đang mở (USE_CDP=1) — KHÔNG đóng
+  //   - Persistent profile: chỉ kill Chrome orphan (ppid=1, --remote-debugging-pipe)
+  //     + chỉ xoá stale SingletonLock khi pid trong lock đã chết — không bao giờ
+  //     đụng Chrome live của script/user khác.
   const automatorConfig: AutomatorConfig = {
     ...DEFAULT_CONFIG,
     sessionDir: config.sessionDir,
@@ -720,6 +682,7 @@ export async function composeAndSendEmail(
   const { browser, context } = await createOutlookContext(config);
   const page = context.pages()[0] || (await context.newPage());
   await applyStealthPatches(page);
+  if (!config.headless) await fitWindowToScreen(page).catch(() => {});
 
   try {
     // Step 1: Navigate to Outlook
@@ -858,23 +821,28 @@ export async function composeAndSendEmail(
       screenshotPath,
     };
   } finally {
-    // Save session
-    await context
-      .storageState({
-        path: path.join(config.sessionDir, "state.json"),
-      })
-      .catch(() => {});
+    // CDP mode: Chrome thật đã giữ session tự nhiên — KHÔNG gọi storageState
+    // (qua CDP có thể kẹt khi Chrome đang bận) và KHÔNG close (Proxy đã chặn,
+    // nhưng gọi đôi khi vẫn làm chậm exit). Persistent profile mới cần lưu state.
+    const isCdp = process.env.SYNC_CDP_CONNECTED === "1";
+    if (!isCdp) {
+      await context
+        .storageState({
+          path: path.join(config.sessionDir, "state.json"),
+        })
+        .catch(() => {});
+    }
 
     if (!config.headless && config.keepOpen) {
       log("Giu browser mo.");
       await new Promise(() => {});
     }
-    if (!config.headless && !config.keepOpen) {
+    if (!config.headless && !config.keepOpen && !isCdp) {
       log("Browser se dong sau 3s...");
       await page.waitForTimeout(3_000);
     }
     await browser.close().catch(() => {});
-    log("Browser da dong.");
+    log(isCdp ? "CDP mode: giu Chrome that mo." : "Browser da dong.");
   }
 }
 
@@ -906,11 +874,14 @@ export async function outlookHealthCheck(
 
     return { ok: false, error: "Outlook khong load duoc." };
   } finally {
-    await context
-      .storageState({
-        path: path.join(config.sessionDir, "state.json"),
-      })
-      .catch(() => {});
+    const isCdp = process.env.SYNC_CDP_CONNECTED === "1";
+    if (!isCdp) {
+      await context
+        .storageState({
+          path: path.join(config.sessionDir, "state.json"),
+        })
+        .catch(() => {});
+    }
     await browser.close().catch(() => {});
   }
 }

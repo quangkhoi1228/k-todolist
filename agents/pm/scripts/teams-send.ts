@@ -26,6 +26,9 @@ import {
   applyStealthPatches,
   sendTeamsMessage,
   openTeamsTabInBackground,
+  focusCdpWindow,
+  fitWindowToScreen,
+  killPlaywrightChromeOnProfile,
   DEFAULT_CONFIG,
   log,
   type AutomatorConfig,
@@ -159,22 +162,42 @@ async function main() {
   // thấy `.teams-send-running` và dừng sớm (send-preemption), send không phải
   // chờ hết task sync.
   claimSendLock();
-  await waitForSyncToFinish();
-
-  const { browser, context } = await createStealthContext(config);
-  // Chọn tab Teams NẾU CÓ (sync-project-chats cách làm): tab đang mở sẵn
-  // trong Chrome CDP thường có sidebar chat đã load. Fallback: tab đầu tiên.
-  let page = context.pages()[0];
-  if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
-    const teamsPg = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
-    page = teamsPg || (await openTeamsTabInBackground(browser, context, { minimize: config.headless }));
-  }
-  await applyStealthPatches(page);
 
   // Track kết quả tổng — dùng trong finally (CDP force-exit cần biết exit code)
   let exitedOk = false;
+  let browser: Awaited<ReturnType<typeof createStealthContext>>["browser"] | undefined;
+  let context: Awaited<ReturnType<typeof createStealthContext>>["context"] | undefined;
 
   try {
+    // Sync đã thấy lock và preempt — không chờ 3 phút. 20s là đủ để sync thoát.
+    await waitForSyncToFinish(20_000);
+    // Chrome sync thường sống sót SIGTERM → kill Playwright leftover trước khi launch.
+    await killPlaywrightChromeOnProfile(path.join(config.sessionDir, "chrome-profile"));
+
+    const launched = await createStealthContext(config);
+    browser = launched.browser;
+    context = launched.context;
+    // Chọn tab Teams NẾU CÓ (sync-project-chats cách làm): tab đang mở sẵn
+    // trong Chrome CDP thường có sidebar chat đã load. Fallback: tab đầu tiên.
+    let page = context.pages()[0];
+    if (process.env.USE_CDP === "1" || process.env.USE_CDP === "true") {
+      const teamsPg = context.pages().find((p) => p.url().includes("teams.microsoft.com"));
+      page = teamsPg || (await openTeamsTabInBackground(browser, context, {
+        background: config.headless,
+        minimize: config.headless,
+      }));
+      // Gửi headfull (headless=false) → đưa cửa sổ Chrome lên trước + focus tab Teams
+      // để user nhìn thấy quá trình gửi (CDP mode mặc định giữ window ẩn/nền).
+      if (!config.headless && page) {
+        await focusCdpWindow(browser, page).catch(() => {});
+      }
+    }
+    await applyStealthPatches(page);
+    if (!config.headless) {
+      await fitWindowToScreen(page).catch(() => {});
+      await page.bringToFront().catch(() => {});
+    }
+
     await navigateToTeams(page, config);
     const neededLogin = await waitForLogin(page, config);
     if (neededLogin) {
@@ -207,12 +230,18 @@ async function main() {
     } else {
       log("Tin nhan da gui thanh cong.");
     }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg !== "send failed") {
+      console.error("[TeamsSend] Fatal:", err);
+      console.log(JSON.stringify({ ok: false, error: msg }));
+    }
   } finally {
     releaseSendLock();
     // CDP mode: Chrome thật đã giữ session tự nhiên — KHÔNG gọi storageState
     // (gọi qua CDP có thể kẹt khi Chrome đang bận với tab vừa mở). Chỉ lưu
     // session khi dùng persistent profile (mở Chrome riêng).
-    if (process.env.SYNC_CDP_CONNECTED !== "1") {
+    if (context && process.env.SYNC_CDP_CONNECTED !== "1") {
       try {
         await context.storageState({ path: config.sessionDir + "/state.json" });
       } catch { /* */ }
@@ -227,17 +256,18 @@ async function main() {
     // later send. Cap the wait, then force-exit so the script never leaks.
     const closeTimeout = setTimeout(() => {
       console.error("[TeamsSend] browser.close() timed out — forcing exit.");
-      process.exit(0);
-    }, 30_000);
-    await browser.close().catch(() => {});
-    clearTimeout(closeTimeout);
-    // CDP mode: browser proxy close() là no-op (giữ Chrome thật) → websocket
-    // CDP vẫn mở → event loop không rỗng → Node KHÔNG tự exit. Phải force-exit
-    // ngay cuối cùng, nếu không API route chờ exit sẽ treo vô hạn.
-    if (process.env.SYNC_CDP_CONNECTED === "1") {
-      log("CDP mode: exit script ngay (khong dong Chrome that).");
       process.exit(exitedOk ? 0 : 1);
+    }, 8_000);
+    if (browser) {
+      await browser.close().catch(() => {});
     }
+    clearTimeout(closeTimeout);
+    // Luôn force-exit ở cuối. Cả 2 đường đều có thể để sót handle trên event loop
+    // (CDP websocket, persistent Chrome watcher, Playwright internal) → Node
+    // không tự exit → API route chờ `child.on("exit")` vô hạn ("gửi xong không
+    // trả kết quả"). Force-exit đảm bảo script luôn kết thúc đúng.
+    log(exitedOk ? "Hoan tat — exit." : "Co loi — exit.");
+    process.exit(exitedOk ? 0 : 1);
   }
 }
 

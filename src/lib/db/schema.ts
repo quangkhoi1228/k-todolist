@@ -51,7 +51,8 @@ export const projects = pgTable(
     ticketId: text("ticketId"),
     isdStatus: text("isdStatus"),
     isdUpdatedAt: real("isdUpdatedAt"),
-    phase: text("phase").notNull().default("init"), // "init" | "kickoff" — giai đoạn workflow dự án
+    phase: text("phase").notNull().default("init"), // "init" | "kickoff" | "sow" | "in_progress" — giai đoạn workflow dự án
+    pauseAutoSync: boolean("pauseAutoSync").notNull().default(false),
     createdAt: real("createdAt").notNull().default(0),
   },
   (t) => [index("projects_by_user").on(t.userId)]
@@ -175,7 +176,9 @@ export const pmAgentMessages = pgTable(
     role: text("role").notNull(), // agent|user|system
     content: text("content").notNull(),
     metadata: text("metadata"), // JSON
-    createdAt: real("createdAt").notNull(),
+    // bigint (ms epoch) — KHÔNG dùng real/float4: Date.now() ~1.8e12 bị làm tròn
+    // ~131s nên nhiều tin gần nhau có cùng createdAt → ORDER BY đảo thứ tự.
+    createdAt: bigint("createdAt", { mode: "number" }).notNull(),
   },
   (t) => [
     index("messages_by_session").on(t.sessionId),
@@ -316,7 +319,7 @@ export const projectRoles = pgTable(
     capabilities: jsonb("capabilities"), // array of {key,label,enabled,note?} — chức năng role được phép thực hiện
     createdAt: real("createdAt").notNull(),
   },
-  (t) => [index("roles_by_user").on(t.userId)]
+  (t) => [index("roles_by_user").on(t.userId), uniqueIndex("roles_by_user_name").on(t.userId, t.name)]
 );
 
 // ─── projectMembers ─────────────────────────────────────────
@@ -395,6 +398,28 @@ export const files = pgTable(
   (t) => [index("files_by_user").on(t.userId)]
 );
 
+// ─── businessProcesses (kho quy trình nghiệp vụ — nguồn tham khảo cho gợi ý) ─────
+export const businessProcesses = pgTable(
+  "businessProcesses",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("userId").notNull(),
+    name: text("name").notNull(), // tên quy trình (vd: "Gia hạn license firewall")
+    category: text("category"), // phân loại (vd: "kickoff", "sow", "handover", "general")
+    description: text("description").notNull(), // mô tả ngắn quy trình
+    steps: jsonb("steps").notNull(), // array of {order, title, description, action?, owner?, duration?}
+    triggers: jsonb("triggers"), // array of trigger conditions (từ khoá/hoàn cảnh kích hoạt)
+    outcome: text("outcome"), // kết quả mong đợi khi hoàn thành quy trình
+    isActive: boolean("isActive").notNull().default(true),
+    createdAt: real("createdAt").notNull(),
+    updatedAt: real("updatedAt").notNull(),
+  },
+  (t) => [
+    index("bp_by_user").on(t.userId),
+    index("bp_by_user_active").on(t.userId, t.isActive),
+  ]
+);
+
 // ─── taskTemplates (task list mẫu — DÙNG CHUNG cho mọi user) ──────────────
 // Template/module không còn phân biệt theo user — mọi user thấy cùng 1 bộ
 // template/module. userId giữ lại (nullable) cho tương thích dữ liệu cũ.
@@ -455,6 +480,29 @@ export const projectSummaries = pgTable(
   ]
 );
 
+// ─── debateRuns (lịch sử mỗi lần chạy AI Debate / analyse-suggestions) ─────
+export const debateRuns = pgTable(
+  "debateRuns",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    projectId: integer("projectId").notNull(),
+    userId: text("userId").notNull(),
+    // Snapshot toàn bộ kết quả debate: suggestions + conflicts + trace + debugInfo
+    result: jsonb("result").notNull(),
+    // Số gợi ý cuối cùng sau critic verification (để hiển thị nhanh)
+    suggestionCount: integer("suggestionCount").notNull().default(0),
+    conflictCount: integer("conflictCount").notNull().default(0),
+    // Tổng thời gian chạy pipeline (ms) — hiển thị nhanh
+    totalMs: integer("totalMs").notNull().default(0),
+    groupCount: integer("groupCount").notNull().default(0),
+    createdAt: real("createdAt").notNull(),
+  },
+  (t) => [
+    index("debate_by_project").on(t.projectId),
+    index("debate_by_user").on(t.userId),
+  ]
+);
+
 // ─── projectWorkflows (flow init → kick-off: dữ liệu + tiến độ từng bước) ─────
 export const projectWorkflows = pgTable(
   "projectWorkflows",
@@ -462,7 +510,7 @@ export const projectWorkflows = pgTable(
     id: bigserial("id", { mode: "number" }).primaryKey(),
     projectId: integer("projectId").notNull(),
     userId: text("userId").notNull(),
-    phase: text("phase").notNull().default("init"), // "init" | "kickoff"
+    phase: text("phase").notNull().default("init"), // "init" | "kickoff" | "sow" | "in_progress"
     // Dữ liệu nhập theo từng bước: { stepKey: "done" | "skipped" | undefined }
     steps: jsonb("steps").notNull().default({}),
     // Input ban đầu của dự án (nhập khi init): presale, external groups, internal groups

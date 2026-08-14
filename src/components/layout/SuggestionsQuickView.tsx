@@ -10,6 +10,9 @@ import {
   BrainCircuit, Target, Quote, ChevronDown, Loader2,
   ListPlus, MessagesSquare
 } from "lucide-react";
+import { InteractiveChecklist } from "@/components/chat/InteractiveChecklist";
+import { ChecklistItem } from "@/lib/checklistProgress";
+import { keepNewestPendingPerTopic } from "@/lib/suggestionDedup";
 
 interface SuggestionsQuickViewProps {
   isOpen: boolean;
@@ -77,6 +80,17 @@ function getReasonDetails(s: any): { input?: string; reasoning?: string; expecte
     }
   } catch { /* ignore malformed data */ }
   return {};
+}
+
+/** Lấy checklist hành động (các bước quy trình nghiệp vụ khớp) từ suggestionData. */
+function getChecklist(s: any): Array<{ title: string; description?: string }> {
+  try {
+    if (s.suggestionData) {
+      const parsed = JSON.parse(s.suggestionData);
+      if (Array.isArray(parsed?.checklist)) return parsed.checklist;
+    }
+  } catch { /* ignore malformed data */ }
+  return [];
 }
 
 /** Lấy thông tin email gửi sale + deep link Teams từ suggestionData (kickoff suggestion) */
@@ -156,7 +170,7 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
   }, [addingTaskId, tm, userId]);
 
   const { data: unresolvedSuggestionsData } = useUnresolvedSuggestionsByUser(userId);
-  const unresolvedSuggestions = unresolvedSuggestionsData ?? [];
+  const unresolvedSuggestions = keepNewestPendingPerTopic(unresolvedSuggestionsData ?? []);
 
   const filteredSuggestions = useMemo(() => {
     if (filter === "all") return unresolvedSuggestions;
@@ -275,6 +289,13 @@ export function SuggestionsQuickView({ isOpen, onClose }: SuggestionsQuickViewPr
                     <p className="text-[10px] text-muted-foreground dark:text-zinc-400 mt-1 leading-relaxed line-clamp-3">
                       {s.description}
                     </p>
+                    {/* Checklist hành động tương tác (từ steps quy trình nghiệp vụ khớp) */}
+                    {getChecklist(s).length > 0 && (
+                      <InteractiveChecklist
+                        title={s.title}
+                        items={getChecklist(s) as ChecklistItem[]}
+                      />
+                    )}
                     {(s.sourceSender || s.sourceChatName) && (
                       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         {s.sourceSender && (

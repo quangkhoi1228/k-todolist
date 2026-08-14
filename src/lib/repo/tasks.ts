@@ -179,9 +179,19 @@ export async function createTasksFromTemplates(args: {
     if (!template) continue;
     // Expand module references to real task items
     const expandedItems = await expandTemplateItems(args.userId, template.items ?? []);
+    // Theo dõi group header hiện hành để gán path cho task con
+    let currentPhase = "";
+    let currentGroup = "";
     for (const item of expandedItems) {
-      if (item.isGroup || !item.title) continue;
+      // Group header (isGroup) → cập nhật phase/group, vẫn tạo task để giữ cấu trúc
+      if (item.isGroup) {
+        if (item.phase) currentPhase = item.phase;
+        currentGroup = item.title || "";
+        continue;
+      }
+      if (!item.title) continue;
       orderCursor += 1000;
+      const path = [item.phase || currentPhase, currentGroup].filter(Boolean).join(" / ") || item.phase || null;
       const res = await db
         .insert(tasks)
         .values({
@@ -193,9 +203,9 @@ export async function createTasksFromTemplates(args: {
           status: "todo",
           project: pid,
           order: orderCursor,
-          pic: null,
+          pic: item.pic || null,
           support: item.support || null,
-          path: item.phase || null,
+          path,
           priority: "normal",
           notes: item.details || null,
           createdAt: now,
@@ -211,6 +221,8 @@ export async function createTasksFromTemplates(args: {
     templateCount: args.templateIds.length,
   };
 }
+
+
 
 // ─── Dependencies ──────────────────────────────────────────
 export function mapDependency(d: any): any {

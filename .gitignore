@@ -62,3 +62,8 @@ teams-monitor-config.json
 .sync-queue-*.json
 .sync-queue-*.lock
 .sync-queue-*worker*.lock
+
+# debug screenshots / large demo binaries (never commit)
+teams-screenshots/
+zalo-screenshots/
+demo/*.mp4

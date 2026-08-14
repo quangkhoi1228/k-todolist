@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, Bot, MessageSquare, Sparkles, Headset, ChevronLeft, ChevronRight, Mail, Cog } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, Bot, MessageSquare, Sparkles, Headset, ChevronLeft, ChevronRight, Mail, Cog, Boxes, Workflow } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/ui/Logo";
@@ -78,6 +78,14 @@ export default function Sidebar() {
         <Link href="/projects" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
           <Folder className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           Dự án
+        </Link>
+        <Link href="/templates" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
+          <Boxes className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
+          Template
+        </Link>
+        <Link href="/business-processes" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
+          <Workflow className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
+          Kho quy trình
         </Link>
         <Link href="/email" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
           <Mail className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />

@@ -24,6 +24,7 @@ import {
   applyStealthPatches,
   sendZaloMessage,
   openZaloTabInBackground,
+  fitWindowToScreen,
   DEFAULT_ZALO_CONFIG,
   log,
   type ZaloAutomatorConfig,
@@ -137,19 +138,41 @@ async function main() {
     ...DEFAULT_ZALO_CONFIG,
     headless,
     keepOpen,
+    useRealChrome: true,
   };
+
+  // Zalo không bao giờ CDP 9222 (port đó là profile Teams).
+  process.env.USE_CDP = "0";
 
   // Không mở Chrome khi sync đang giữ profile chính — chờ ngắn (3 phút tối đa)
   // Claim send lock NGAY (trước khi đợi sync): sync đang chạy phát hiện
   // `.zalo-send-running` sẽ thoát sớm → send không phải chờ lâu.
   claimSendLock();
-  await waitForSyncToFinish();
 
-  const { browser, context } = await createZaloStealthContext(config);
-  const page = context.pages()[0] || (await openZaloTabInBackground(browser, context, { minimize: config.headless }));
-  await applyStealthPatches(page);
+  let browser: Awaited<ReturnType<typeof createZaloStealthContext>>["browser"] | undefined;
+  let context: Awaited<ReturnType<typeof createZaloStealthContext>>["context"] | undefined;
 
   try {
+    await waitForSyncToFinish();
+    const launched = await createZaloStealthContext(config);
+    browser = launched.browser;
+    context = launched.context;
+      const page = context.pages()[0] || (await openZaloTabInBackground(browser, context, {
+        background: config.headless,
+        minimize: config.headless,
+      }));
+    await applyStealthPatches(page);
+
+    // Headfull: fit cửa sổ vừa màn hình + bring lên trước để user nhìn thấy
+    // ô input (tránh UI tràn khỏi window khi profile restore size cũ).
+    if (!config.headless) {
+      try {
+        await fitWindowToScreen(page);
+        await page.bringToFront();
+        await page.waitForTimeout(400);
+      } catch { /* ignore */ }
+    }
+
     await navigateToZalo(page, config);
     const neededLogin = await waitForZaloLogin(page, config);
     if (neededLogin) {
@@ -178,15 +201,25 @@ async function main() {
     }
   } finally {
     releaseSendLock();
-    try {
-      await context.storageState({ path: config.sessionDir + "/state.json" });
-    } catch { /* */ }
+    if (context) {
+      try {
+        await context.storageState({ path: config.sessionDir + "/state.json" });
+      } catch { /* */ }
+    }
 
     if (!config.headless && config.keepOpen) {
       log("Giu browser mo.");
       await new Promise(() => {});
     }
-    await browser.close().catch(() => {});
+    // Headfull: chờ 3s trước khi đóng để user nhìn thấy kết quả
+    // (tin đã gửi/ô input đã fill) trước khi Chrome tắt.
+    if (!config.headless && !config.keepOpen) {
+      log("Cho 3s truoc khi dong Chrome (headfull — user quan sat).");
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
   }
 }
 

@@ -48,6 +48,35 @@ interface AnalyzeResponse {
   error?: string;
 }
 
+/** Timestamp (ms) → "yyyy-MM-dd" cho input type=date (giờ địa phương). */
+function fmtDate(ts?: number | null): string {
+  if (!ts || isNaN(Number(ts))) return "";
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** "yyyy-MM-dd" (từ input date) → timestamp (ms) giờ địa phương. */
+function parseDateInput(value: string): number | undefined {
+  if (!value) return undefined;
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  const dt = new Date(y, m - 1, d);
+  return isNaN(dt.getTime()) ? undefined : dt.getTime();
+}
+
+/** Chuẩn hoá tên để so khớp (bỏ dấu + lowercase) — dùng nhận diện placeholder "Khách hàng". */
+function normNameForMatch(name: string): string {
+  return String(name ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
 export function TaskListImportDialog({
   open,
   onOpenChange,
@@ -86,25 +115,24 @@ export function TaskListImportDialog({
     fetch(`/api/data/members?action=getMembersByProject&projectId=${encodeURIComponent(projectId)}`)
       .then((r) => r.json())
       .then((data) => {
-        if (Array.isArray(data)) {
-          setMembers(
-            data.map((m) => ({
+        const raw: MemberRow[] = Array.isArray(data)
+          ? data.map((m) => ({
               name: m.name ?? "",
               email: m.email ?? undefined,
               roleName: m.roleName ?? "",
             }))
-          );
-        } else if (Array.isArray(data?.members)) {
-          setMembers(
-            data.members.map((m: any) => ({
-              name: m.name ?? "",
-              email: m.email ?? undefined,
-              roleName: m.roleName ?? "",
-            }))
-          );
-        }
+          : Array.isArray(data?.members)
+            ? data.members.map((m: any) => ({
+                name: m.name ?? "",
+                email: m.email ?? undefined,
+                roleName: m.roleName ?? "",
+              }))
+            : [];
+        // Đảm bảo luôn có placeholder "Khách hàng" cho task của khách
+        const hasCustomer = raw.some((m) => normNameForMatch(m.name) === "khachhang");
+        setMembers(hasCustomer ? raw : [{ name: "Khách hàng", email: undefined, roleName: "" }, ...raw]);
       })
-      .catch(() => setMembers([]))
+      .catch(() => setMembers([{ name: "Khách hàng", email: undefined, roleName: "" }]))
       .finally(() => setMembersLoading(false));
   }, [open, projectId]);
 
@@ -188,257 +216,321 @@ export function TaskListImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col bg-popover border-border">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-sm">
-            <ClipboardPaste className="w-4 h-4 text-emerald-500" />
-            Import task list từ Excel
-            <span className="text-[10px] font-normal text-muted-foreground ml-auto">
-              {projectName}
-            </span>
-          </DialogTitle>
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
-            className="absolute right-4 top-4 p-1 rounded-md hover:bg-muted text-muted-foreground cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </DialogHeader>
-
-        <div className="flex flex-col gap-3 overflow-y-auto pr-1">
-          {/* Member list (compact) */}
-          <div className="flex items-start gap-2 rounded-lg border border-border/40 bg-background/40 px-2.5 py-1.5">
-            <User className="w-3 h-3 mt-0.5 text-muted-foreground shrink-0" />
-            <div className="min-w-0">
-              <span className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wide">
-                Member — LLM sẽ assign pic/support theo danh sách này
-              </span>
-              {membersLoading ? (
-                <div className="text-[9px] text-muted-foreground/60">Đang tải...</div>
-              ) : memberStrPreview ? (
-                <div className="text-[9px] text-foreground/80 whitespace-pre-wrap line-clamp-2">
-                  {memberStrPreview}
-                </div>
-              ) : (
-                <div className="text-[9px] text-amber-600 dark:text-amber-400">
-                  Chưa có member — thêm member vào dự án để LLM assign task
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Paste textarea */}
-          <div>
-            <label className="text-[10px] font-semibold text-muted-foreground mb-1 block">
-              Dán nội dung task list (copy từ Excel — giữ tab giữa các cột)
-            </label>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={"VD bôi đen vùng task trong Excel rồi Ctrl+C → dán vào đây:\n\n1\tChuẩn bị\n1.1\tSizing\t\tFCI DatPT115\tPreSale HCM\t\tDone\n2.2\tMigration VM Onprem to Cloud\tGửi guide cài đặt\tFCI\t\t\tDone\n2.3\tCài đặt Agent backup lên VM\tCài agent backup lên VM onprem\tKH\t\t\tProcessing"}
-              rows={7}
-              className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-muted border border-border text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-primary/50 resize-y font-mono"
-            />
-            <div className="flex items-center justify-between mt-1">
-              <span className="text-[9px] text-muted-foreground/60">
-                Hoặc dán văn bản thường mỗi dòng 1 task (số thứ tự 1.1, 2.3 được tự nhận diện)
+      <DialogContent className="sm:max-w-[95vw] md:max-w-[1200px] h-[90vh] flex flex-col bg-popover border-border p-0 overflow-hidden shadow-2xl rounded-xl">
+        <DialogHeader className="px-6 py-4 border-b border-border/40 shrink-0 bg-muted/10">
+          <div className="flex items-center justify-between">
+            <DialogTitle className="flex items-center gap-2.5 text-base font-semibold text-foreground">
+              <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-500">
+                <ClipboardPaste className="w-4 h-4" />
+              </div>
+              Import task list từ Excel
+            </DialogTitle>
+            <div className="flex items-center gap-4">
+              <span className="text-sm font-medium text-muted-foreground/80 bg-muted/30 px-3 py-1 rounded-full">
+                {projectName}
               </span>
               <button
                 type="button"
-                onClick={handleAnalyze}
-                disabled={analyzing || !text.trim()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                onClick={() => onOpenChange(false)}
+                className="p-1.5 rounded-full hover:bg-muted text-muted-foreground transition-colors cursor-pointer"
               >
-                {analyzing ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Sparkles className="w-3 h-3" />
-                )}
-                Phân tích bằng AI
+                <X className="w-4 h-4" />
               </button>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="flex-1 min-h-0 flex flex-col p-6 gap-5 bg-background/50 overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 shrink-0">
+            {/* Paste textarea */}
+            <div className="col-span-1 lg:col-span-2 flex flex-col">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  Dữ liệu từ Excel
+                  <span className="text-xs font-normal text-muted-foreground">
+                    (Copy & dán trực tiếp vào đây)
+                  </span>
+                </label>
+              </div>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={"VD bôi đen vùng task trong Excel rồi Ctrl+C → dán vào đây:\n\n1\tChuẩn bị\n1.1\tSizing\t\tFCI DatPT115\tPreSale HCM\t\tDone"}
+                rows={5}
+                className="w-full flex-1 px-4 py-3 text-sm rounded-xl bg-background border border-border/60 text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all resize-none font-mono leading-relaxed shadow-sm"
+              />
+              <div className="flex items-center justify-between mt-3">
+                <span className="text-[11px] text-muted-foreground">
+                  Hỗ trợ định dạng có tab giữa các cột, hoặc văn bản thường mỗi dòng 1 task
+                </span>
+                <button
+                  type="button"
+                  onClick={handleAnalyze}
+                  disabled={analyzing || !text.trim()}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {analyzing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-4 h-4" />
+                  )}
+                  Phân tích bằng AI
+                </button>
+              </div>
+            </div>
+
+            {/* Member list (compact) */}
+            <div className="col-span-1 flex flex-col bg-muted/20 border border-border/40 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-500">
+                  <User className="w-4 h-4" />
+                </div>
+                <h4 className="text-sm font-semibold text-foreground">Danh sách Member</h4>
+              </div>
+              <p className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
+                AI sẽ tự động match PIC/Support vào danh sách này. Từ khoá "KH" sẽ thành Khách hàng.
+              </p>
+              <div className="flex-1 min-h-[80px] overflow-y-auto bg-background/50 border border-border/40 rounded-lg p-3 text-xs shadow-inner">
+                {membersLoading ? (
+                  <div className="text-muted-foreground flex items-center justify-center h-full">Đang tải...</div>
+                ) : memberStrPreview ? (
+                  <div className="text-foreground/80 whitespace-pre-wrap leading-relaxed">
+                    {memberStrPreview}
+                  </div>
+                ) : (
+                  <div className="text-amber-600 dark:text-amber-400">
+                    Chưa có member — hãy thêm member vào dự án.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
           {error && (
-            <div className="flex items-center gap-1.5 text-[10px] text-red-600 dark:text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-2.5 py-1.5">
-              <AlertTriangle className="w-3 h-3" />
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 shrink-0">
+              <AlertTriangle className="w-5 h-5 shrink-0" />
               {error}
             </div>
           )}
 
           {imported !== null && (
-            <div className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/5 border border-emerald-500/20 rounded-lg px-2.5 py-1.5">
-              <CheckCircle2 className="w-3 h-3" />
-              Đã import {imported} task vào dự án {projectName}
+            <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 shrink-0">
+              <CheckCircle2 className="w-5 h-5 shrink-0" />
+              Đã import {imported} task vào dự án thành công.
             </div>
           )}
 
           {/* Preview kết quả */}
           {tasks !== null && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                  <ListPlus className="w-3 h-3" />
-                  Đã detect <span className="font-bold text-foreground">{taskCount}</span> task
-                  {analyzeSource === "llm" ? " (AI)" : analyzeSource === "fallback" ? " (theo cột — không có AI)" : ""}
+            <div className="flex flex-col flex-1 min-h-0 bg-background rounded-xl border border-border/60 shadow-sm overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/10 shrink-0">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="p-1 rounded-md bg-primary/10 text-primary">
+                    <ListPlus className="w-4 h-4" />
+                  </div>
+                  <span>
+                    Đã nhận diện <strong className="text-foreground">{taskCount}</strong> task
+                  </span>
+                  {analyzeSource === "llm" ? (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-semibold border border-emerald-500/20">AI</span>
+                  ) : analyzeSource === "fallback" ? (
+                    <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] font-semibold border border-blue-500/20">Cơ bản</span>
+                  ) : null}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
                       setTasks(null);
                       setAnalyzeSource(null);
                     }}
-                    className="px-2 py-1 rounded-lg text-[9px] font-medium text-muted-foreground hover:bg-muted cursor-pointer"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
                   >
-                    Phân tích lại
+                    Làm lại
                   </button>
                   <button
                     type="button"
                     onClick={() => setTasks(tasks.map(() => ({ ...(tasks[0] ?? { title: "", phase: "Khác", pic: "", support: "" }), pic: "", support: "" })))}
-                    className="px-2 py-1 rounded-lg text-[9px] font-medium text-muted-foreground hover:bg-muted cursor-pointer"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-500/10 transition-colors cursor-pointer"
                   >
-                    Xoá toàn bộ pic
+                    Xoá toàn bộ PIC
                   </button>
                 </div>
               </div>
 
-              <div className="border border-border/50 rounded-lg overflow-hidden">
-                <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
-                  <table className="w-full text-left text-[10px] min-w-[680px]">
-                    <thead className="sticky top-0 bg-muted/60 backdrop-blur text-muted-foreground">
-                      <tr>
-                        <th className="px-1.5 py-1.5 font-semibold w-28">Task</th>
-                        <th className="px-1.5 py-1.5 font-semibold hidden md:table-cell w-44">Chi tiết</th>
-                        <th className="px-1.5 py-1.5 font-semibold w-24">PIC</th>
-                        <th className="px-1.5 py-1.5 font-semibold hidden lg:table-cell w-24">Support</th>
-                        <th className="px-1.5 py-1.5 font-semibold w-16">Manday</th>
-                        <th className="px-1.5 py-1.5 font-semibold w-16">Trạng thái</th>
-                        <th className="px-1.5 py-1.5 w-8" />
+              <div className="flex-1 min-h-0 overflow-auto">
+                <table className="w-full text-left text-xs min-w-[1000px]">
+                  <thead className="sticky top-0 bg-muted/90 backdrop-blur-md text-muted-foreground z-10 shadow-sm ring-1 ring-border/50">
+                    <tr>
+                      <th className="px-3 py-2.5 font-semibold w-56">Task</th>
+                      <th className="px-3 py-2.5 font-semibold hidden md:table-cell w-56">Chi tiết</th>
+                      <th className="px-3 py-2.5 font-semibold w-32">PIC</th>
+                      <th className="px-3 py-2.5 font-semibold hidden lg:table-cell w-32">Support</th>
+                      <th className="px-3 py-2.5 font-semibold w-20">Manday</th>
+                      <th className="px-3 py-2.5 font-semibold w-36">Bắt đầu</th>
+                      <th className="px-3 py-2.5 font-semibold w-36">Kết thúc</th>
+                      <th className="px-3 py-2.5 font-semibold w-32">Trạng thái</th>
+                      <th className="px-3 py-2.5 w-10" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {tasks.map((t, idx) => {
+                      const level = t.path ? t.path.split(" / ").length - 1 : 0;
+                      const isGroup = level === 0;
+                      const isSubGroup = level === 1;
+
+                      const rowBg = isGroup
+                        ? "bg-indigo-500/5 hover:bg-indigo-500/10"
+                        : isSubGroup
+                          ? "bg-slate-500/5 hover:bg-slate-500/10 dark:bg-slate-400/5"
+                          : "hover:bg-muted/30";
+                      
+                      const rowBorder = isGroup
+                        ? "border-l-2 border-indigo-500/50"
+                        : isSubGroup
+                          ? "border-l-2 border-slate-500/30 dark:border-slate-400/30"
+                          : "border-l-2 border-transparent";
+
+                      return (
+                      <tr key={idx} className={`${rowBg} ${rowBorder} transition-colors group`}>
+                        <td className={`px-3 py-1.5 text-[10px] font-mono select-none text-center ${
+                          isGroup ? "font-bold text-indigo-600 dark:text-indigo-400" : "font-medium text-muted-foreground/70"
+                        }`}>
+                          {idx + 1}
+                        </td>
+                        <td className="px-3 py-1.5" style={{ paddingLeft: `${12 + level * 20}px` }}>
+                          <input
+                            type="text"
+                            value={t.title}
+                            onChange={(e) => changeTask(idx, { title: e.target.value })}
+                            placeholder="Tên task"
+                            className={`w-full h-8 px-2.5 text-xs rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm ${
+                              isGroup ? "font-bold text-foreground" : isSubGroup ? "font-semibold text-foreground/90" : "font-medium text-foreground"
+                            }`}
+                          />
+                        </td>
+                        <td className="px-3 py-1.5 hidden md:table-cell">
+                          <input
+                            type="text"
+                            value={t.details ?? ""}
+                            onChange={(e) => changeTask(idx, { details: e.target.value })}
+                            placeholder="Chi tiết"
+                            className="w-full h-8 px-2.5 text-xs rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <select
+                            value={t.pic ?? ""}
+                            onChange={(e) => changeTask(idx, { pic: e.target.value })}
+                            className="w-full h-8 px-2.5 text-xs rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground cursor-pointer"
+                          >
+                            <option value="">—</option>
+                            {members.map((m, mi) => (
+                              <option key={mi} value={m.name}>
+                                {m.name} {m.roleName ? `(${m.roleName})` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-1.5 hidden lg:table-cell">
+                          <select
+                            value={t.support ?? ""}
+                            onChange={(e) => changeTask(idx, { support: e.target.value })}
+                            className="w-full h-8 px-2.5 text-xs rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground cursor-pointer"
+                          >
+                            <option value="">—</option>
+                            {members.map((m, mi) => (
+                              <option key={mi} value={m.name}>
+                                {m.name} {m.roleName ? `(${m.roleName})` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            type="number"
+                            min={0}
+                            value={t.manday ?? ""}
+                            onChange={(e) => changeTask(idx, { manday: e.target.value ? Number(e.target.value) : undefined })}
+                            placeholder="1"
+                            className="w-full h-8 px-2.5 text-xs rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground text-center"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            type="date"
+                            value={fmtDate(t.startDate)}
+                            onChange={(e) => changeTask(idx, { startDate: e.target.value ? parseDateInput(e.target.value) : undefined })}
+                            className="w-full h-8 px-2 text-[11px] rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            type="date"
+                            value={fmtDate(t.endDate)}
+                            onChange={(e) => changeTask(idx, { endDate: e.target.value ? parseDateInput(e.target.value) : undefined })}
+                            className="w-full h-8 px-2 text-[11px] rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <select
+                            value={t.status ?? ""}
+                            onChange={(e) => changeTask(idx, { status: e.target.value })}
+                            className="w-full h-8 px-2 text-[11px] rounded-md bg-background border border-border/60 hover:border-border focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-all shadow-sm text-foreground cursor-pointer"
+                          >
+                            <option value="">—</option>
+                            <option value="todo">Chưa thực hiện</option>
+                            <option value="processing">Đang xử lý</option>
+                            <option value="pending">Chờ</option>
+                            <option value="done">Đã xong</option>
+                          </select>
+                        </td>
+                        <td className="px-3 py-1.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => setTasks((prev) => (prev ? prev.filter((_, i) => i !== idx) : prev))}
+                            className="p-1.5 rounded-md text-rose-500 hover:bg-rose-500/10 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Xoá task"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/30">
-                      {tasks.map((t, idx) => (
-                        <tr key={idx} className="hover:bg-muted/20">
-                          <td className="px-1.5 py-1">
-                            <input
-                              type="text"
-                              value={t.title}
-                              onChange={(e) => changeTask(idx, { title: e.target.value })}
-                              placeholder="Tên task"
-                              className="w-full h-6 px-1.5 text-[10px] rounded bg-background/50 border border-border/50 outline-none focus:border-primary/40"
-                            />
-                          </td>
-                          <td className="px-1.5 py-1 hidden md:table-cell">
-                            <input
-                              type="text"
-                              value={t.details ?? ""}
-                              onChange={(e) => changeTask(idx, { details: e.target.value })}
-                              placeholder="Chi tiết"
-                              className="w-full h-6 px-1.5 text-[10px] rounded bg-background/50 border border-border/50 outline-none focus:border-primary/40"
-                            />
-                          </td>
-                          <td className="px-1.5 py-1">
-                            <select
-                              value={t.pic ?? ""}
-                              onChange={(e) => changeTask(idx, { pic: e.target.value })}
-                              className="w-full h-6 px-1 text-[10px] rounded bg-background/50 border border-border/50 outline-none focus:border-primary/40 cursor-pointer"
-                            >
-                              <option value="">—</option>
-                              {members.map((m, mi) => (
-                                <option key={mi} value={m.name}>
-                                  {m.name} {m.roleName ? `(${m.roleName})` : ""}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="px-1.5 py-1 hidden lg:table-cell">
-                            <select
-                              value={t.support ?? ""}
-                              onChange={(e) => changeTask(idx, { support: e.target.value })}
-                              className="w-full h-6 px-1 text-[10px] rounded bg-background/50 border border-border/50 outline-none focus:border-primary/40 cursor-pointer"
-                            >
-                              <option value="">—</option>
-                              {members.map((m, mi) => (
-                                <option key={mi} value={m.name}>
-                                  {m.name} {m.roleName ? `(${m.roleName})` : ""}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="px-1.5 py-1">
-                            <input
-                              type="number"
-                              min={0}
-                              value={t.manday ?? ""}
-                              onChange={(e) => changeTask(idx, { manday: e.target.value ? Number(e.target.value) : undefined })}
-                              placeholder="1"
-                              className="w-14 h-6 px-1.5 text-[10px] rounded bg-background/50 border border-border/50 outline-none focus:border-primary/40"
-                            />
-                          </td>
-                          <td className="px-1.5 py-1">
-                            <select
-                              value={t.status ?? ""}
-                              onChange={(e) => changeTask(idx, { status: e.target.value })}
-                              className="w-full h-6 px-1 text-[10px] rounded bg-background/50 border border-border/50 outline-none focus:border-primary/40 cursor-pointer"
-                            >
-                              <option value="">—</option>
-                              <option value="todo">Chưa thực hiện</option>
-                              <option value="processing">Đang xử lý</option>
-                              <option value="pending">Chờ</option>
-                              <option value="done">Đã xong</option>
-                            </select>
-                          </td>
-                          <td className="px-1.5 py-1">
-                            <button
-                              type="button"
-                              onClick={() => setTasks((prev) => (prev ? prev.filter((_, i) => i !== idx) : prev))}
-                              className="px-1 rounded-md text-rose-500 hover:bg-rose-500/10 cursor-pointer"
-                              title="Xoá task"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between gap-2 pt-3 border-t border-border/30 mt-2">
-          <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground/70">
-            <ShieldCheck className="w-3 h-3" />
-            PIC/Support được assign theo member dự án — cột gốc khớp member sẽ giữ nguyên, thiếu thì AI gợi ý
+        <div className="flex items-center justify-between gap-4 px-6 py-4 border-t border-border/40 shrink-0 bg-muted/10">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground/80 max-w-[60%]">
+            <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-500/70" />
+            <p className="truncate">PIC/Support tự động match với member dự án. "KH" sẽ được map thành Khách hàng.</p>
           </div>
-          <div className="flex items-center gap-2">
-            <DialogClose
-              render={
-                <button
-                  type="button"
-                  className="px-3 py-1.5 rounded-lg text-[10px] font-medium text-muted-foreground hover:bg-muted cursor-pointer"
-                >
-                  Đóng
-                </button>
-              }
-            />
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-foreground hover:bg-muted transition-colors cursor-pointer"
+            >
+              Huỷ bỏ
+            </button>
             <button
               type="button"
               onClick={handleImport}
               disabled={importing || !tasks || tasks.length === 0}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[10px] font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {importing ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <ListPlus className="w-3 h-3" />
+                <ListPlus className="w-4 h-4" />
               )}
-              {taskCount > 0 ? `Import ${taskCount} task vào dự án` : "Import task"}
+              {taskCount > 0 ? `Lưu ${taskCount} task` : "Lưu task"}
             </button>
           </div>
         </div>

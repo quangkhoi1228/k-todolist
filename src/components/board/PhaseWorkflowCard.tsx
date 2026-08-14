@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Copy, Check, Send, Sparkles, Target, Plus, X, Trash2, ChevronDown, Rocket, RefreshCw, ExternalLink, ListTodo, RotateCcw, Loader2, FileText, FileSpreadsheet, Wand2, ListPlus, CheckCircle2, ScanSearch } from "lucide-react";
+import { Copy, Check, Send, Sparkles, Target, Plus, X, Trash2, ChevronDown, ChevronRight, Rocket, RefreshCw, ExternalLink, ListTodo, RotateCcw, Loader2, FileText, FileSpreadsheet, Wand2, ListPlus, CheckCircle2, ScanSearch } from "lucide-react";
 import type { WorkflowRow, WorkflowRequirement, WorkflowGroupRef, WorkflowSowPlan } from "@/lib/repo/projectWorkflows";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmailComposeDialog } from "./EmailComposeDialog";
@@ -138,8 +138,8 @@ interface PhaseWorkflowCardProps {
   fetchChatLists?: (platforms?: ("teams" | "zalo")[]) => Promise<Record<"teams" | "zalo", string[]>>;
   /** Lưu nhóm đã chọn vào dự án (teamsGroups) — không bắt buộc, nếu có sẽ tự động sync */
   onSaveGroups?: (groups: WorkflowGroupRef[]) => Promise<void>;
-  /** Task của project — dùng để detect "task đều xong" → gợi ý đóng dự án */
-  projectTasks?: Array<{ _id?: string; status?: string | null; title?: string }>;
+  /** Task của project — dùng để detect "task đều xong" → gợi ý đóng dự án, và render list task tracking */
+  projectTasks?: Array<any>;
   /** Tin nhắn đã sync của các nhóm — dùng để detect KH confirm trong nhóm khách hàng */
   projectChats?: Array<{ chatName?: string; sender?: string | null; content?: string | null; timestampMs?: number | string | null }>;
   /** Nhóm chat của dự án (kèm type internal/customer) — xác định nhóm khách hàng */
@@ -219,7 +219,7 @@ export function PhaseWorkflowCard({
   const [sowTemplates, setSowTemplates] = useState<any[]>([]);
   const [detectedTemplateId, setDetectedTemplateId] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
-  const [selectedSowTemplateId, setSelectedSowTemplateId] = useState<string | null>(null);
+  const [selectedSowTemplateIds, setSelectedSowTemplateIds] = useState<string[]>([]);
   const [sowExpanded, setSowExpanded] = useState(false);
   const [creatingSow, setCreatingSow] = useState(false);
   const [sowPlan, setSowPlan] = useState<WorkflowSowPlan | null>(null);
@@ -364,6 +364,8 @@ export function PhaseWorkflowCard({
 
   // ─── State mở email bàn giao ───
   const [handoverOpen, setHandoverOpen] = useState(false);
+  const [showDoneTasks, setShowDoneTasks] = useState(false);
+  const [sowListExpanded, setSowListExpanded] = useState(false);
 
   const closeProject = async () => {
     setSaving(true);
@@ -388,12 +390,117 @@ export function PhaseWorkflowCard({
     ? `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(saleEmail.trim())}&message=${encodeURIComponent(greetMessageText)}`
     : undefined;
 
+  useEffect(() => {
+    setQuestionSendOk(null);
+  }, []);
+
+  const renderGeneratedTasks = () => {
+    if (!(workflow?.taskIds || []).length) return null;
+    
+    const generatedTasks = (projectTasks || []).filter((t) => (workflow?.taskIds || []).includes(Number(t.id || t._id)));
+    const activeTasks = generatedTasks.filter(t => t.status !== "done");
+    const doneTasks = generatedTasks.filter(t => t.status === "done");
+    
+    return (
+      <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 shadow-sm">
+        <div className="flex items-center gap-2 mb-2">
+          <ListTodo className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold text-foreground">
+            Task tracking tự sinh ({workflow?.taskIds?.length})
+          </span>
+          <button
+            type="button"
+            onClick={() => onSwitchTab?.("history")}
+            className="ml-auto flex items-center gap-1.5 text-xs text-primary font-medium hover:underline transition-colors cursor-pointer"
+          >
+            Mở tab Tasks
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <p className="text-sm text-muted-foreground/80 leading-relaxed mb-3">
+          Output của các task này chính là input của dự án — cập nhật kết quả trong tab
+          Lịch sử / Tasks.
+        </p>
+        
+        <div className="space-y-2 mt-3 pt-3 border-t border-primary/10">
+          {activeTasks.map((task, idx) => (
+            <div key={task.id || task._id || idx} className="flex items-start gap-2.5 rounded-lg border border-border/40 bg-background/60 p-2.5 shadow-sm hover:bg-background/80 transition-colors">
+              <div className="mt-0.5">
+                {task.status === "in_progress" ? (
+                  <RefreshCw className="w-4 h-4 text-amber-500" />
+                ) : (
+                  <div className="w-4 h-4 rounded-full border border-muted-foreground/40" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate" title={task.title}>
+                  {task.title}
+                </p>
+                <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+                  {task.assignee && (
+                    <span className="truncate max-w-[120px]">PIC: {task.assignee}</span>
+                  )}
+                  {task.dueDate && (
+                    <span>Hạn: {new Date(task.dueDate).toLocaleDateString('vi-VN')}</span>
+                  )}
+                  {task.priority === "high" && (
+                    <span className="text-rose-500 font-medium">Cao</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+          
+          {doneTasks.length > 0 && (
+            <div className="pt-2">
+              <button 
+                onClick={() => setShowDoneTasks(!showDoneTasks)} 
+                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {showDoneTasks ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                {doneTasks.length} task đã hoàn thành
+              </button>
+              
+              {showDoneTasks && (
+                <div className="mt-2 space-y-2">
+                  {doneTasks.map((task, idx) => (
+                    <div key={task.id || task._id || idx} className="flex items-start gap-2.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2.5 shadow-sm opacity-80 hover:opacity-100 transition-opacity">
+                      <div className="mt-0.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate line-through text-muted-foreground" title={task.title}>
+                          {task.title}
+                        </p>
+                        <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+                          {task.assignee && (
+                            <span className="truncate max-w-[120px]">PIC: {task.assignee}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {generatedTasks.length === 0 && (
+            <div className="text-xs text-muted-foreground italic px-1">
+              Đang tải danh sách task...
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const phase = workflow?.phase ?? "init";
   const steps = (workflow?.steps ?? {}) as Record<string, string>;
   const stepStatus = (key: string) => steps[key] || null;
 
-  // Có gợi ý đóng dự án: phase đang sow + (task đều xong hoặc KH confirm)
-  const canCloseProject = phase === "sow" && (allTasksDone || customerConfirm);
+  // Có gợi ý đóng dự án: phase sow/in_progress + (task đều xong hoặc KH confirm)
+  const canCloseProject = (phase === "sow" || phase === "in_progress") && (allTasksDone || customerConfirm);
 
   // Load dữ liệu từ workflow khi mở
   useEffect(() => {
@@ -427,7 +534,13 @@ export function PhaseWorkflowCard({
     }
     if (workflow.sowPlan) {
       setSowPlan(workflow.sowPlan);
-      setSelectedSowTemplateId(workflow.sowPlan.templateId ? String(workflow.sowPlan.templateId) : null);
+      setSelectedSowTemplateIds(
+        workflow.sowPlan.templateIds?.length
+          ? workflow.sowPlan.templateIds.map(String)
+          : workflow.sowPlan.templateId
+            ? [String(workflow.sowPlan.templateId)]
+            : []
+      );
     }
   }, [(workflow as any)?._id, saleGender, presaleGender]);
 
@@ -873,13 +986,34 @@ export function PhaseWorkflowCard({
     }
   };
 
+  const moveToInProgress = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const nextSteps: Record<string, string> = { ...steps };
+      if (!nextSteps["sow_planning"]) nextSteps["sow_planning"] = "done";
+      await onUpdateWorkflow({
+        action: "updateWorkflowPhase",
+        projectId: project._id,
+        userId,
+        phase: "in_progress",
+        patch: { steps: nextSteps },
+      });
+      showToast("Đã chuyển dự án sang Triển khai.");
+    } catch (e: any) {
+      setError(e?.message || "Chuyển phase thất bại");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // ─── Phase SoW planning: tải templates + auto-detect theo scope dự án ───
   const detectSowTemplate = useCallback(async () => {
     setDetecting(true);
     setError(null);
     try {
       // 1. Lấy danh sách templates của user
-      const res = await fetch(`/api/data/task-templates?action=getTaskTemplates&userId=${encodeURIComponent(userId || "")}&includeInactive=true`);
+      const res = await fetch(`/api/data/task-templates?action=getTaskTemplates&userId=${encodeURIComponent(userId || "")}&includeInactive=true&expand=true`);
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
       setSowTemplates(list.filter((t: any) => t.items && t.items.length > 0));
@@ -895,7 +1029,7 @@ export function PhaseWorkflowCard({
       if (det && det.id) {
         setDetectedTemplateId(String(det.id));
         // Nếu chưa chọn template nào → mặc định chọn template detect được
-        setSelectedSowTemplateId((prev) => prev || String(det.id));
+        setSelectedSowTemplateIds((prev) => (prev.length ? prev : [String(det.id)]));
       } else {
         setDetectedTemplateId(null);
       }
@@ -919,21 +1053,24 @@ export function PhaseWorkflowCard({
     setCreatingSow(true);
     setError(null);
     try {
-      const template = sowTemplates.find((t) => String(t.id) === selectedSowTemplateId);
-      if (!template) {
+      const selectedTemplates = sowTemplates.filter((t) => selectedSowTemplateIds.includes(String(t.id)));
+      if (selectedTemplates.length === 0) {
         setError("Chưa chọn template SoW.");
         return;
       }
-      const items = template.items || [];
+      // Gom items của các template đã chọn theo thứ tự chọn (bỏ group header, chỉ tạo task)
+      const combinedItems = selectedTemplates.flatMap((tmpl) =>
+        (tmpl.items || []).filter((it: any) => !it.isGroup)
+      );
       // Tạo task thật từ template
-      const res = await onGenerateSowTasks(items);
+      const res = await onGenerateSowTasks(combinedItems);
       const taskIds = (res?.tasks || []).map((t: any) => Number(t?.id)).filter(Boolean);
-      // Lưu sowPlan vào workflow
+      // Lưu sowPlan vào workflow (tasks gộp + danh sách template đã chọn)
       const plan: WorkflowSowPlan = {
-        templateId: template.id,
-        templateName: template.name,
-        templateCategory: template.category,
-        items,
+        templateIds: selectedTemplates.map((t) => t.id),
+        templateNames: selectedTemplates.map((t) => t.name),
+        templateCategories: selectedTemplates.map((t) => t.category),
+        items: combinedItems,
         taskIds,
       };
       setSowPlan(plan);
@@ -945,7 +1082,8 @@ export function PhaseWorkflowCard({
       });
       await onUpdateStep("sow_planning", "done");
       markStepCollapsed("sow_planning");
-      showToast(`Đã tạo ${taskIds.length} task từ template "${template.name}".`);
+      const names = selectedTemplates.map((t) => `"${t.name}"`).join(", ");
+      showToast(`Đã tạo ${taskIds.length} task từ ${selectedTemplates.length} template (${names}).`);
     } catch (e: any) {
       setError(e?.message || "Tạo task SoW thất bại");
     } finally {
@@ -963,49 +1101,51 @@ export function PhaseWorkflowCard({
   }
 
   return (
-    <div className="rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-transparent to-transparent p-5 space-y-4 shadow-sm">
+    <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/5 via-transparent to-transparent px-3 py-2.5 space-y-2 shadow-sm">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <Rocket className="w-5 h-5 text-primary" />
-          <span className="text-base font-bold text-foreground uppercase tracking-wider">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Rocket className="w-3.5 h-3.5 text-primary shrink-0" />
+          <span className="text-xs font-bold text-foreground uppercase tracking-wide">
             Quy trình dự án
           </span>
           <span
-            className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
               phase === "kickoff"
                 ? "bg-violet-500/15 text-violet-600 dark:text-violet-400"
                 : phase === "sow"
                   ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
-                  : phase === "closed"
-                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                    : "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+                  : phase === "in_progress"
+                    ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+                    : phase === "closed"
+                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                      : "bg-sky-500/15 text-sky-600 dark:text-sky-400"
             }`}
           >
-            {phase === "kickoff" ? "Kick-off" : phase === "sow" ? "SoW planning" : phase === "closed" ? "Đóng dự án" : "Init"}
+            {phase === "kickoff" ? "Kick-off" : phase === "sow" ? "SoW planning" : phase === "in_progress" ? "Triển khai" : phase === "closed" ? "Đóng dự án" : "Init"}
           </span>
         </div>
-        {(phase === "kickoff" || phase === "sow") && (
+        {(phase === "kickoff" || phase === "sow" || phase === "in_progress") && (
           <button
             type="button"
             onClick={() => onSwitchTab?.("history")}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer shrink-0"
           >
-            <ListTodo className="w-4 h-4" />
+            <ListTodo className="w-3.5 h-3.5" />
             Task tracking
           </button>
         )}
       </div>
 
       {error && (
-        <div className="text-sm text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-3 shadow-sm">
+        <div className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-lg px-2.5 py-1.5">
           {error}
         </div>
       )}
 
       {taskToast && (
-        <div className="text-sm text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 flex items-center gap-2 shadow-sm">
-          <Check className="w-4 h-4 shrink-0" />
+        <div className="text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+          <Check className="w-3.5 h-3.5 shrink-0" />
           {taskToast}
         </div>
       )}
@@ -1860,28 +2000,7 @@ export function PhaseWorkflowCard({
           </div>
 
           {/* Generated tasks */}
-          {(workflow?.taskIds || []).length > 0 && (
-            <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <ListTodo className="w-4 h-4 text-primary" />
-                <span className="text-sm font-semibold text-foreground">
-                  Task tracking tự sinh ({workflow?.taskIds?.length})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onSwitchTab?.("history")}
-                  className="ml-auto flex items-center gap-1.5 text-xs text-primary font-medium hover:underline transition-colors cursor-pointer"
-                >
-                  Xem chi tiết
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <p className="text-sm text-muted-foreground/80 leading-relaxed">
-                Output của các task này chính là input của dự án — cập nhật kết quả trong tab
-                Lịch sử / Tasks.
-              </p>
-            </div>
-          )}
+          {renderGeneratedTasks()}
 
           {/* Transition to Sow planning */}
           {stepStatus("send_kickoff_questions") && stepStatus("input_requirements") ? (
@@ -1974,29 +2093,37 @@ export function PhaseWorkflowCard({
                       <div className="space-y-2">
                         <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
                           <Wand2 className="w-3.5 h-3.5" />
-                          Chọn khung template (hệ thống đề xuất bản phù hợp nhất):
+                          Chọn khung template (có thể chọn nhiều, hệ thống đề xuất bản phù hợp nhất):
                         </p>
                         <div className="flex flex-wrap gap-1.5">
-                          {sowTemplates.map((t) => (
-                            <button
-                              key={t.id}
-                              type="button"
-                              onClick={() => setSelectedSowTemplateId(String(t.id))}
-                              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
-                                selectedSowTemplateId === String(t.id)
-                                  ? "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                                  : "border-border/50 hover:border-primary/30 text-muted-foreground hover:text-foreground"
-                              }`}
-                            >
-                              {t.name}
-                              <span className="ml-1 text-[10px] text-muted-foreground/70">({t.items?.length} tasks)</span>
-                              {detectedTemplateId === String(t.id) && (
-                                <span className="ml-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                                  · đề xuất
-                                </span>
-                              )}
-                            </button>
-                          ))}
+                          {sowTemplates.map((t) => {
+                            const selected = selectedSowTemplateIds.includes(String(t.id));
+                            return (
+                              <button
+                                key={t.id}
+                                type="button"
+                                onClick={() =>
+                                  setSelectedSowTemplateIds((prev) =>
+                                    selected ? prev.filter((id) => id !== String(t.id)) : [...prev, String(t.id)]
+                                  )
+                                }
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
+                                  selected
+                                    ? "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                    : "border-border/50 hover:border-primary/30 text-muted-foreground hover:text-foreground"
+                                }`}
+                              >
+                                {selected && <span className="mr-1">✓</span>}
+                                {t.name}
+                                <span className="ml-1 text-[10px] text-muted-foreground/70">({t.items?.length} tasks)</span>
+                                {detectedTemplateId === String(t.id) && (
+                                  <span className="ml-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                    · đề xuất
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
                         </div>
                         {!detectedTemplateId && (
                           <p className="text-[11px] text-muted-foreground/70">
@@ -2007,47 +2134,54 @@ export function PhaseWorkflowCard({
                       </div>
                     )}
 
-                    {/* Preview selected template */}
-                    {!detecting && selectedSowTemplateId && !sowPlan && (() => {
-                      const tmpl = sowTemplates.find((t) => String(t.id) === selectedSowTemplateId);
-                      if (!tmpl) return null;
-                      const items = (tmpl.items || []).filter((it: any) => !it.isGroup);
-                      const groupCount = (tmpl.items || []).length - items.length;
+                    {/* Preview các template đã chọn (gom task theo thứ tự) */}
+                    {!detecting && selectedSowTemplateIds.length > 0 && !sowPlan && (() => {
+                      const selectedTemplates = sowTemplates.filter((t) => selectedSowTemplateIds.includes(String(t.id)));
+                      const combinedItems = selectedTemplates.flatMap((tmpl) =>
+                        (tmpl.items || [])
+                          .filter((it: any) => !it.isGroup)
+                          .map((it: any) => ({ ...it, sourceTemplate: tmpl.name }))
+                      );
+                      const totalGroupCount = selectedTemplates.reduce(
+                        (acc, tmpl) => acc + ((tmpl.items || []).length - (tmpl.items || []).filter((it: any) => !it.isGroup).length),
+                        0
+                      );
                       return (
                         <div className="rounded-xl border border-border/50 bg-background/60 p-3">
                           <div className="flex items-center gap-2 mb-2">
                             <FileSpreadsheet className="w-4 h-4 text-amber-500" />
-                            <span className="text-sm font-semibold text-foreground">{tmpl.name}</span>
-                            <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-semibold">
-                              {tmpl.category}
+                            <span className="text-sm font-semibold text-foreground">
+                              {combinedItems.length} tasks từ {selectedTemplates.length} template
                             </span>
-                            <span className="text-[11px] text-muted-foreground ml-auto">
-                              {items.length} tasks {groupCount > 0 && `(+${groupCount} nhóm)`}
-                            </span>
+                            {totalGroupCount > 0 && (
+                              <span className="text-[11px] text-muted-foreground">(+{totalGroupCount} nhóm)</span>
+                            )}
                           </div>
                           <div className="border border-border/40 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
                             <table className="w-full text-left text-[11px]">
                               <thead className="sticky top-0 bg-muted/60 backdrop-blur text-muted-foreground">
                                 <tr>
+                                  <th className="px-2 py-1.5 font-semibold">Template</th>
                                   <th className="px-2 py-1.5 font-semibold">Phase</th>
                                   <th className="px-2 py-1.5 font-semibold">Task</th>
                                   <th className="px-2 py-1.5 font-semibold hidden sm:table-cell">Chi tiết</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-border/30">
-                                {items.slice(0, 12).map((it: any, idx: number) => (
+                                {combinedItems.slice(0, 12).map((it: any, idx: number) => (
                                   <tr key={idx} className="hover:bg-muted/20">
+                                    <td className="px-2 py-1 text-muted-foreground whitespace-nowrap">{it.sourceTemplate}</td>
                                     <td className="px-2 py-1 text-muted-foreground whitespace-nowrap">{it.phase}</td>
                                     <td className="px-2 py-1 font-medium">{it.title}</td>
-                                    <td className="px-2 py-1 text-muted-foreground hidden sm:table-cell truncate max-w-[240px]" title={it.details}>
+                                    <td className="px-2 py-1 text-muted-foreground hidden sm:table-cell truncate max-w-[200px]" title={it.details}>
                                       {it.details || ""}
                                     </td>
                                   </tr>
                                 ))}
-                                {items.length > 12 && (
+                                {combinedItems.length > 12 && (
                                   <tr>
-                                    <td colSpan={3} className="px-2 py-1.5 text-muted-foreground/70 text-center">
-                                      ... còn {items.length - 12} tasks nữa
+                                    <td colSpan={4} className="px-2 py-1.5 text-muted-foreground/70 text-center">
+                                      ... còn {combinedItems.length - 12} tasks nữa
                                     </td>
                                   </tr>
                                 )}
@@ -2062,7 +2196,7 @@ export function PhaseWorkflowCard({
                               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-amber-500 to-orange-500 text-white hover:opacity-90 transition-all cursor-pointer disabled:opacity-50 shadow-sm"
                             >
                               {creatingSow ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ListPlus className="w-4 h-4" />}
-                              Tạo {items.length} task list từ template
+                              Tạo {combinedItems.length} task list từ {selectedTemplates.length} template
                             </button>
                             <button
                               type="button"
@@ -2089,23 +2223,33 @@ export function PhaseWorkflowCard({
                   <div className="mt-3 ml-[34px] space-y-2">
                     <div className="flex items-center gap-2 text-sm">
                       <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                      <span className="font-medium text-foreground">Đã chốt task list: {sowPlan.templateName}</span>
+                      <span className="font-medium text-foreground">Đã chốt task list: {sowPlan.templateNames?.length ? sowPlan.templateNames.join(", ") : sowPlan.templateName}</span>
                       <span className="text-xs text-muted-foreground">
                         ({sowPlan.items?.filter((it) => !it.isGroup).length || 0} tasks)
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => setSowListExpanded(!sowListExpanded)}
+                        className="ml-auto text-xs font-medium text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                      >
+                        {sowListExpanded ? "Thu gọn" : "Xem chi tiết"}
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${sowListExpanded ? "rotate-180" : ""}`} />
+                      </button>
                     </div>
-                    <div className="space-y-1">
-                      {(sowPlan.items || []).filter((it: any) => !it.isGroup).map((it: any, i: number) => (
-                        <p key={i} className="text-sm text-muted-foreground/80 leading-relaxed flex items-start gap-2">
-                          <span className="text-amber-500 mt-1">•</span>
-                          <span>
-                            {it.phase ? <span className="text-muted-foreground/60">[{it.phase}] </span> : null}
-                            {it.title}
-                            {it.pic ? <span className="text-[11px] text-muted-foreground/70"> — PIC: {it.pic}</span> : null}
-                          </span>
-                        </p>
-                      ))}
-                    </div>
+                    {sowListExpanded && (
+                      <div className="space-y-1 mt-2 p-3 bg-background/40 rounded-lg border border-border/40 max-h-[300px] overflow-y-auto">
+                        {(sowPlan.items || []).filter((it: any) => !it.isGroup).map((it: any, i: number) => (
+                          <p key={i} className="text-sm text-muted-foreground/80 leading-relaxed flex items-start gap-2">
+                            <span className="text-amber-500 mt-1">•</span>
+                            <span>
+                              {it.phase ? <span className="text-muted-foreground/60">[{it.phase}] </span> : null}
+                              {it.title}
+                              {it.pic ? <span className="text-[11px] text-muted-foreground/70"> — PIC: {it.pic}</span> : null}
+                            </span>
+                          </p>
+                        ))}
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={() => onSwitchTab?.("history")}
@@ -2121,27 +2265,19 @@ export function PhaseWorkflowCard({
           </div>
 
           {/* Generated tasks */}
-          {(workflow?.taskIds || []).length > 0 && (
-            <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <ListTodo className="w-4 h-4 text-primary" />
-                <span className="text-sm font-semibold text-foreground">
-                  Task tracking tự sinh ({workflow?.taskIds?.length})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onSwitchTab?.("history")}
-                  className="ml-auto flex items-center gap-1.5 text-xs text-primary font-medium hover:underline transition-colors cursor-pointer"
-                >
-                  Xem chi tiết
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <p className="text-sm text-muted-foreground/80 leading-relaxed">
-                Output của các task này chính là input của dự án — cập nhật kết quả trong tab
-                Lịch sử / Tasks.
-              </p>
-            </div>
+          {renderGeneratedTasks()}
+
+          {/* Chuyển sang Triển khai khi đã chốt SoW */}
+          {stepStatus("sow_planning") === "done" && (
+            <button
+              type="button"
+              onClick={moveToInProgress}
+              disabled={saving}
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-sky-500 to-blue-500 text-white hover:opacity-90 transition-all cursor-pointer disabled:opacity-50 shadow-md"
+            >
+              <Rocket className="w-5 h-5" />
+              Chuyển sang Triển khai
+            </button>
           )}
 
           {/* ─── Gợi ý đóng dự án: task đều xong HOẶC KH confirm trong nhóm khách hàng ─── */}
@@ -2193,34 +2329,121 @@ export function PhaseWorkflowCard({
         </div>
       )}
 
-      {/* ─── Phase Closed (đóng dự án) ─────────────────────── */}
-      {phase === "closed" && (
-        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-            <span className="text-sm font-semibold text-foreground">
-              Dự án đã đóng
-            </span>
+      {/* ─── Phase In progress (Triển khai) ──────────────────── */}
+      {phase === "in_progress" && (
+        <div className="space-y-2">
+          <div className="flex items-start gap-2 rounded-lg border border-sky-500/30 bg-sky-500/5 px-2.5 py-1.5">
+            <Rocket className="w-3.5 h-3.5 text-sky-500 mt-0.5 shrink-0" />
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              <span className="font-semibold text-foreground">Đang triển khai.</span>{" "}
+              Theo dõi tiến độ trong tab Lịch sử / Tasks. Khi mọi task xong (hoặc KH xác nhận) sẽ có gợi ý đóng dự án.
+            </p>
           </div>
-          <p className="text-sm text-muted-foreground/80 leading-relaxed">
-            Dự án đã được chuyển sang trạng thái đóng. Nếu cần mở lại, hãy chuyển
-            phase về SoW planning.
-          </p>
+
+          {/* Generated tasks */}
+          {renderGeneratedTasks()}
+
+          {/* Gợi ý đóng dự án: task đều xong HOẶC KH confirm trong nhóm khách hàng */}
+          {canCloseProject && (
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-2.5 py-2">
+              <div className="flex items-center gap-1.5 mb-1">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-xs font-semibold text-foreground">
+                  Sẵn sàng đóng dự án
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-snug mb-2">
+                {allTasksDone && customerConfirm
+                  ? "Tất cả task đã hoàn thành và khách hàng đã xác nhận triển khai xong trong nhóm khách hàng."
+                  : allTasksDone
+                    ? "Tất cả task của dự án đã hoàn thành."
+                    : "Khách hàng đã xác nhận triển khai xong trong nhóm khách hàng."}{" "}
+                Trước khi đóng, hãy gửi email bàn giao cho khách hàng.
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <EmailComposeDialog
+                  projectId={project._id}
+                  defaultSubject={handoverEmailSubject(project.name, project.ticketId)}
+                  defaultBody={handoverEmailBody(project.name, project.ticketId)}
+                  open={handoverOpen}
+                  onOpenChange={setHandoverOpen}
+                  trigger={
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:opacity-90 transition-all cursor-pointer"
+                    >
+                      <Send className="w-3 h-3" />
+                      Gửi email bàn giao
+                    </button>
+                  }
+                />
+                <button
+                  type="button"
+                  onClick={closeProject}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-gradient-to-r from-rose-500 to-red-500 text-white hover:opacity-90 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  Đóng dự án
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Quay lại SoW planning nếu cần chỉnh task list */}
           <button
             type="button"
-            onClick={() => {
-              onUpdateWorkflow({
-                action: "updateWorkflowPhase",
-                projectId: project._id,
-                userId,
-                phase: "sow",
-              });
+            onClick={async () => {
+              setSaving(true);
+              setError(null);
+              try {
+                await onUpdateWorkflow({
+                  action: "updateWorkflowPhase",
+                  projectId: project._id,
+                  userId,
+                  phase: "sow",
+                });
+                showToast("Đã quay lại SoW planning.");
+              } catch (e: any) {
+                setError(e?.message || "Chuyển phase thất bại");
+              } finally {
+                setSaving(false);
+              }
             }}
-            className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+            disabled={saving}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            Mở lại dự án
+            <RotateCcw className="w-3 h-3" />
+            Quay lại SoW planning
           </button>
+        </div>
+      )}
+
+      {/* ─── Phase Closed (đóng dự án) ─────────────────────── */}
+      {phase === "closed" && (
+        <div className="flex items-start gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-2.5 py-1.5">
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              <span className="font-semibold text-foreground">Dự án đã đóng.</span>{" "}
+              Nếu cần mở lại, chuyển phase về SoW planning.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                onUpdateWorkflow({
+                  action: "updateWorkflowPhase",
+                  projectId: project._id,
+                  userId,
+                  phase: "sow",
+                });
+              }}
+              className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Mở lại dự án
+            </button>
+          </div>
         </div>
       )}
     </div>

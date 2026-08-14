@@ -20,6 +20,7 @@ export const CAPABILITY_CATALOG: RoleCapability[] = [
   { key: "approve_manday", label: "Duyệt manday / chi phí triển khai" },
   { key: "technical_exec", label: "Thực hiện kỹ thuật (triển khai, xử lý vấn đề)" },
   { key: "handover_ops", label: "Bàn giao vận hành sau triển khai" },
+  { key: "manage_firewall_license", label: "Cấp / review license firewall" },
 ];
 
 export const DEFAULT_ROLE_CAPABILITIES: Record<string, string[]> = {
@@ -30,6 +31,8 @@ export const DEFAULT_ROLE_CAPABILITIES: Record<string, string[]> = {
     "track_project", "update_timeline", "create_task", "review_deliverable",
     "manage_members", "contact_customer", "approve_sow", "approve_manday", "handover_ops",
   ],
+  "Khách hàng": ["track_project", "review_deliverable"],
+  "Firewall License Manager": ["track_project", "manage_firewall_license", "review_deliverable"],
 };
 
 export function defaultCapabilitiesFor(name: string): RoleCapability[] {

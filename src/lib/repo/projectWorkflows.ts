@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { projectWorkflows, tasks } from "../db";
+import { patchLatestSummary, type NextStepItem } from "./projectSummaries";
 
 // ─── Row types ─────────────────────────────────────────────
 export type WorkflowStepKey =
@@ -44,6 +45,11 @@ export interface WorkflowPreinfoAnalysis {
 
 /** SoW planning — task list output của phase sow (từ template đề xuất / import SOW) */
 export interface WorkflowSowPlan {
+  /** Danh sách template đã chọn (hỗ trợ chọn nhiều template) */
+  templateIds?: Array<number | string>;
+  templateNames?: string[];
+  templateCategories?: string[];
+  /** Backward-compat: template duy nhất (được migrate từ phiên bản cũ) */
   templateId?: number | string | null;
   templateName?: string;
   templateCategory?: string;
@@ -63,7 +69,7 @@ export interface WorkflowRow {
   id: number;
   projectId: number;
   userId: string;
-  phase: string; // "init" | "kickoff" | "sow"
+  phase: string; // "init" | "kickoff" | "sow" | "in_progress"
   steps: Record<string, string>;
   initData: WorkflowInitData | null;
   requirements: WorkflowRequirement[] | null;
@@ -168,6 +174,28 @@ export async function updateWorkflowPhase(
   if (patch?.sowPlan !== undefined) set.sowPlan = patch.sowPlan;
   if (patch?.preinfoAnalysis !== undefined) set.preinfoAnalysis = patch.preinfoAnalysis;
   await db.update(projectWorkflows).set(set).where(eq(projectWorkflows.id, Number(wf._id)));
+
+  // Ghi KB chung dự án: cập nhật timeline scope + nextSteps khi đổi phase
+  const phaseLabels: Record<string, string> = {
+    init: "Khởi tạo dự án",
+    kickoff: "Kick-off",
+    sow: "SoW planning",
+    in_progress: "Triển khai",
+    closed: "Đóng dự án",
+  };
+  try {
+    const nextSteps: NextStepItem[] = phase === "closed"
+      ? [{ text: "Dự án đã đóng", done: true, source: "auto:phase" }]
+      : [{ text: `Chuyển sang giai đoạn ${phaseLabels[phase] || phase}`, done: true, source: "auto:phase" }];
+    await patchLatestSummary(
+      projectId,
+      { scope: { timeline: phaseLabels[phase] || phase }, nextSteps },
+      { userId }
+    );
+  } catch (err) {
+    console.error("[updateWorkflowPhase] Ghi KB lỗi:", err);
+  }
+
   return getWorkflowByProject(projectId);
 }
 

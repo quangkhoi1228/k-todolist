@@ -10,10 +10,13 @@ import {
   Users
 } from "lucide-react";
 import TextareaAutosize from "react-textarea-autosize";
-import { usePmSessions, useProjects, usePmSessionByProject, usePmGeneralSession, usePmMessages, usePmSessionById, usePmMutations, useSuggestionMutations, useTaskMutations, useTasksByProject } from "../../../src/hooks/useDomain";
+import { usePmSessions, useProjects, usePmSessionByProject, usePmGeneralSession, usePmMessages, usePmSessionById, usePmMutations, useSuggestionMutations, useTaskMutations, useTasksByProject, useMembersByProject } from "../../../src/hooks/useDomain";
 import { analyzeWithLLM } from "../lib/llm-client";
 import type { LLMAction, LLMTaskItem } from "../lib/llm-client";
+import { resolveSendTarget, sendChatMessage, platformLabel, resolveEmailTarget, sendOutlookEmail } from "../../../src/lib/chatSend";
+import { supersededSuggestionMessageIds } from "../../../src/lib/suggestionDedup";
 import { NotificationBadge } from "./NotificationBadge";
+import { SuggestionNotificationCard, parseSuggestionNotification } from "../../../src/components/chat/SuggestionNotificationCard";
 import type { DeployTask, WorkflowData } from "../lib/types";
 
 interface PendingAction {
@@ -23,6 +26,13 @@ interface PendingAction {
   projectQuery: string | null;
   reply: string;
   tasks?: LLMTaskItem[];
+  platform?: "teams" | "zalo";
+  chatName?: string;
+  messageBody?: string;
+  memberName?: string;
+  emailTo?: string[];
+  emailSubject?: string;
+  emailBody?: string;
 }
 
 /**
@@ -105,6 +115,8 @@ const POPUP_ACTION_LABELS: Record<string, string> = {
   create_meeting: "Tạo meeting kickoff",
   update_sow: "Cập nhật SOW",
   add_task: "Tạo task cho dự án",
+  send_message: "Gửi tin nhắn",
+  send_email: "Gửi email",
 };
 
 function popupActionDescription(pa: PendingAction): string {
@@ -118,6 +130,18 @@ function popupActionDescription(pa: PendingAction): string {
       .map((t) => `• ${t.title}${t.priority === "high" ? " (ưu tiên cao)" : ""}${t.dueDate ? ` — hạn ${t.dueDate}` : ""}`)
       .join("\n");
     base += `\n\nSẽ tạo **${pa.tasks.length} task**:\n${list}`;
+  }
+  if (pa.action === "send_message") {
+    base += `\n\nNền tảng: ${platformLabel(pa.platform)}`;
+    if (pa.chatName) base += `\nNhóm: ${pa.chatName}`;
+    if (pa.memberName) base += `\nNgười nhận: ${pa.memberName}`;
+    if (pa.messageBody) base += `\nNội dung: "${pa.messageBody}"`;
+  }
+  if (pa.action === "send_email") {
+    if (pa.memberName) base += `\nNgười nhận: ${pa.memberName}`;
+    if (pa.emailTo && pa.emailTo.length > 0) base += `\nĐến: ${pa.emailTo.join(", ")}`;
+    if (pa.emailSubject) base += `\nTiêu đề: ${pa.emailSubject}`;
+    if (pa.emailBody) base += `\nNội dung: "${pa.emailBody}"`;
   }
   return base;
 }
@@ -138,6 +162,7 @@ const SUGGESTIONS = [
   { label: "Xem thông tin ticket", icon: "🎫" },
   { label: "Thêm nhân sự", icon: "👥" },
   { label: "Tạo meeting kickoff", icon: "📅" },
+  { label: "Gửi email", icon: "📧" },
 ];
 
 /**
@@ -254,9 +279,12 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
 
   // ─── Auto-detect current project context from URL ─────
   const pathname = usePathname();
-  const contextProjectId = pathname?.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
-  const contextProject = contextProjectId && allProjects
-    ? allProjects.find((p) => p._id === contextProjectId)
+  const urlProjectId = pathname?.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
+  // Dùng URL để chọn session (project page vs general). Members/groups lấy thêm từ session.linkedProjectId.
+  const contextProjectId = urlProjectId;
+
+  const urlProject = urlProjectId && allProjects
+    ? allProjects.find((p) => p._id === urlProjectId)
     : null;
 
   // ─── Context-aware session selection ──────────────────
@@ -301,7 +329,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
         setSessionId(projectSession._id);
         lastContextRef.current = contextKey;
       } else if (!isInitializingRef.current) {
-        const project = contextProject;
+        const project = urlProject;
         if (!project) return;
         isInitializingRef.current = true;
         createProjectSessionMut(userId, project._id, project.name).then((sid) => {
@@ -327,10 +355,25 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
         });
       }
     }
-  }, [userId, contextKey, contextProjectId, projectSession, generalSession, contextProject, createProjectSessionMut, createGeneralSessionMut, sessionId]);
+  }, [userId, contextKey, contextProjectId, projectSession, generalSession, urlProject, createProjectSessionMut, createGeneralSessionMut, sessionId]);
 
-  const { data: messages } = usePmMessages(sessionId ?? null);
+  const { data: messages, mutate: mutateMessages } = usePmMessages(sessionId ?? null);
   const { data: session } = usePmSessionById(sessionId ?? null);
+
+  const sessionLinkedProjectId = (() => {
+    if (!session) return null;
+    try {
+      const wf = JSON.parse(session.workflowData || "{}");
+      if (wf.linkedProjectId) return String(wf.linkedProjectId);
+    } catch {}
+    if (session.projectId) return String(session.projectId);
+    return null;
+  })();
+
+  const effectiveProjectId = urlProjectId ?? sessionLinkedProjectId;
+  const contextProject = effectiveProjectId && allProjects
+    ? allProjects.find((p) => p._id === effectiveProjectId)
+    : null;
 
   const addMessage = pmx.addMessage;
   const createProjectFromTicket = pmx.createProjectFromTicket;
@@ -339,7 +382,8 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
   const addSuggestionsBatch = smx.addSuggestionsBatch;
   const tmx = useTaskMutations();
   const createTask = tmx.createTask;
-  const { data: projectTasks } = useTasksByProject(contextProjectId ?? null);
+  const { data: projectTasks } = useTasksByProject(effectiveProjectId ?? null);
+  const { data: contextProjectMembers } = useMembersByProject(effectiveProjectId ?? null);
   const pendingRef = useRef<PendingMessage[]>([]);
 
   /** Keep pendingRef in sync with pendingMessages */
@@ -511,8 +555,18 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     // If we're in create flow, handle the input differently
     if (createFlowStep !== "idle") return null;
 
-    const llmResult = await analyzeWithLLM(text, [...chatHistory.slice(-6)], contextProject);
-    const { action, ticketId, projectQuery, reply, tasks } = llmResult;
+    const memberList = (contextProjectMembers ?? []).map((m: any) => ({
+      name: m.name,
+      roleName: m.roleName,
+      email: m.email ?? null,
+    }));
+    const groupList = (contextProject?.teamsGroups ?? []).map((g: any) => ({
+      name: g.name,
+      type: g.type,
+      platform: g.platform,
+    }));
+    const llmResult = await analyzeWithLLM(text, [...chatHistory.slice(-6)], contextProject, memberList, groupList);
+    const { action, ticketId, projectQuery, reply, tasks, platform, chatName, messageBody, memberName, emailTo, emailSubject, emailBody } = llmResult;
 
     // ── Auto-handle actions that match the current context ──────
     // If already viewing a project and user asks to view it, no confirmation needed
@@ -524,8 +578,48 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       "lookup_ticket",
       "add_personnel", "create_meeting", "update_sow",
       "add_task",
+      "send_message", "send_email",
     ];
-    if (needsConfirmation.includes(action)) return { text, action, ticketId, projectQuery: projectQuery ?? null, reply, tasks: tasks ?? undefined };
+    if (needsConfirmation.includes(action)) {
+      let resolvedChatName = chatName;
+      let resolvedPlatform = platform;
+      let finalReply = reply;
+      if (action === "send_message") {
+        const resolved = resolveSendTarget({
+          memberName,
+          chatName,
+          platform,
+          members: memberList,
+          groups: groupList,
+          projectName: contextProject?.name,
+        });
+        if (resolved.chatName) resolvedChatName = resolved.chatName;
+        resolvedPlatform = resolved.platform;
+        if (resolved.note || resolved.error) {
+          finalReply = `${reply}\n\n💡 ${resolved.note || resolved.error}`;
+        }
+      }
+      let resolvedEmailTo = emailTo;
+      let resolvedMemberName = memberName;
+      if (action === "send_email") {
+        const resolved = resolveEmailTarget({
+          emailTo,
+          memberName,
+          members: memberList,
+          projectName: contextProject?.name,
+        });
+        if (resolved.emailTo.length > 0) resolvedEmailTo = resolved.emailTo;
+        if (resolved.memberName) resolvedMemberName = resolved.memberName;
+        if (resolved.note || resolved.error) {
+          finalReply = `${reply}\n\n💡 ${resolved.note || resolved.error}`;
+        }
+      }
+      return {
+        text, action, ticketId, projectQuery: projectQuery ?? null, reply: finalReply,
+        tasks: tasks ?? undefined, platform: resolvedPlatform, chatName: resolvedChatName,
+        messageBody, memberName: resolvedMemberName, emailTo: resolvedEmailTo, emailSubject, emailBody,
+      };
+    }
 
     // create_project — handle directly in handleSend, no session needed
     if (action === "create_project") return { text, action, ticketId, projectQuery: projectQuery ?? null, reply };
@@ -538,7 +632,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
     await addMessage({ sessionId, role: "user", content: text });
     await addMessage({ sessionId, role: "agent", content: reply || `Đã nhận: "${text}". Tôi có thể giúp gì thêm?` });
     return null;
-  }, [sessionId, chatHistory, addMessage, createFlowStep, contextProject]);
+  }, [sessionId, chatHistory, addMessage, createFlowStep, contextProject, contextProjectMembers]);
 
   // ─── Execute confirmed action ────────────────────────
   const executeAction = useCallback(async (pa: PendingAction) => {
@@ -585,6 +679,79 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       }
     }
 
+    // ── send_message / send_email: gửi thật, không phụ thuộc session ──
+    // Tin user đã persist lúc handleSend (trước confirm) — không ghi lại.
+    if (action === "send_message") {
+      const messageBody = (pa.messageBody || "").trim();
+      const post = async (content: string) => {
+        if (sessionId) await addMessage({ sessionId, role: "agent", content });
+        else return { message: content };
+        return {};
+      };
+      if (!messageBody) {
+        return post(`Tôi cần thêm **nội dung tin nhắn**.\n\nVD: "Nhắn cho Kang Chan 'Đã nhận yêu cầu' trên Zalo"`);
+      }
+      const resolved = resolveSendTarget({
+        memberName: pa.memberName,
+        chatName: pa.chatName,
+        platform: pa.platform,
+        members: contextProjectMembers ?? [],
+        groups: contextProject?.teamsGroups ?? [],
+        projectName: contextProject?.name,
+      });
+      if (resolved.error || !resolved.chatName) {
+        return post(resolved.error || "Không xác định được nhóm đích.");
+      }
+      await post(`⏳ Đang gửi tin nhắn đến nhóm **${resolved.chatName}** trên ${platformLabel(resolved.platform)}...`);
+      try {
+        const result = await sendChatMessage({
+          platform: resolved.platform,
+          chatName: resolved.chatName,
+          message: messageBody,
+        });
+        if (result.ok) {
+          return post(
+            `✅ Đã gửi tin nhắn đến nhóm **${resolved.chatName}**` +
+            (resolved.memberName ? ` (${resolved.memberName})` : "") +
+            ` trên ${platformLabel(resolved.platform)}:\n\n> ${messageBody}`
+          );
+        }
+        return post(`❌ Gửi tin nhắn đến **${resolved.chatName}** thất bại: ${result.error || "Lỗi không xác định"}`);
+      } catch (err) {
+        return post(`❌ Lỗi khi gửi tin nhắn: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
+      }
+    }
+
+    if (action === "send_email") {
+      const post = async (content: string) => {
+        if (sessionId) await addMessage({ sessionId, role: "agent", content });
+        else return { message: content };
+        return {};
+      };
+      const resolved = resolveEmailTarget({
+        emailTo: pa.emailTo,
+        memberName: pa.memberName,
+        members: contextProjectMembers ?? [],
+        projectName: contextProject?.name,
+      });
+      const to = resolved.emailTo;
+      const subject = (pa.emailSubject || "").trim() || "Tin nhắn từ PM Agent";
+      const emailBody = (pa.emailBody || "").trim();
+      if (to.length === 0) {
+        return post(resolved.error || `Tôi cần địa chỉ email để gửi.\n\nVD: "Gửi email đến abc@gmail.com với tiêu đề Test và nội dung Xin chào"`);
+      }
+      await post(`⏳ Đang gửi email đến **${to.join(", ")}**${resolved.memberName ? ` (${resolved.memberName})` : ""}...`);
+      try {
+        const result = await sendOutlookEmail({ to, subject, body: emailBody });
+        if (result.ok) {
+          return post(`✅ Đã gửi email đến **${to.join(", ")}** với tiêu đề **${subject}**.`);
+        }
+        return post(`❌ Gửi email đến **${to.join(", ")}** thất bại: ${result.error || "Lỗi không xác định"}`);
+      } catch (err) {
+        return post(`❌ Lỗi khi gửi email: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
+      }
+    }
+
     if (!sessionId) {
       // No active session — use contextProject as target if available
       if (contextProject) {
@@ -600,8 +767,6 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       }
       return { message: reply || `Tôi tìm thấy ticket **${ticketId}**. Bạn muốn tạo dự án mới không?` };
     }
-
-    await addMessage({ sessionId, role: "user", content: text });
 
     // ── add_task: tạo task cho dự án (context project / session project) ──
     if (action === "add_task") {
@@ -684,7 +849,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
       content: reply || `Đã nhận: "${text}". Tôi có thể giúp gì thêm?`,
     });
     return {};
-  }, [sessionId, userId, session, addMessage, createProjectFromISD, router, contextProject]);
+  }, [sessionId, userId, session, addMessage, createProjectFromISD, router, contextProject, contextProjectMembers]);
 
   const cancelAction = useCallback(() => {
     setPendingAction(null);
@@ -1051,6 +1216,10 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
         }
 
         setPendingAction(pa);
+        // Persist user ngay khi cần xác nhận — agent replies sau đó luôn đứng dưới.
+        if (sessionId) {
+          await addMessage({ sessionId, role: "user", content: text }).catch(() => {});
+        }
         setProcessing(false);
         return;
       }
@@ -1087,12 +1256,17 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
   // Loading state: sessionId is set but messages haven't arrived yet
   const isLoadingMessages = sessionId && messages === undefined;
 
-  const allMessages: Array<{ _id: string; role: "agent" | "user" | "system"; content: string; createdAt: number; status?: MessageStatus }> = [
+  const persistedKeys = new Set(displayMessages.map((m) => `${m.role}|${m.content}`));
+  const extraPending = pendingMessages.filter((p) => !persistedKeys.has(`${p.role}|${p.content}`));
+  // DB đã theo thứ tự createdAt,id — pending chỉ append cuối, không sort lẫn với DB.
+  const rawAllMessages: Array<{ _id: string; role: "agent" | "user" | "system"; content: string; createdAt: number; status?: MessageStatus; metadata?: string }> = [
     ...displayMessages,
-    ...pendingMessages.map((p) => ({
+    ...extraPending.map((p) => ({
       _id: p.tempId, role: p.role, content: p.content, createdAt: p.createdAt, status: p.status,
     })),
-  ].sort((a, b) => a.createdAt - b.createdAt);
+  ];
+  const hiddenNotifs = supersededSuggestionMessageIds(rawAllMessages);
+  const allMessages = rawAllMessages.filter((m) => !hiddenNotifs.has(String(m._id)));
 
   // ─── FAB ─────────────────────────────────────────────
   if (!isOpen) {
@@ -1226,6 +1400,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
                             const inputMap: Record<string, string> = {
                               "Xem thông tin ticket": "Xem ticket ISD-90335",
                               "Đến dự án": "Đến dự án ISD-",
+                              "Gửi email": "Gửi email đến quangkhoi1228@gmail.com với tiêu đề Test PM Agent và nội dung Xin chào",
                             };
                             setInput(inputMap[s.label] || s.label);
                             inputRef.current?.focus();
@@ -1264,6 +1439,11 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
                               : "bg-gradient-to-tr from-primary to-primary/80 text-primary-foreground dark:text-white rounded-[1.25rem] rounded-br-md"
                           }`}>
                             {renderMessage(msg.content, isAgent)}
+                            {isAgent && (() => {
+                              const notifMeta = parseSuggestionNotification(msg.metadata);
+                              if (!notifMeta) return null;
+                              return <SuggestionNotificationCard meta={notifMeta} compact messageId={msg._id} onRefresh={mutateMessages} />;
+                            })()}
                             <div className={`flex items-center gap-1.5 mt-1.5 ${isAgent ? "" : "flex-row-reverse"}`}>
                               <span className={`text-[10px] font-medium ${isAgent ? "text-muted-foreground/60 dark:text-zinc-400/80" : "text-primary-foreground/70 dark:text-white/70"}`}>
                                 {formatTime(msg.createdAt)}
@@ -1305,7 +1485,7 @@ export function PMAgentPopup({ isResizablePanel = false, onClose }: { isResizabl
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-bold text-amber-800 dark:text-amber-300 mb-1">Xác nhận thao tác</p>
-                      <p className="text-[12px] text-amber-700/80 dark:text-amber-400/80 leading-relaxed">{popupActionDescription(pendingAction)}</p>
+                      <p className="text-[12px] text-amber-700/80 dark:text-amber-400/80 leading-relaxed whitespace-pre-wrap">{popupActionDescription(pendingAction)}</p>
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-2.5 mt-3">

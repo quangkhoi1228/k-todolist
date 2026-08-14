@@ -480,17 +480,35 @@ function ProjectSectionHeader({ project, totalTasks, expanded, onToggleDetail }:
         {totalTasks}
       </span>
 
-      {/* Phase badge (init / kickoff) */}
+      {/* Phase badge (init / kickoff / sow / in_progress) */}
       {project._id !== "none" && project.phase && (
         <span
           className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none shrink-0 ${
             project.phase === "kickoff"
               ? "bg-violet-500/15 text-violet-600 dark:text-violet-400"
-              : "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+              : project.phase === "sow"
+                ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                : project.phase === "in_progress"
+                  ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+                  : "bg-sky-500/15 text-sky-600 dark:text-sky-400"
           }`}
-          title={project.phase === "kickoff" ? "Dự án đang ở giai đoạn Kick-off" : "Dự án mới — đang ở giai đoạn Init"}
+          title={
+            project.phase === "kickoff"
+              ? "Dự án đang ở giai đoạn Kick-off"
+              : project.phase === "sow"
+                ? "Dự án đang ở giai đoạn SoW planning"
+                : project.phase === "in_progress"
+                  ? "Dự án đang ở giai đoạn Triển khai"
+                  : "Dự án mới — đang ở giai đoạn Init"
+          }
         >
-          {project.phase === "kickoff" ? "Kick-off" : "Init"}
+          {project.phase === "kickoff"
+            ? "Kick-off"
+            : project.phase === "sow"
+              ? "SoW planning"
+              : project.phase === "in_progress"
+                ? "Triển khai"
+                : "Init"}
         </span>
       )}
       

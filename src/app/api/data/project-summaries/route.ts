@@ -4,6 +4,9 @@ import {
   getLatestSummary,
   deleteSummary,
   deleteSummariesByProject,
+  setScope,
+  setNextSteps,
+  toggleNextStep,
 } from "@/lib/repo/projectSummaries";
 import { readJsonBody, handleRoute } from "../_helpers";
 
@@ -38,6 +41,12 @@ export async function POST(req: NextRequest) {
         return await deleteSummary(body.id);
       case "deleteSummariesByProject":
         return await deleteSummariesByProject(body.projectId);
+      case "setScope":
+        return await setScope(body.projectId, body.scope, { userId: body.userId });
+      case "setNextSteps":
+        return await setNextSteps(body.projectId, body.steps, { userId: body.userId, replace: body.replace });
+      case "toggleNextStep":
+        return await toggleNextStep(body.projectId, body.index, body.done);
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }

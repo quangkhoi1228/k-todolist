@@ -119,7 +119,7 @@ const STATUS_LABELS: Record<string, { label: string; short: string }> = {
   done: { label: "Hoàn thành", short: "Xong" },
 };
 
-function buildSnapshot(project: any, isdData: any, tasks: any[], members: any[], messages: any[], suggestions: any[], session: any) {
+function buildSnapshot(project: any, isdData: any, tasks: any[], members: any[], messages: any[], suggestions: any[], session: any, prevScope?: any, prevNextSteps?: any[]) {
   const stats = {
     total: tasks.length,
     done: tasks.filter((t) => t.status === "done" || t.isCompleted).length,
@@ -204,7 +204,7 @@ function buildSnapshot(project: any, isdData: any, tasks: any[], members: any[],
     sessionStatus: session?.status || "",
   };
 
-  return { basic, status, nextActions, unresolvedActions: unresolved, members: { internal: internalMembers, customer: customerMembers }, recentActivity };
+  return { basic, status, nextActions, unresolvedActions: unresolved, members: { internal: internalMembers, customer: customerMembers }, recentActivity, scope: prevScope, nextSteps: prevNextSteps };
 }
 
 // ─── Prompts ────────────────────────────────────────────────
@@ -238,12 +238,14 @@ Output phải là JSON object duy nhất (không markdown, không code block):
 {
   "summaryText": "markdown có các mục:
 ## Thông tin cơ bản (tên dự án, ticket, trạng thái ISD, ưu tiên, mô tả ngắn)
+## Scope (mục tiêu, phạm vi, topology, timeline — nếu có trong input scope thì GIỮ NGUYÊN, nếu không có thì để trống)
 ## Hiện trạng (tiến độ task x/y, % xong, task quá hạn, giai đoạn workflow hiện tại)
-## Next actions (từ tasks chưa xong + gợi ý chưa xử lý — ưu tiên cao trước, kèm người phụ trách nếu có)
+## Next steps (các bước tiếp theo — nếu input có nextSteps thì GIỮ NGUYÊN và更新 trạng thái done; nếu không có thì liệt kê từ tasks chưa xong)
 ## Members (nội bộ / khách hàng — tên + vai trò)
 ## Hoạt động gần đây (3-5 điểm nổi bật từ tin nhắn mới nhất, nêu ai nói gì cần lưu ý)"
 }
-Chỉ đưa dữ liệu CÓ TRONG INPUT. Không đặt giả định.`;
+Chỉ đưa dữ liệu CÓ TRONG INPUT. Không đặt giả định.
+LƯU Ý BẢO TOÀN KB: Trường "scope" và "nextSteps" trong input là KB chung dự án do PM/AI đã ghi trước đó — BẢO TOÀN nguyên vẹn, không tự ý xoá hoặc thay đổi nội dung trừ khi tin nhắn mới cho thấy thay đổi rõ ràng.`;
 }
 
 // ─── Public API ─────────────────────────────────────────────
@@ -315,7 +317,12 @@ export async function generateAndSaveSummary(args: {
       getSessionByProject(args.userId, args.projectId).catch(() => null),
     ]);
 
-    const snapshot = buildSnapshot(project, isdData, tasks, members, messages, suggestions, session);
+    // Bảo toàn scope/nextSteps từ bản tóm tắt cũ (KB chung dự án) khi tạo version mới
+    const prevSummary = await getLatestSummary(args.projectId).catch(() => null);
+    const prevScope = prevSummary?.summaryData?.scope;
+    const prevNextSteps = prevSummary?.summaryData?.nextSteps;
+
+    const snapshot = buildSnapshot(project, isdData, tasks, members, messages, suggestions, session, prevScope, prevNextSteps);
     const inputJson = JSON.stringify(snapshot, null, 1);
 
     const raw = await callLLM(

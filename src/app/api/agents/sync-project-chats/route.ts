@@ -9,6 +9,7 @@ import {
   initWorkerState,
 } from "@/lib/sync-queue";
 import { startSyncScheduler } from "@/lib/sync-queue-runner";
+import { getProject } from "@/lib/repo/projects";
 
 /**
  * POST /api/agents/sync-project-chats
@@ -77,6 +78,19 @@ export async function POST(req: NextRequest) {
 
     if (!projectId) {
       return NextResponse.json({ ok: false, error: "Missing projectId" }, { status: 400 });
+    }
+
+    // Không sync project đã archive/delete — trả lỗi ngay, không enqueue.
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        return NextResponse.json({ ok: false, error: "Dự án không tồn tại." }, { status: 404 });
+      }
+      if ((project as any)?.archived || (project as any)?.deletedAt) {
+        return NextResponse.json({ ok: false, error: "Dự án đã lưu trữ hoặc xoá — không đồng bộ." }, { status: 400 });
+      }
+    } catch (e) {
+      console.warn("[SyncProjectChats API] Could not check project status:", e);
     }
 
     // Sync project đang xem: tự build nhóm chat từ teamsGroups (incremental luôn)

@@ -16,7 +16,8 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const action = body.action as string | undefined;
-    const headless = body.headless !== false;
+    // Sync nhóm luôn chạy headless (ẩn browser) — không phụ thuộc toggle Omni
+    const headless = true;
     // Chỉ sync 1 nền tảng nếu được chỉ định (vd: "teams" — đồng bộ Teams trước)
     const platform = (body.platform as string | undefined) || "all";
 

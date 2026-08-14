@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPoliteSendBody } from "../../../../../agents/pm/lib/intent-parser";
 
 const LLM_KEY = process.env.OPENAI_API_KEY || "";
 const LLM_MODEL = process.env.LLM_MODEL || "deepsseek-v4_mimo_combo";
@@ -160,7 +161,7 @@ function pickDueDate(
 
 export async function POST(req: NextRequest) {
   try {
-    const { text, history, contextProject } = await req.json();
+    const { text, history, contextProject, members, groups } = await req.json();
 
     if (!text || typeof text !== "string") {
       return NextResponse.json({ error: "Missing text" }, { status: 400 });
@@ -179,6 +180,32 @@ export async function POST(req: NextRequest) {
       contextHint += `\nQUAN TRỌNG: Vì PM đang xem dự án "${contextProject.name}", các yêu cầu như "thêm nhân sự", "tạo meeting", "cập nhật SOW", "xem thông tin" sẽ áp dụng cho dự án NÀY.`;
       contextHint += `\nQUAN TRỌNG: Nếu PM nói "đến dự án", "chuyển đến", "mở dự án" — nếu đã đang xem "${contextProject.name}" rồi thì action=goto_project, projectQuery="${contextProject.name}" (để UI biết là đã ở đúng project).`;
     }
+
+    // ── Member & group context cho send_message ──
+    let memberGroupHint = "";
+    if (Array.isArray(members) && members.length > 0) {
+      memberGroupHint += `\n\n**DANH SÁCH THÀNH VIÊN dự án hiện tại:**`;
+      for (const m of members) {
+        memberGroupHint += `\n- ${m.name} (vai trò: ${m.roleName}${m.email ? `, email: ${m.email}` : ""})`;
+      }
+      memberGroupHint += `\nQUAN TRỌNG (send_message): Khi PM muốn gửi tin nhắn đến 1 NGƯỜI (vd "nhắn cho Kang Chan"), hãy:`;
+      memberGroupHint += `\n1. Tìm tên người đó trong danh sách thành viên trên. Nếu tìm thấy → điền "memberName" = tên đúng (như trong danh sách).`;
+      memberGroupHint += `\n2. Xác định vai trò (roleName): nếu là "Khách hàng" → tin nhắn gửi vào nhóm KHÁCH HÀNG (type=customer); nếu là vai trò khác (Sale, PM, Pre-sale, Tech...) → gửi vào nhóm NỘI BỘ (type=internal).`;
+      memberGroupHint += `\n3. Đồng thời điền "chatName" = tên nhóm phù hợp (từ danh sách nhóm bên dưới) nếu tìm thấy, hoặc để trống "chatName" (UI sẽ xử lý).`;
+      memberGroupHint += `\n4. Nếu KHÔNG tìm thấy tên người trong danh sách → vẫn điền "memberName" = tên người dùng nhắc tới, để trống "chatName", và "reply" gợi ý hỏi lại PM.`;
+      memberGroupHint += `\nQUAN TRỌNG (send_email): Khi PM muốn GỬI EMAIL đến 1 NGƯỜI (vd "gửi email cho Kang Chan"):`;
+      memberGroupHint += `\n1. Tìm tên trong danh sách thành viên. Nếu có email → điền "emailTo" = [email đó], "memberName" = tên đúng.`;
+      memberGroupHint += `\n2. Nếu tìm thấy người nhưng KHÔNG có email → vẫn action=send_email, điền "memberName", để "emailTo" = [] (UI sẽ hỏi lại).`;
+      memberGroupHint += `\n3. Nếu PM ghi rõ địa chỉ (abc@gmail.com) → dùng đúng địa chỉ đó cho "emailTo", không cần bịa.`;
+    }
+    if (Array.isArray(groups) && groups.length > 0) {
+      memberGroupHint += `\n\n**DANH SÁCH NHÓM của dự án hiện tại:**`;
+      for (const g of groups) {
+        memberGroupHint += `\n- ${g.name} (loại: ${g.type === "customer" ? "khách hàng" : "nội bộ"}, nền tảng: ${g.platform || "teams"})`;
+      }
+      memberGroupHint += `\nQUAN TRỌNG (send_message): Khi PM nhắc tên nhóm, hãy lấy CHÍNH XÁC tên từ danh sách trên điền vào "chatName".`;
+    }
+    contextHint += memberGroupHint;
 
     const today = new Date();
     const todayStr = today.toISOString().slice(0, 10);
@@ -208,6 +235,8 @@ Cac intent:
 4. "goto_project" - PM muon chuyen den mot du an cu the
 5. "chat" - PM tro chuyen thong thuong
 6. "add_task" - PM muon TAO/THÊM TASK (cong viec, nhiem vu, huy dong, to-do) cho MOT DU AN cu the
+7. "send_message" - PM muon GUI TIN NHAN (mess, message, tn) den mot nhom/chat tren Teams hoac Zalo
+8. "send_email" - PM muon GUI EMAIL (thu, mail) den mot dia chi email cu the
 
 Chi tiet:
 - "tao du an moi" + ISD-xxxxx => action=create_project, ticketId="ISD-xxxxx"
@@ -223,10 +252,40 @@ Chi tiet:
   - Neu yeu cau CHI la hoi thi xem task the nao (vd "xem task", "task dang chay ra sao") => action=chat.
   - "reply" phai tom tat so task va noi dung moi task dang ngan gon.
 
+Chi tiet send_message (GUI TIN NHAN Teams/Zalo):
+- "gui tin nhan", "nhắn", "gui mess", "send message" den 1 nhom/chat => action=send_message.
+- Truong "platform" chi nhan 1 trong 2 gia tri: "teams" hoac "zalo" (mac dinh "teams" neu khong ro).
+- Truong "chatName" la TEN NHOM/CHAT day du (vi du "[FPT Cloud] Triển khai dự án Domesco HKT"). Lay dung ten nhom PM nhac toi.
+- Neu PM nhac den TEN 1 NGUOI (vi du "nhắn cho Kang Chan", "gửi cho anh A") chu khong phai ten nhom => dung truong "memberName" (ten nguoi), de trong "chatName" (agent se tu tim nhom phu hop).
+- Neu ca hai: nhac ca ten nguoi va ten nhom => dien ca "memberName" va "chatName".
+- Truong "messageBody" la NOI DUNG tin se GUI DI — PHAI LICH SU, KHONG copy 100% cau lenh/cau noi thô cua PM.
+  * Xung ho "Bên em" (khong dung "toi", khong gui nguyen van "hello"/"say hello"/"tạo ticket").
+  * Van nho va, de chiu: "bên em nhờ anh/chị ... giúp ạ", "giúp bên em nhé".
+  * Chao dung ten nguoi nhan neu biet (anh/chị + ten). Ket thuc bang "ạ".
+  * Giu Y DINH (PM muon noi gi) nhung dien giai lai cho nguoi nhan de doc.
+  VD: PM noi "gửi Zalo cho Kang Chan say hello" => messageBody="Chào anh Kang Chan, bên em gửi lời chào ạ."
+  VD: PM noi "nhắn Hung nhớ tạo ticket gia hạn" => messageBody="Chào anh Hung ơi, bên em nhờ anh tạo ticket gia hạn giúp ạ."
+- Neu thieu chatName va memberName => van action=send_message nhung de trong cac truong do (UI se hoi lai).
+- "reply" phai tom tat: gui den nhom nao (hoac nguoi nao), tren platform nao, noi dung gi.
+
+Chi tiet send_email (GUI EMAIL):
+- "gui email", "gui thu", "send mail", "gui mail" den 1 dia chi email HOAC 1 NGUOI => action=send_email.
+- Truong "emailTo" la MANG cac dia chi email (vi du ["abc@gmail.com"]). Lay dung email PM nhac toi.
+- Neu PM nhac TEN 1 NGUOI (vd "gui email cho Kang Chan") chu khong ghi dia chi: dien "memberName", va neu co email trong danh sach thanh vien thi dien "emailTo".
+- Truong "emailSubject" la TIEU DE email (neu co). Neu khong co => soan tieu de lich su ngan gon theo y dinh.
+- Truong "emailBody" la NOI DUNG email — cung PHAI LICH SU nhu tin nhan: xung "Bên em", van nho va, KHONG copy nguyen van cau lenh PM.
+  VD: PM noi "gửi mail Hung nội dung nhớ tạo ticket" => emailBody="Chào anh Hung,\n\nBên em nhờ anh tạo ticket giúp ạ.\n\nTrân trọng."
+- Neu thieu emailTo => van action=send_email nhung de trong (UI se hoi lai).
+- "reply" phai tom tat: gui den ai, tieu de gi, noi dung gi.
+
 Output CHI la JSON, VD: { "action": "chat", "ticketId": null, "projectQuery": null, "reply": "Xin chào! Tôi có thể giúp gì cho bạn?", "confidence": 1.0 }
 VD add_task: { "action": "add_task", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ tạo 3 task cho dự án: ...", "confidence": 1.0, "tasks": [ { "title": "Chuẩn bị môi trường", "priority": "high" }, { "title": "Triển khai migration", "detail": "Chạy script migration dữ liệu" } ] }
 VD add_task co han: { "action": "add_task", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ tạo 2 task: Chuẩn bị SoW (hạn mai) và Lấy yêu cầu #1 (hạn hôm nay).", "confidence": 1.0, "tasks": [ { "title": "Chuẩn bị SoW", "dueDate": "tomorrow" }, { "title": "Lấy yêu cầu #1", "dueDate": "today" } ] }
-VD add_task chi co ten: { "action": "add_task", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ tạo task: Kiểm tra bảo mật hệ thống.", "confidence": 1.0, "tasks": [ { "title": "Kiểm tra bảo mật hệ thống" } ] }`;
+VD add_task chi co ten: { "action": "add_task", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ tạo task: Kiểm tra bảo mật hệ thống.", "confidence": 1.0, "tasks": [ { "title": "Kiểm tra bảo mật hệ thống" } ] }
+VD send_message: { "action": "send_message", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ gửi tin nhắn đến nhóm [FPT Cloud] trên Teams.", "confidence": 1.0, "platform": "teams", "chatName": "[FPT Cloud] Triển khai dự án Domesco", "messageBody": "Chào anh/chị, bên em đã nhận yêu cầu, đội triển khai sẽ liên hệ sớm ạ." }
+VD send_message cho 1 nguoi: { "action": "send_message", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ gửi tin nhắn đến Kang Chan.", "confidence": 1.0, "platform": "zalo", "memberName": "Kang Chan", "messageBody": "Chào anh Kang Chan, bên em gửi lời chào ạ." }
+VD send_email: { "action": "send_email", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ gửi email đến test@gmail.com với tiêu đề Test.", "confidence": 1.0, "emailTo": ["test@gmail.com"], "emailSubject": "Bên em xin gửi thông tin", "emailBody": "Chào anh/chị,\n\nBên em xin gửi thông tin ạ.\n\nTrân trọng." }
+VD send_email cho 1 nguoi: { "action": "send_email", "ticketId": null, "projectQuery": null, "reply": "Tôi sẽ gửi email đến Kang Chan.", "confidence": 1.0, "memberName": "Kang Chan", "emailTo": ["kang@example.com"], "emailSubject": "Bên em xin gửi thông tin", "emailBody": "Chào anh Kang Chan,\n\nBên em xin gửi lời chào ạ.\n\nTrân trọng." }`;
 
     const historyMessages = (history || []).map((msg: { role: string; content: string }) => ({
       role: msg.role === "agent" ? "assistant" : msg.role === "user" ? "user" : "system",
@@ -293,13 +352,26 @@ VD add_task chi co ten: { "action": "add_task", "ticketId": null, "projectQuery"
               manday: typeof t.manday === "number" && t.manday > 0 ? Number(t.manday) : undefined,
             }))
         : undefined;
+      const memberName = typeof parsed.memberName === "string" ? parsed.memberName : undefined;
+      const action = (parsed.action as string) || "chat";
       return NextResponse.json({
-        action: parsed.action || "chat",
+        action,
         ticketId: parsed.ticketId || null,
         projectQuery: parsed.projectQuery ?? null,
         reply: parsed.reply || "",
         confidence: parsed.confidence || 0,
         tasks: tasks ?? null,
+        platform: parsed.platform ?? undefined,
+        chatName: parsed.chatName ?? undefined,
+        messageBody: action === "send_message"
+          ? toPoliteSendBody(typeof parsed.messageBody === "string" ? parsed.messageBody : undefined, memberName)
+          : parsed.messageBody ?? undefined,
+        memberName,
+        emailTo: Array.isArray(parsed.emailTo) ? parsed.emailTo : undefined,
+        emailSubject: parsed.emailSubject ?? undefined,
+        emailBody: action === "send_email"
+          ? toPoliteSendBody(typeof parsed.emailBody === "string" ? parsed.emailBody : undefined, memberName)
+          : parsed.emailBody ?? undefined,
       });
     }
 

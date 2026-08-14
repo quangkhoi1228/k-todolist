@@ -236,13 +236,13 @@ export default function ProjectDetailPage() {
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
   const [showDetail, setShowDetail] = useState(true);
   const searchParams = useSearchParams();
-  const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries">("info");
+  const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks" | "ai-debate" | "debate-history">("info");
 
   // Điều hướng từ suggestion "Thêm nhóm" (SuggestionsQuickView) — mở sẵn tab Chats
   useEffect(() => {
     const t = searchParams.get("tab");
-    if (t === "chats" || t === "suggestions" || t === "emails" || t === "members" || t === "notes" || t === "summary" || t === "history" || t === "summaries") {
-      setDetailTab(t);
+    if (t === "chats" || t === "suggestions" || t === "emails" || t === "members" || t === "notes" || t === "summary" || t === "history" || t === "summaries" || t === "import-tasks") {
+      setDetailTab(t as any);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -682,7 +682,7 @@ export default function ProjectDetailPage() {
 
       {/* Detail Panel */}
       {showDetail && (
-        <div className={detailTab === "chats" || detailTab === "emails" ? "flex-1 min-h-0 flex flex-col" : "shrink-0"}>
+        <div className={detailTab === "chats" || detailTab === "emails" || detailTab === "import-tasks" ? "flex-1 min-h-0 flex flex-col" : "shrink-0"}>
           <ProjectDetailPanel key={project._id} project={project} tab={detailTab} onTabChange={setDetailTab} />
         </div>
       )}
@@ -730,7 +730,7 @@ export default function ProjectDetailPage() {
       </Dialog>
 
       {/* Kanban Board */}
-      {(!showDetail || (detailTab !== "chats" && detailTab !== "emails")) && (
+      {(!showDetail || (detailTab !== "chats" && detailTab !== "emails" && detailTab !== "import-tasks")) && (
         <div className="flex-1 min-h-0 overflow-auto">
           <DndContext
           sensors={sensors}

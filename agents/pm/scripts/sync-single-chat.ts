@@ -466,6 +466,17 @@ async function syncZalo(syncName: string) {
     ...(syncMode.incrementalSince !== undefined ? { incrementalSince: syncMode.incrementalSince } : {}),
   };
 
+  // ⏱️ Mốc thời gian từng phase (đo để chẩn đoán chậm). Ghi cả khi 0 tin mới.
+  const phases: Record<string, number> = {};
+  let tPrev = tFunctionStart;
+  const markPhase = (name: string) => {
+    const now = Date.now();
+    phases[name] = now - tPrev;
+    tPrev = now;
+  };
+  const phaseSummary = () =>
+    Object.entries(phases).map(([k, v]) => `${k}=${fmtDuration(v)}`).join(" ");
+
   const { browser, context } = await createZaloStealthContext(config);
   // Mỗi script con giữ 1 TAB RIÊNG trong CDP mode (queue song song).
   let page = shouldUseOwnTab()
@@ -476,6 +487,7 @@ async function syncZalo(syncName: string) {
     page = zaloPage || page;
   }
   await applyZaloStealthPatches(page);
+  markPhase("launch");
 
   try {
     await navigateToZalo(page, config);
@@ -486,6 +498,7 @@ async function syncZalo(syncName: string) {
       } catch { /* persistent context */ }
       await log("sync_progress", "Đã đăng nhập Zalo (cần scan QR)");
     }
+    markPhase("nav+login");
 
     const found = await navigateToZaloGroup(page, syncName);
     if (!found) {
@@ -496,9 +509,16 @@ async function syncZalo(syncName: string) {
 
     // Zalo chỉ cho 1 tab active — tab của script có thể bị overlay "Kích
     // hoạt" (nhất là khi sync song song / user đang mở Zalo). Reload tới
-    // khi tab active, rồi mới navigate + scroll/extract.
-    await ensureZaloTabActive(page, config);
-    const foundAfterActivate = await navigateToZaloGroup(page, syncName);
+    // khi tab active, rồi mới scroll/extract. Nếu tab đã active ngay và
+    // chat đã mở đúng nhóm (lần navigate đầu thành công), KHÔNG cần
+    // navigate lại — tiết kiệm ~3-4s mỗi chu kỳ sync nền.
+    const tabActive = await ensureZaloTabActive(page, config);
+    let foundAfterActivate = true;
+    if (!tabActive || !(found as any)) {
+      // Tab bị reload (kích hoạt lại) → chat cũ đã mất, phải navigate lại.
+      // Hoặc navigate lần đầu chưa thành công → thử lại sau khi tab active.
+      foundAfterActivate = await navigateToZaloGroup(page, syncName);
+    }
     if (!foundAfterActivate) {
       console.log(`[SyncOne] Could not find Zalo chat "${syncName}" after tab activation.`);
       await log("sync_error", `Không tìm thấy nhóm Zalo "${syncName}" (sau kích hoạt tab)`);
@@ -515,13 +535,17 @@ async function syncZalo(syncName: string) {
       return;
     }
 
+    markPhase("open-group");
+
     console.log(`[SyncOne] Navigated to Zalo "${syncName}". Extracting...`);
     const collected = await scrollZaloChatContainer(page, config);
+    markPhase("scroll");
     const displayGroupName = collected.length > 0
       ? (collected[0] as any).groupName || syncName
       : syncName;
     const result = await finalizeZaloMessages(page, { ...config, groupName: syncName }, displayGroupName, collected);
     tExtract = Date.now();
+    markPhase("finalize");
     extractedCount = result.totalMessages;
 
     console.log(`[SyncOne] Extracted ${result.totalMessages} messages from Zalo "${syncName}".`);
@@ -558,7 +582,7 @@ async function syncZalo(syncName: string) {
       const extractDuration = tExtract !== null ? tExtract - tFunctionStart : 0;
       const saveDuration = tExtract !== null && tSave !== null ? tSave - tExtract : 0;
       await log("sync_end", `Đã lưu ${saved.saved} tin nhắn Zalo mới từ "${syncName}"`, JSON.stringify({ extracted: result.totalMessages, saved: saved.saved }));
-      console.log(`[SyncOne] ⏱  Zalo "${syncName}" tổng ${fmtDuration(totalDuration)} | mở+nav+extract: ${fmtDuration(extractDuration)} | save: ${fmtDuration(saveDuration)} | extract=${extractedCount} saved=${savedCount}${syncMode.incremental ? " (incremental)" : " (full)"} lúc ${tsNow()}`);
+      console.log(`[SyncOne] ⏱  Zalo "${syncName}" tổng ${fmtDuration(totalDuration)} | mở+nav+extract: ${fmtDuration(extractDuration)} | save: ${fmtDuration(saveDuration)} | phases[${phaseSummary()}] | extract=${extractedCount} saved=${savedCount}${syncMode.incremental ? " (incremental)" : " (full)"} lúc ${tsNow()}`);
 
       // Monitor new messages for PM actions
       if (saved.saved > 0) {
@@ -566,7 +590,7 @@ async function syncZalo(syncName: string) {
       }
     } else {
       await log("sync_end", `Không có tin nhắn Zalo mới từ "${syncName}"`);
-      console.log(`[SyncOne] ⏱  Zalo "${syncName}" tổng ${fmtDuration(Date.now() - tFunctionStart)} | extract=${extractedCount} saved=0${syncMode.incremental ? " (incremental)" : " (full)"} — 0 tin mới lúc ${tsNow()}`);
+      console.log(`[SyncOne] ⏱  Zalo "${syncName}" tổng ${fmtDuration(Date.now() - tFunctionStart)} | phases[${phaseSummary()}] | extract=${extractedCount} saved=0${syncMode.incremental ? " (incremental)" : " (full)"} — 0 tin mới lúc ${tsNow()}`);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -648,6 +672,24 @@ async function main() {
   await log("sync_start", `Bắt đầu đồng bộ ${platform} chat: "${extracted}"`);
 
   try {
+    // Không sync project đã archive/delete — user không còn theo dõi dự án
+    // này nữa, tránh mở Chrome và tạo log/gợi ý vô ích.
+    try {
+      const proj = await getProject(projectId);
+      if (proj && ((proj as any)?.archived || (proj as any)?.deletedAt)) {
+        console.log(`[SyncOne] Skip project ${projectId} — archived/deleted.`);
+        await log("sync_end", `Bỏ qua đồng bộ: dự án đã lưu trữ/xoá`);
+        process.exit(0);
+      }
+      if (!proj) {
+        console.log(`[SyncOne] Project ${projectId} not found — skip.`);
+        await log("sync_error", `Dự án ${projectId} không tồn tại`);
+        process.exit(0);
+      }
+    } catch (e) {
+      console.warn(`[SyncOne] Could not check project status: ${e} — tiếp tục sync.`);
+    }
+
     if (platform === "zalo") {
       await syncZalo(extracted);
     } else {

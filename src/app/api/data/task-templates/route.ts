@@ -7,7 +7,8 @@ import {
   updateTaskTemplate,
   deleteTaskTemplate,
 } from "@/lib/repo/taskTemplates";
-import { createTasksFromTemplates, createTasksFromModules } from "@/lib/repo/tasks";
+import { createTasksFromTemplates } from "@/lib/repo/tasks";
+import { expandTemplateItems } from "@/lib/repo/taskModules";
 import { requireUserId, readJsonBody, handleRoute } from "../_helpers";
 
 export const runtime = "nodejs";
@@ -19,7 +20,15 @@ export async function GET(req: NextRequest) {
     switch (action) {
       case "getTaskTemplates": {
         const includeInactive = sp.get("includeInactive") === "true";
-        return await getTaskTemplates(null, includeInactive);
+        const expand = sp.get("expand") === "true";
+        const list = await getTaskTemplates(null, includeInactive);
+        if (!expand) return list;
+        // Resolve module references thành task items thật để UI preview hiển thị chi tiết
+        const expanded = [];
+        for (const t of list) {
+          expanded.push({ ...t, items: await expandTemplateItems("", t.items ?? []) });
+        }
+        return expanded;
       }
       case "getTaskTemplate": {
         const id = sp.get("id") ?? "";
@@ -56,17 +65,6 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: "Thiếu projectId" }, { status: 400 });
         }
         return await createTasksFromTemplates({ userId, projectId, templateIds });
-      }
-      case "createFromModules": {
-        const userId = requireUserId(body);
-        const projectId = body.projectId;
-        const moduleIds: Array<number | string> = Array.isArray(body.moduleIds)
-          ? body.moduleIds
-          : [];
-        if (!projectId) {
-          return NextResponse.json({ error: "Thiếu projectId" }, { status: 400 });
-        }
-        return await createTasksFromModules({ userId, projectId, moduleIds });
       }
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getRoles, getRoleUsageCounts, seedDefaultRoles, createRole, updateRole, deleteRole } from "@/lib/repo/projectRoles";
+import { getRoles, getRoleUsageCounts, seedDefaultRoles, createRole, updateRole, deleteRole, dedupeAllRoles } from "@/lib/repo/projectRoles";
 import { requireUserId, readJsonBody, handleRoute } from "../_helpers";
 
 export const runtime = "nodejs";
@@ -31,6 +31,8 @@ export async function POST(req: NextRequest) {
       case "seedDefaultRoles":
         requireUserId(body);
         return await seedDefaultRoles(body.userId);
+      case "dedupeAllRoles":
+        return await dedupeAllRoles();
       case "createRole":
         requireUserId(body);
         return await createRole(body);

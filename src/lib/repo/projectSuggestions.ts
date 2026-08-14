@@ -1,6 +1,11 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { projectSuggestions } from "../db";
+import {
+  isPendingDuplicate,
+  olderPendingDuplicates,
+  type SuggestionLike,
+} from "../suggestionDedup";
 
 function mapSuggestion(s: any): any {
   return {
@@ -169,19 +174,46 @@ export async function addSuggestionsBatch(args: {
   // Only fetch the columns needed for dedupe, capped — loading every row
   // of a project's suggestions just to build a key set is wasteful.
   const existing = await db
-    .select({ type: projectSuggestions.type, title: projectSuggestions.title, description: projectSuggestions.description })
+    .select({
+      id: projectSuggestions.id,
+      type: projectSuggestions.type,
+      title: projectSuggestions.title,
+      description: projectSuggestions.description,
+      sourceMessage: projectSuggestions.sourceMessage,
+      isResolved: projectSuggestions.isResolved,
+      suggestionData: projectSuggestions.suggestionData,
+      createdAt: projectSuggestions.createdAt,
+    })
     .from(projectSuggestions)
     .where(eq(projectSuggestions.projectId, pid))
     .limit(500);
-  const existingKeys = new Set(
-    existing.map((s) => `${s.type}|${s.title}|${s.description}`)
-  );
+
+  // Gộp bản trùng cùng topic chưa làm: giữ bản mới nhất, đánh dấu các bản cũ đã xử lý.
+  const collapsed = await collapseOlderPendingDuplicates(existing);
+  const live = existing.filter((s) => !collapsed.has(s.id));
+
+  const existingKeys = new Set(live.map((s) => `${s.type}|${s.title}|${s.description}`));
+  const pendingPool: SuggestionLike[] = live.map((s) => ({
+    id: s.id,
+    type: s.type,
+    title: s.title,
+    description: s.description,
+    sourceMessage: s.sourceMessage || "",
+    isResolved: s.isResolved,
+    suggestionData: s.suggestionData,
+    createdAt: s.createdAt,
+  }));
 
   let count = 0;
+  let skipped = 0;
+  const inserted: typeof args.suggestions = [];
   const now = Date.now();
   for (const s of args.suggestions) {
     const key = `${s.type}|${s.title}|${s.description}`;
-    if (existingKeys.has(key)) continue;
+    if (existingKeys.has(key) || isPendingDuplicate(s, pendingPool)) {
+      skipped++;
+      continue;
+    }
     await db.insert(projectSuggestions).values({
       projectId: pid,
       userId: args.userId,
@@ -201,6 +233,51 @@ export async function addSuggestionsBatch(args: {
     });
     count++;
     existingKeys.add(key);
+    pendingPool.push(s);
+    inserted.push(s);
   }
-  return { saved: count };
+  return { saved: count, skipped, inserted };
+}
+
+/** Đánh dấu các gợi ý pending trùng topic (trừ bản mới nhất) là đã xử lý. */
+export async function collapseOlderPendingDuplicates(
+  rows?: SuggestionLike[]
+): Promise<Set<number>> {
+  const db = getDb();
+  const list = rows || [];
+  const older = olderPendingDuplicates(list);
+  const ids = new Set<number>();
+  for (const s of older) {
+    const id = Number(s.id);
+    if (!id) continue;
+    await db
+      .update(projectSuggestions)
+      .set({ isResolved: true, isRead: true })
+      .where(eq(projectSuggestions.id, id));
+    ids.add(id);
+  }
+  if (ids.size > 0) {
+    console.log(`[Suggestions] Collapsed ${ids.size} older pending duplicate(s): [${Array.from(ids).join(", ")}]`);
+  }
+  return ids;
+}
+
+export async function collapseOlderPendingDuplicatesByProject(projectId: number | string): Promise<number> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: projectSuggestions.id,
+      type: projectSuggestions.type,
+      title: projectSuggestions.title,
+      description: projectSuggestions.description,
+      sourceMessage: projectSuggestions.sourceMessage,
+      isResolved: projectSuggestions.isResolved,
+      suggestionData: projectSuggestions.suggestionData,
+      createdAt: projectSuggestions.createdAt,
+    })
+    .from(projectSuggestions)
+    .where(eq(projectSuggestions.projectId, Number(projectId)))
+    .limit(500);
+  const ids = await collapseOlderPendingDuplicates(rows);
+  return ids.size;
 }
