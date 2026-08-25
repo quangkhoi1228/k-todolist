@@ -51,10 +51,9 @@ export function DashboardSplitView({ children }: { children: React.ReactNode }) 
             </main>
           </Panel>
           
-          {isAgentOpen && !isOmniPage && (
+          {/* isAgentOpen && !isOmniPage && (
             <>
               <PanelResizeHandle className="w-1.5 hover:w-2 active:w-2 transition-all duration-200 flex flex-col items-center justify-center cursor-col-resize group relative z-50 hover:bg-primary/20 active:bg-primary/30">
-                {/* Invisible by default, shows on hover */}
                 <div className="w-0 group-hover:w-[1px] group-active:w-[1px] h-full bg-border/30 absolute left-1/2 -translate-x-1/2 transition-all duration-200" />
                 <div className="opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 h-8 w-4 bg-background border border-border rounded-full flex items-center justify-center shadow-sm relative z-10">
                   <GripVertical className="w-3 h-3 text-muted-foreground" />
@@ -64,7 +63,7 @@ export function DashboardSplitView({ children }: { children: React.ReactNode }) 
                 <PMAgentPopup isResizablePanel={true} onClose={() => setIsAgentOpen(false)} />
               </Panel>
             </>
-          )}
+          ) */}
         </PanelGroup>
 
         {/* Mobile View */}
@@ -72,12 +71,12 @@ export function DashboardSplitView({ children }: { children: React.ReactNode }) 
           <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
             {children}
           </main>
-          {!isOmniPage && <PMAgentPopup isResizablePanel={false} onClose={() => setIsAgentOpen(false)} />}
+          {/* {!isOmniPage && <PMAgentPopup isResizablePanel={false} onClose={() => setIsAgentOpen(false)} />} */}
         </div>
       </div>
 
       {/* Floating Action Button when Side Panel is closed on Desktop (only non-Omni) */}
-      {!isAgentOpen && !isOmniPage && (
+      {/* !isAgentOpen && !isOmniPage && (
         <div className="hidden md:flex fixed bottom-6 right-6 z-[9999] animate-in fade-in slide-in-from-bottom-4 duration-500 flex-col items-end gap-3">
           <button
             type="button"
@@ -87,7 +86,7 @@ export function DashboardSplitView({ children }: { children: React.ReactNode }) 
             <Bot className="w-6 h-6" />
           </button>
         </div>
-      )}
+      ) */}
     </div>
   );
 }

@@ -93,14 +93,14 @@ export default function Sidebar() {
         </Link>
 
         {/* PM Agent - click mo popup */}
-        <button
+        {/* <button
           onClick={openPMAgent}
           className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group mt-2"
         >
           <Bot className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           PM Agents
           <span className="ml-auto w-2 h-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-        </button>
+        </button> */}
 
         {/* Suggestions - click mo popup */}
         <button
@@ -116,10 +116,10 @@ export default function Sidebar() {
           )}
         </button>
 
-        <Link href="/omni" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 transition-all duration-300 cursor-pointer group mt-2">
+        {/* <Link href="/omni" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 transition-all duration-300 cursor-pointer group mt-2">
           <Headset className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-blue-500 transition-colors" />
           <span className="truncate">Omni Platform</span>
-        </Link>
+        </Link> */}
 
         <Link href="/settings/roles" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group">
           <Cog className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
