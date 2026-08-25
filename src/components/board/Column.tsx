@@ -54,7 +54,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
   };
 
   return (
-    <div className={`flex flex-col w-[300px] shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)] ${
+    <div className={`flex flex-col w-[270px] shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)] ${
       statusMode
         ? statusStyles[statusMode]
         : isOverdue
@@ -65,7 +65,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
               ? 'bg-primary/5 dark:bg-primary/5 border-primary/40 shadow-[0_0_20px_rgba(139,92,246,0.12)]' 
               : 'bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 hover:border-border/60'
     }`}>
-      <div className={`p-3 border-b flex justify-between items-center rounded-t-2xl relative shrink-0 ${
+      <div className={`p-2.5 border-b flex justify-between items-center rounded-t-2xl relative shrink-0 ${
         statusMode
           ? statusHeaderStyles[statusMode]
           : isOverdue
@@ -136,10 +136,10 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
         ref={setNodeRef}
         className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 transition-colors ${isOver ? "bg-foreground/5 dark:bg-white/5" : ""}`}
       >
-        <div className="min-h-[150px] pt-1.5 pb-1.5 px-0.5">
+        <div className="min-h-[150px] pt-1 pb-1 px-0.5 flex flex-col gap-1">
           <SortableContext items={tasks.map((t) => t._id)} strategy={verticalListSortingStrategy}>
             {tasks.map((task) => (
-              <TaskCard key={task._id} task={task} />
+              <TaskCard key={task._id} task={task} hideProjectBadge={true} hideStatusBadge={true} />
             ))}
           </SortableContext>
         </div>

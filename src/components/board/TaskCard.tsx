@@ -223,8 +223,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
     isCompact ? "text-[9px] py-0 px-1 gap-0.5" : "text-[10px] py-0.5 px-1.5 w-fit",
     dueUrgency
       ? urgencyDateClass[dueUrgency]
-      : "text-muted-foreground/80 bg-muted/30 border-border/40 hover:bg-muted/50 hover:border-primary/30",
-    !hasDate && "opacity-0 max-h-0 py-0 px-0 border-transparent overflow-hidden pointer-events-none group-hover/task:opacity-100 group-hover/task:max-h-8 group-hover/task:py-0.5 group-hover/task:px-1.5 group-hover/task:border-dashed group-hover/task:border-border/60 group-hover/task:pointer-events-auto group-hover/task:bg-muted/20 group-hover/task:text-muted-foreground"
+      : "text-muted-foreground/80 bg-muted/30 border-border/40 hover:bg-muted/50 hover:border-primary/30"
   );
 
   const datePopover = isCompact ? (
@@ -276,9 +275,8 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
           side="top"
           align="start"
         >
-          <div className="flex items-center gap-0.5 text-[9px] text-muted-foreground/50 cursor-pointer">
+          <div className="flex items-center justify-center gap-0.5 text-[9px] text-muted-foreground/60 cursor-pointer opacity-70 hover:opacity-100 transition-opacity rounded-md border border-dashed border-border/50 px-1 py-0" title="Thêm ngày">
             <Calendar className="w-2.5 h-2.5 shrink-0" />
-            <span className="italic">Thêm ngày</span>
           </div>
         </DatePickerPopover>
       )}
@@ -349,7 +347,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
             "bg-card/90 dark:bg-zinc-800/90 backdrop-blur-md border-border/50 group-hover/task:border-primary/50 transition-all duration-300",
             isSelected && "ring-2 ring-primary border-primary",
             !isSelected && "group-hover/task:ring-1 group-hover/task:ring-primary/30",
-            isCompact ? "shadow-sm border rounded-lg group-hover/task:shadow-md group-hover/task:bg-card dark:group-hover/task:bg-zinc-800" : "shadow-[0_4px_20px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.2)] border-[1px] rounded-xl",
+            isCompact ? "shadow-sm border rounded-md group-hover/task:shadow-md group-hover/task:bg-card dark:group-hover/task:bg-zinc-800" : "shadow-[0_4px_20px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.2)] border-[1px] rounded-xl",
             !isCompact && "group-hover/task:shadow-[0_8px_30px_rgba(var(--primary),0.15)]",
             task.isOverflowing
               ? "border-destructive shadow-[0_0_15px_rgba(239,68,68,0.15)] group-hover/task:border-destructive"
@@ -363,7 +361,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
           )}
         >
           {isCompact ? (
-            <div className="px-2 py-1 flex flex-col items-stretch gap-1 relative">
+            <div className="px-1.5 py-1 flex flex-col items-stretch gap-0.5 relative">
               {/* Title */}
               <div className="w-full min-w-0 pr-5">
                 {isTitleEditing ? (
@@ -402,7 +400,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
 
               {/* Meta — always below the title */}
               {!isTitleEditing && (
-                <div className="w-full flex items-center gap-1.5 flex-wrap mt-0.5">
+                <div className="w-full flex items-center gap-1 flex-wrap">
                   {isTimeEditing ? (
                     <Input
                       type="text"
