@@ -2,8 +2,6 @@ import { auth } from "@clerk/nextjs/server";
 import Sidebar from "@/components/layout/Sidebar";
 import MobileSidebar from "@/components/layout/MobileSidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { SuggestionsPopupClient } from "@/components/layout/SuggestionsPopupClient";
-import { GlobalSyncManager } from "@/components/layout/GlobalSyncManager";
 import { DashboardSplitView } from "@/components/layout/DashboardSplitView";
 
 export default async function DashboardLayout({
@@ -19,8 +17,6 @@ export default async function DashboardLayout({
       <DashboardSplitView>
         {children}
       </DashboardSplitView>
-      <SuggestionsPopupClient />
-      <GlobalSyncManager />
     </div>
   );
 }

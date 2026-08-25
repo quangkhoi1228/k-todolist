@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { tasks, taskDependencies } from "../db";
-import { patchLatestSummary } from "./projectSummaries";
 import { getTaskTemplate } from "./taskTemplates";
 import { expandTemplateItems } from "./taskModules";
 
@@ -65,19 +64,6 @@ export async function createTask(args: {
     })
     .returning();
   const created = mapTask(res[0]);
-
-  // Ghi KB chung dự án: thêm task mới vào nextSteps (nếu task thuộc project)
-  if (created?.project) {
-    try {
-      await patchLatestSummary(
-        created.project,
-        { nextSteps: [{ text: created.title, done: false, source: "auto:task" }] },
-        { userId: args.userId }
-      );
-    } catch (err) {
-      console.error("[createTask] Ghi KB nextSteps lỗi:", err);
-    }
-  }
 
   return created;
 }

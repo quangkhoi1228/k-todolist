@@ -5,24 +5,10 @@ import {
   tasks,
   notes,
   taskDependencies,
-  projectChats,
-  projectSuggestions,
-  projectWorkflows,
-  projectSummaries,
   projectMembers,
-  projectIsdData,
-  debateRuns,
-  syncLogs,
 } from "../db";
 
 // ─── Row types ─────────────────────────────────────────────
-export interface TeamGroup {
-  name: string;
-  type: string; // "internal" | "customer"
-  platform?: string; // "teams" | "zalo"
-  url?: string;
-}
-
 export interface ProjectRow {
   id: number;
   userId: string;
@@ -32,14 +18,6 @@ export interface ProjectRow {
   archived: boolean | null;
   notes: string | null;
   deletedAt: number | null;
-  internalGroupUrl: string | null;
-  customerGroupUrl: string | null;
-  teamsGroups: TeamGroup[] | null;
-  ticketId: string | null;
-  isdStatus: string | null;
-  isdUpdatedAt: number | null;
-  phase: string | null;
-  pauseAutoSync: boolean | null;
 }
 
 export interface InsertProject {
@@ -50,10 +28,6 @@ export interface InsertProject {
   archived?: boolean | null;
   notes?: string | null;
   deletedAt?: number | null;
-  teamsGroups?: TeamGroup[] | null;
-  ticketId?: string | null;
-  isdStatus?: string | null;
-  isdUpdatedAt?: number | null;
 }
 
 // Convex-style _id/_creationTime shape for UI compatibility
@@ -93,20 +67,6 @@ export async function getProject(id: number | string) {
   return row ? mapProject(row) : null;
 }
 
-export async function getActiveProjectsWithTeamsGroups(userId: string) {
-  const db = getDb();
-  const rows = await db.select().from(projects).where(eq(projects.userId, userId));
-  return rows
-    .filter((p) => {
-      if (p.archived) return false;
-      if (p.deletedAt) return false;
-      // Chỉ dựa trên teamsGroups (field chính thức). internalGroupUrl/customerGroupUrl
-      // deprecated — không dùng làm tiêu chí nữa để tránh nhóm ma từ ticket ISD.
-      return p.teamsGroups && Array.isArray(p.teamsGroups) && p.teamsGroups.length > 0;
-    })
-    .map(mapProject);
-}
-
 // ─── Mutations ───────────────────────────────────────────────────
 export async function createProject(args: { userId: string; name: string; color?: string }) {
   const db = getDb();
@@ -122,10 +82,6 @@ export async function updateProject(id: number | string, updates: {
   name?: string;
   color?: string;
   archived?: boolean;
-  ticketId?: string;
-  teamsGroups?: TeamGroup[];
-  phase?: string;
-  pauseAutoSync?: boolean;
 }) {
   const db = getDb();
   const pid = Number(id);
@@ -133,10 +89,6 @@ export async function updateProject(id: number | string, updates: {
   if (updates.name !== undefined) patch.name = updates.name;
   if (updates.color !== undefined) patch.color = updates.color;
   if (updates.archived !== undefined) patch.archived = updates.archived;
-  if (updates.ticketId !== undefined) patch.ticketId = updates.ticketId;
-  if (updates.teamsGroups !== undefined) patch.teamsGroups = updates.teamsGroups;
-  if (updates.phase !== undefined) patch.phase = updates.phase;
-  if (updates.pauseAutoSync !== undefined) patch.pauseAutoSync = updates.pauseAutoSync;
   await db.update(projects).set(patch).where(eq(projects.id, pid));
 }
 
@@ -144,31 +96,6 @@ export async function updateProjectDetail(id: number | string, notes?: string) {
   const db = getDb();
   const patch: any = {};
   if (notes !== undefined) patch.notes = notes;
-  await db.update(projects).set(patch).where(eq(projects.id, Number(id)));
-}
-
-export async function updateProjectTeamsGroups(id: number | string, groups: {
-  internalGroupUrl?: string | null;
-  customerGroupUrl?: string | null;
-  teamsGroups?: TeamGroup[];
-}) {
-  const db = getDb();
-  const patch: any = {};
-  if (groups.internalGroupUrl !== undefined) patch.internalGroupUrl = groups.internalGroupUrl ?? null;
-  if (groups.customerGroupUrl !== undefined) patch.customerGroupUrl = groups.customerGroupUrl ?? null;
-  if (groups.teamsGroups !== undefined) patch.teamsGroups = groups.teamsGroups;
-  await db.update(projects).set(patch).where(eq(projects.id, Number(id)));
-}
-
-export async function updateProjectIsdStatus(id: number | string, updates: {
-  ticketId?: string;
-  isdStatus?: string;
-}) {
-  const db = getDb();
-  const patch: any = {};
-  if (updates.ticketId !== undefined) patch.ticketId = updates.ticketId;
-  if (updates.isdStatus !== undefined) patch.isdStatus = updates.isdStatus;
-  patch.isdUpdatedAt = Date.now();
   await db.update(projects).set(patch).where(eq(projects.id, Number(id)));
 }
 
@@ -219,19 +146,8 @@ export async function deleteProject(id: number | string) {
     await db.delete(notes).where(eq(notes.id, row.id));
   }
 
-  // 3. Delete all other project-scoped data so we never leave orphans
-  //    (synced chats, suggestions, workflows, summaries, members, ISD data,
-  //    debate runs, sync logs). Missing any of these previously caused stale
-  //    data to linger under a dead projectId and appear to "leak" into new
-  //    projects that reused a group name.
-  await db.delete(projectChats).where(eq(projectChats.projectId, pid));
-  await db.delete(projectSuggestions).where(eq(projectSuggestions.projectId, pid));
-  await db.delete(projectWorkflows).where(eq(projectWorkflows.projectId, pid));
-  await db.delete(projectSummaries).where(eq(projectSummaries.projectId, pid));
+  // 3. Delete members
   await db.delete(projectMembers).where(eq(projectMembers.projectId, pid));
-  await db.delete(projectIsdData).where(eq(projectIsdData.projectId, pid));
-  await db.delete(debateRuns).where(eq(debateRuns.projectId, pid));
-  await db.delete(syncLogs).where(eq(syncLogs.projectId, pid));
 
   // 4. Delete the project itself
   await db.delete(projects).where(eq(projects.id, pid));

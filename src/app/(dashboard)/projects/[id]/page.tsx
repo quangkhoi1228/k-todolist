@@ -3,7 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useTasks, useProjects, useTaskMutations, useProjectMutations } from "@/hooks/useDomain";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -236,12 +236,12 @@ export default function ProjectDetailPage() {
   const [sortBy, setSortBy] = useState<"order" | "endDate" | "priority">("order");
   const [showDetail, setShowDetail] = useState(true);
   const searchParams = useSearchParams();
-  const [detailTab, setDetailTab] = useState<"info" | "notes" | "summary" | "history" | "chats" | "suggestions" | "emails" | "members" | "summaries" | "import-tasks" | "ai-debate" | "debate-history">("info");
+  const [detailTab, setDetailTab] = useState<"info" | "notes" | "members" | "import-tasks">("info");
 
-  // Điều hướng từ suggestion "Thêm nhóm" (SuggestionsQuickView) — mở sẵn tab Chats
+  // Điều hướng từ URL query ?tab= — mở sẵn tab tương ứng
   useEffect(() => {
     const t = searchParams.get("tab");
-    if (t === "chats" || t === "suggestions" || t === "emails" || t === "members" || t === "notes" || t === "summary" || t === "history" || t === "summaries" || t === "import-tasks") {
+    if (t === "notes" || t === "members" || t === "import-tasks") {
       setDetailTab(t as any);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -450,48 +450,6 @@ export default function ProjectDetailPage() {
     setEditingName(false);
   }, [editedName, id, project, pm]);
 
-  // ─── Auto-fetch ISD status on mount + every 5 min ───
-  const fetchIsdStatus = useCallback(async () => {
-    if (!project) return;
-    const ticketId = (project as any).ticketId;
-    if (!ticketId) return;
-    try {
-      const res = await fetch("/api/agents/refresh-isd-statuses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projects: [{ _id: project._id, ticketId }] }),
-      });
-      const data = await res.json();
-      if (data.ok && data.results?.[0]?.ok) {
-        const newStatus = data.results[0].status;
-        if (newStatus && newStatus !== (project as any).isdStatus) {
-          await pm.updateProjectIsdStatus({
-            id: project._id,
-            isdStatus: newStatus,
-          });
-        }
-      }
-    } catch (err) {
-      console.error("[ISD] Failed to fetch status:", err);
-    }
-  }, [project, pm]);
-
-  const fetchedProjectIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!project || !(project as any).ticketId) return;
-
-    // Fetch on mount (only once per project)
-    if (fetchedProjectIdRef.current !== project._id) {
-      fetchedProjectIdRef.current = project._id;
-      fetchIsdStatus();
-    }
-
-    // Fetch every 5 minutes
-    const interval = setInterval(fetchIsdStatus, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [project, fetchIsdStatus]);
-
   if (projects === undefined) {
     return (
       <div className="p-3 h-full flex items-center justify-center">
@@ -564,24 +522,6 @@ export default function ProjectDetailPage() {
                   <button type="button" onClick={() => { setEditedName(project.name); setEditingName(true); }} className="ml-1.5 p-1 rounded-md hover:bg-foreground/10 text-muted-foreground hover:text-foreground transition-colors cursor-pointer opacity-0 group-hover:opacity-100 shrink-0" title="Đổi tên">
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
-                  {/* ISD Status Badge — shown in the header next to project name */}
-                  {(project as any).ticketId && (
-                    <a
-                      href={`https://servicedesk.fci.vn/browse/${(project as any).ticketId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="ml-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border/40 bg-card/50 hover:bg-card transition-colors group shrink-0"
-                    >
-                      <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 group-hover:underline">
-                        {(project as any).ticketId}
-                      </span>
-                      {(project as any).isdStatus && (
-                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
-                          {(project as any).isdStatus}
-                        </span>
-                      )}
-                    </a>
-                  )}
                 </>
               )}
             </div>
@@ -682,7 +622,7 @@ export default function ProjectDetailPage() {
 
       {/* Detail Panel */}
       {showDetail && (
-        <div className={detailTab === "chats" || detailTab === "emails" || detailTab === "import-tasks" ? "flex-1 min-h-0 flex flex-col" : "shrink-0"}>
+        <div className={detailTab === "import-tasks" ? "flex-1 min-h-0 flex flex-col" : "shrink-0"}>
           <ProjectDetailPanel key={project._id} project={project} tab={detailTab} onTabChange={setDetailTab} />
         </div>
       )}
@@ -730,7 +670,7 @@ export default function ProjectDetailPage() {
       </Dialog>
 
       {/* Kanban Board */}
-      {(!showDetail || (detailTab !== "chats" && detailTab !== "emails" && detailTab !== "import-tasks")) && (
+      {(!showDetail || detailTab !== "import-tasks") && (
         <div className="flex-1 min-h-0 overflow-auto">
           <DndContext
           sensors={sensors}

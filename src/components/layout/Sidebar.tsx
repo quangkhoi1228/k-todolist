@@ -2,29 +2,17 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, Boxes, ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/ui/Logo";
 import { usePwaInstall } from "@/context/PwaContext";
-import { useUnresolvedCountByUser } from "@/hooks/useDomain";
 import { useAuth } from "@clerk/nextjs";
 
 export default function Sidebar() {
   const { isInstallable, installApp } = usePwaInstall();
   const { userId } = useAuth();
   const [isHidden, setIsHidden] = useState(false);
-
-  // Count unresolved suggestions for badge
-  const { data: unresolvedCount } = useUnresolvedCountByUser(userId);
-
-  const openPMAgent = () => {
-    window.dispatchEvent(new CustomEvent("pm-agent:toggle", { detail: { open: true } }));
-  };
-
-  const openSuggestions = () => {
-    window.dispatchEvent(new CustomEvent("suggestions:toggle", { detail: { open: true } }));
-  };
 
   if (isHidden) {
     return (
@@ -79,52 +67,10 @@ export default function Sidebar() {
           <Folder className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           Dự án
         </Link>
-        {/* <Link href="/templates" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
+        <Link href="/templates" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
           <Boxes className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           Template
         </Link>
-        <Link href="/business-processes" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
-          <Workflow className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
-          Kho quy trình
-        </Link>
-        <Link href="/email" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
-          <Mail className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
-          Email
-        </Link> */}
-
-        {/* PM Agent - click mo popup */}
-        {/* <button
-          onClick={openPMAgent}
-          className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group mt-2"
-        >
-          <Bot className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
-          PM Agents
-          <span className="ml-auto w-2 h-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-        </button> */}
-
-        {/* Suggestions - click mo popup */}
-        {/* <button
-          onClick={openSuggestions}
-          className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-all duration-300 cursor-pointer group"
-        >
-          <Sparkles className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-amber-500 transition-colors" />
-          <span className="truncate">Gợi ý</span>
-          {unresolvedCount !== undefined && unresolvedCount > 0 && (
-            <span className="ml-auto min-w-[18px] h-[18px] shrink-0 rounded-full bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center px-1 shadow-sm ring-2 ring-background">
-              {unresolvedCount > 9 ? "9+" : unresolvedCount}
-            </span>
-          )}
-        </button> */}
-
-        {/* <Link href="/omni" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 transition-all duration-300 cursor-pointer group mt-2">
-          <Headset className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-blue-500 transition-colors" />
-          <span className="truncate">Omni Platform</span>
-        </Link> */}
-
-        {/* <Link href="/settings/roles" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group">
-          <Cog className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
-          <span className="truncate">Cấu hình</span>
-        </Link> */}
 
         {isInstallable && (
           <button

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getProject, getProjects, getActiveProjectsWithTeamsGroups, createProject, updateProject, updateProjectDetail, updateProjectTeamsGroups, updateProjectIsdStatus, setProjectArchived, softDeleteProject, restoreProject, deleteProject, updateProjectOrders, cloneProject } from "@/lib/repo/projects";
+import { getProject, getProjects, createProject, updateProject, updateProjectDetail, setProjectArchived, softDeleteProject, restoreProject, deleteProject, updateProjectOrders, cloneProject } from "@/lib/repo/projects";
 import { requireUserId, readJsonBody, handleRoute } from "../_helpers";
 
 export const runtime = "nodejs";
@@ -19,10 +19,6 @@ export async function GET(req: NextRequest) {
         const id = sp.get("id") ?? "";
         return await getProject(id);
       }
-      case "getActiveProjectsWithTeamsGroups": {
-        const userId = sp.get("userId") ?? "";
-        return await getActiveProjectsWithTeamsGroups(userId);
-      }
       default:
         return { error: `Unknown action: ${action}` };
     }
@@ -41,10 +37,6 @@ export async function POST(req: NextRequest) {
         return await updateProject(body.id, body);
       case "updateProjectDetail":
         return await updateProjectDetail(body.id, body.notes);
-      case "updateProjectTeamsGroups":
-        return await updateProjectTeamsGroups(body.id, body);
-      case "updateProjectIsdStatus":
-        return await updateProjectIsdStatus(body.id, body);
       case "setProjectArchived":
         return await setProjectArchived(body.id, body.archived);
       case "softDeleteProject":
