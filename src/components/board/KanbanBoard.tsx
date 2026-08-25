@@ -623,6 +623,116 @@ export function KanbanBoard({
   const { data: userPreferences } = useUserPreferences(userId);
   const { data: allDependencies } = useAllDependencies(userId);
 
+  // ─── Optimistic local tasks ────────────────────────────────
+  // The board re-renders instantly from local state during a drag/drop instead
+  // of waiting for the POST → DB → refetch round-trip.
+  // Overrides are stored as state (a Map of id → partial fields) and merged
+  // over the server tasks in render.
+  type TaskOverride = {
+    order?: number;
+    status?: string;
+    project?: string | null;
+    endDate?: number | null;
+    startDate?: number | null;
+  };
+  const [overrides, setOverrides] = useState<Map<string, TaskOverride>>(new Map());
+  const saveEpochRef = useRef(0);
+
+  const serverTasks = useMemo(() => tasks ?? [], [tasks]);
+
+  // Latest server truth, readable inside async callbacks without stale closures.
+  const serverTasksRef = useRef(serverTasks);
+  useEffect(() => {
+    serverTasksRef.current = serverTasks;
+  }, [serverTasks]);
+
+  // Derive board tasks from server tasks + optimistic overrides.
+  const boardTasks = useMemo(() => {
+    if (overrides.size === 0) return serverTasks;
+    return serverTasks.map((t) => {
+      const override = overrides.get(t._id);
+      if (!override) return t;
+      return { ...t, ...override } as Task;
+    });
+  }, [serverTasks, overrides]);
+
+  // Reconcile: drop overrides whose fields are now confirmed by the server
+  // (e.g. after onUpdateTask-based moves trigger a refetch). This keeps the
+  // optimistic map from accumulating stale entries on non-saveUpdates paths.
+  useEffect(() => {
+    if (overrides.size === 0) return;
+    let changed = false;
+    const next = new Map(overrides);
+    for (const [id, override] of next) {
+      const serverTask = serverTasks.find((t) => t._id === id);
+      if (!serverTask) {
+        next.delete(id);
+        changed = true;
+        continue;
+      }
+      const confirmed = (["order", "status", "project", "endDate", "startDate"] as const).every((k) => {
+        if (override[k] === undefined) return true;
+        const serverVal = serverTask[k];
+        const overrideVal = override[k];
+        if (serverVal === null && overrideVal === undefined) return true;
+        if (serverVal === undefined && overrideVal === null) return true;
+        return serverVal === overrideVal;
+      });
+      if (confirmed) {
+        next.delete(id);
+        changed = true;
+      }
+    }
+    // Server-confirmed overrides are dropped here; only fires when serverTasks changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (changed) setOverrides(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverTasks]);
+
+  // Apply an array of {id, order?, status?, project?, endDate?, startDate?} overrides
+  // to the optimistic map and bump the version to trigger a re-render.
+  const applyLocalUpdates = useCallback(
+    (updates: Array<{ id: string | number; order?: number; status?: string; project?: string | null; endDate?: number | null; startDate?: number }>) => {
+      setOverrides((prev) => {
+        const next = new Map(prev);
+        for (const u of updates) {
+          const id = String(u.id);
+          const existing = next.get(id) ?? {};
+          const merged: TaskOverride = { ...existing };
+          if (u.order !== undefined) merged.order = u.order;
+          for (const k of ["status", "project", "endDate", "startDate"] as const) {
+            if (u[k] !== undefined) (merged as Record<string, unknown>)[k] = u[k];
+          }
+          next.set(id, merged);
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  // Fire the API save in the background, then reconcile with server truth.
+  const saveUpdates = useCallback(
+    (updates: Array<{ id: string | number; order: number; [k: string]: unknown }>) => {
+      const epoch = ++saveEpochRef.current;
+      const promise = tm.updateTaskOrders(updates);
+      promise
+        .then(() => {
+          if (epoch === saveEpochRef.current) {
+            setOverrides(new Map());
+          }
+        })
+        .catch((err) => {
+          console.error("[Kanban] failed to save task order:", err);
+          if (epoch === saveEpochRef.current) {
+            setOverrides(new Map());
+          }
+        });
+      return promise;
+    },
+    [tm]
+  );
+
   // Build a set of blocked task IDs from dependencies
   const blockedTaskIds = useMemo(() => {
     if (!allDependencies || !tasks) return new Set<string>();
@@ -785,7 +895,7 @@ export function KanbanBoard({
   );
 
   const filteredTasks = useMemo(() => {
-    return tasks
+    return boardTasks
       .filter(task => {
         if (task.project && task.project !== "none" && projects && !activeProjectIds.has(task.project)) {
           return false;
@@ -801,7 +911,7 @@ export function KanbanBoard({
         ...task,
         isBlocked: blockedTaskIds.has(task._id),
       }));
-  }, [tasks, searchQuery, filterProject, filterStatus, hideDoneTasks, projects, activeProjectIds, blockedTaskIds]);
+  }, [boardTasks, searchQuery, filterProject, filterStatus, hideDoneTasks, projects, activeProjectIds, blockedTaskIds]);
 
   // Compute overdue tasks (uncompleted tasks with start date before today)
   const overdueTasks = useMemo(() => {
@@ -1029,7 +1139,8 @@ export function KanbanBoard({
         }
       }
 
-          tm.updateTaskOrders(updates);
+      applyLocalUpdates(updates);
+      saveUpdates(updates);
       setSelectedTaskIds(new Set());
       return;
     }
@@ -1041,6 +1152,7 @@ export function KanbanBoard({
         if (targetStatus) {
           for (const tid of movingIds) {
             onUpdateTask(tid as string, { status: targetStatus });
+            applyLocalUpdates([{ id: tid, status: targetStatus }]);
           }
         }
         setSelectedTaskIds(new Set());
@@ -1053,21 +1165,24 @@ export function KanbanBoard({
         return;
       }
       const newStartDate = parseDateStr(targetDateStr).getTime();
+      const updates: Array<{ id: any; order?: number; startDate: number; endDate?: number }> = [];
       for (const tid of movingIds) {
         const task = filteredTasks.find((t) => t._id === tid);
         if (task) {
-          const updates: { startDate: number; endDate?: number } = { startDate: newStartDate };
+          const upd: { startDate: number; endDate?: number } = { startDate: newStartDate };
           if (task.startDate && task.endDate) {
             const tStart = new Date(task.startDate).getTime();
             const tEnd = new Date(task.endDate).getTime();
             if (!isNaN(tStart) && !isNaN(tEnd)) {
               const delta = tEnd - tStart;
-              updates.endDate = newStartDate + delta;
+              upd.endDate = newStartDate + delta;
             }
           }
-          onUpdateTask(tid as string, updates);
+          updates.push({ id: tid, ...upd });
+          onUpdateTask(tid as string, upd);
         }
       }
+      applyLocalUpdates(updates);
       setSelectedTaskIds(new Set());
       return;
     }
@@ -1103,12 +1218,12 @@ export function KanbanBoard({
           const moving = cellList.filter((t) => movingIds.has(t._id));
           const reordered = [...nonMoving];
           reordered.splice(overIdx, 0, ...moving);
-          tm.updateTaskOrders(
-            reordered.map((t, index) => ({
-              id: t._id as any,
-              order: index * 1000,
-            }))
-          );
+          const updates = reordered.map((t, index) => ({
+            id: t._id as any,
+            order: index * 1000,
+          }));
+          applyLocalUpdates(updates);
+          saveUpdates(updates);
         } else {
           // Move all selected tasks to target cell
           const moveFields = buildBoardMoveFields(sourceColumn, targetColumn, activeTaskData);
@@ -1149,7 +1264,8 @@ export function KanbanBoard({
             }
           }
 
-          tm.updateTaskOrders(updates);
+          applyLocalUpdates(updates);
+          saveUpdates(updates);
         }
         setSelectedTaskIds(new Set());
         return;
@@ -1190,7 +1306,8 @@ export function KanbanBoard({
             ...(movingIds.has(t._id) ? { startDate: newStartDate, endDate: taskEndDate } : {}),
           };
         });
-        tm.updateTaskOrders(updates);
+        applyLocalUpdates(updates);
+        saveUpdates(updates);
       } else {
         // Move to new date column
         const nonMoving = targetList.filter((t) => !movingIds.has(t._id));
@@ -1214,7 +1331,8 @@ export function KanbanBoard({
             ...(movingIds.has(t._id) ? { startDate: newStartDate, endDate: taskEndDate } : {}),
           };
         });
-        tm.updateTaskOrders(updates);
+        applyLocalUpdates(updates);
+        saveUpdates(updates);
       }
       setSelectedTaskIds(new Set());
     }
