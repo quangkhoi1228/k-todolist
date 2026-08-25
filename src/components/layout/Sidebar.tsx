@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, Bot, MessageSquare, Sparkles, Headset, ChevronLeft, ChevronRight, Mail, Cog, Boxes, Workflow } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Folder, Download, FileText, ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/ui/Logo";
@@ -79,7 +79,7 @@ export default function Sidebar() {
           <Folder className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           Dự án
         </Link>
-        <Link href="/templates" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
+        {/* <Link href="/templates" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
           <Boxes className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           Template
         </Link>
@@ -90,7 +90,7 @@ export default function Sidebar() {
         <Link href="/email" className="group flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300">
           <Mail className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           Email
-        </Link>
+        </Link> */}
 
         {/* PM Agent - click mo popup */}
         {/* <button
@@ -103,7 +103,7 @@ export default function Sidebar() {
         </button> */}
 
         {/* Suggestions - click mo popup */}
-        <button
+        {/* <button
           onClick={openSuggestions}
           className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-all duration-300 cursor-pointer group"
         >
@@ -114,17 +114,17 @@ export default function Sidebar() {
               {unresolvedCount > 9 ? "9+" : unresolvedCount}
             </span>
           )}
-        </button>
+        </button> */}
 
         {/* <Link href="/omni" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 transition-all duration-300 cursor-pointer group mt-2">
           <Headset className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-blue-500 transition-colors" />
           <span className="truncate">Omni Platform</span>
         </Link> */}
 
-        <Link href="/settings/roles" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group">
+        {/* <Link href="/settings/roles" className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] font-semibold rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-300 cursor-pointer group">
           <Cog className="w-4 h-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
           <span className="truncate">Cấu hình</span>
-        </Link>
+        </Link> */}
 
         {isInstallable && (
           <button

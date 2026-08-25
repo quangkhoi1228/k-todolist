@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { UserButton } from "@clerk/nextjs";
-import { LayoutDashboard, ListTodo, BarChartHorizontal, Menu, Download, FileText, Bot, Sparkles, Headset, Mail, Boxes, Workflow } from "lucide-react";
+import { LayoutDashboard, ListTodo, BarChartHorizontal, Menu, Download, FileText } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
@@ -50,7 +50,7 @@ export default function MobileSidebar() {
             </Link>
 
             <div className="pt-2">
-              <div className="px-3 mb-2">
+              {/* <div className="px-3 mb-2">
                 <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Quản lý & Hỗ trợ</p>
               </div>
               
@@ -81,7 +81,7 @@ export default function MobileSidebar() {
                 Kho quy trình
               </Link>
 
-              {/* <Link 
+              <Link 
                 href="/omni"
                 onClick={() => setOpen(false)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 transition-colors"
