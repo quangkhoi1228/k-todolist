@@ -427,7 +427,6 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                         setTempTime(formatHours(task.estimatedTime));
                         setIsTimeEditing(true);
                       }}
-                      onPointerDown={(e) => e.stopPropagation()}
                       className="focus:outline-none cursor-pointer shrink-0"
                       title="Click để sửa nhanh thời gian"
                     >
@@ -552,7 +551,6 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                       setTempTime(formatHours(task.estimatedTime));
                       setIsTimeEditing(true);
                     }}
-                    onPointerDown={(e) => e.stopPropagation()}
                     className="focus:outline-none cursor-pointer"
                     title="Click để sửa nhanh thời gian"
                   >
@@ -587,7 +585,7 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                   <DropdownMenu>
                     <DropdownMenuTrigger 
                       className="focus:outline-none cursor-pointer"
-                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       {task.status === "todo" && (
                         <Badge variant="outline" className="text-neutral-500 border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800/40 text-[10px] py-0.5 px-2 flex items-center gap-1 hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors">
@@ -668,7 +666,6 @@ export function TaskCard({ task, hideProjectBadge = false, hideStatusBadge = fal
                 e.stopPropagation();
                 setIsEditOpen(true);
               }}
-              onPointerDown={(e) => e.stopPropagation()}
               className="p-1 rounded-md bg-background/80 hover:bg-muted border border-border/50 text-muted-foreground hover:text-foreground transition-colors cursor-pointer shadow-sm"
               title="Sửa chi tiết"
             >

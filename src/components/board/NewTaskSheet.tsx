@@ -35,9 +35,10 @@ interface NewTaskSheetProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   editTask?: TaskData;
+  nativeButton?: boolean;
 }
 
-export function NewTaskSheet({ children, defaultDate, defaultProject, defaultStatus, open: controlledOpen, onOpenChange, editTask }: NewTaskSheetProps) {
+export function NewTaskSheet({ children, defaultDate, defaultProject, defaultStatus, open: controlledOpen, onOpenChange, editTask, nativeButton = true }: NewTaskSheetProps) {
   const { userId } = useAuth();
   const tm = useTaskMutations();
   const pm = useProjectMutations();
@@ -199,7 +200,12 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
     if (!userId) return;
 
     const parsedHours = parseTimeToHours(estimatedTime);
-    const startTimestamp = startDate ? startOfDay(new Date(startDate)).getTime() : null;
+    const startTimestamp = startDate
+      ? (() => {
+          const [y, m, d] = startDate.split("-").map(Number);
+          return new Date(y, m - 1, d).getTime();
+        })()
+      : null;
     const endTimestamp = endDate ? new Date(endDate).getTime() : null;
 
     if (editTask) {
@@ -240,7 +246,7 @@ export function NewTaskSheet({ children, defaultDate, defaultProject, defaultSta
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      {children && <DialogTrigger render={children as React.ReactElement} />}
+      {children && <DialogTrigger render={children as React.ReactElement} nativeButton={nativeButton} />}
       <DialogContent className="bg-card text-foreground border border-border w-full sm:max-w-[500px] shadow-2xl p-6 overflow-y-auto max-h-[90vh]">
         <DialogHeader className="mb-4">
           <DialogTitle className="text-lg font-bold tracking-tight">

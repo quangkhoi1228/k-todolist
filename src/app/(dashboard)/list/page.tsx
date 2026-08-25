@@ -124,7 +124,14 @@ export default function ListPage() {
   };
 
   const handleSaveDate = async (taskId: string) => {
-    await tm.updateTask(taskId, { startDate: tempDate ? new Date(tempDate).getTime() : null });
+    await tm.updateTask(taskId, {
+      startDate: tempDate
+        ? (() => {
+            const [y, m, d] = tempDate.split("-").map(Number);
+            return new Date(y, m - 1, d).getTime();
+          })()
+        : null,
+    });
     setEditingDateId(null);
   };
 
@@ -783,10 +790,11 @@ export default function ListPage() {
                               <MoreHorizontal className="w-3.5 h-3.5" />
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-48 bg-card/95 backdrop-blur-xl border-border shadow-xl">
-                              <NewTaskSheet 
-                                open={editOpen[task._id]} 
-                                onOpenChange={(open) => setEditOpen(prev => ({ ...prev, [task._id]: open }))} 
+                              <NewTaskSheet
+                                open={editOpen[task._id]}
+                                onOpenChange={(open) => setEditOpen(prev => ({ ...prev, [task._id]: open }))}
                                 editTask={task}
+                                nativeButton={false}
                               >
                                 <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="cursor-pointer font-medium text-xs text-foreground">
                                   <Pencil className="w-4 h-4 mr-2" />

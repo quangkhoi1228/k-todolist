@@ -54,6 +54,16 @@ function getBoardColumn(task: { endDate?: number | null; status?: string }): Boa
   return "todo";
 }
 
+/**
+ * Parse a "yyyy-MM-dd" string as a LOCAL date (midnight local time).
+ * `new Date("2026-08-25")` is parsed as UTC midnight which shifts a day in
+ * positive timezones, so date-only strings must be split manually.
+ */
+function parseDateStr(dateStr: string) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
 /** Default end-of-day deadline used when dropping into Đến hạn. */
 function dueTodayEndTimestamp(existingEnd?: number | null) {
   const today = startOfDay(new Date());
@@ -1042,9 +1052,21 @@ export function KanbanBoard({
         setSelectedTaskIds(new Set());
         return;
       }
-      const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
+      const newStartDate = parseDateStr(targetDateStr).getTime();
       for (const tid of movingIds) {
-        onUpdateTask(tid as string, { startDate: newStartDate });
+        const task = filteredTasks.find((t) => t._id === tid);
+        if (task) {
+          const updates: { startDate: number; endDate?: number } = { startDate: newStartDate };
+          if (task.startDate && task.endDate) {
+            const tStart = new Date(task.startDate).getTime();
+            const tEnd = new Date(task.endDate).getTime();
+            if (!isNaN(tStart) && !isNaN(tEnd)) {
+              const delta = tEnd - tStart;
+              updates.endDate = newStartDate + delta;
+            }
+          }
+          onUpdateTask(tid as string, updates);
+        }
       }
       setSelectedTaskIds(new Set());
       return;
@@ -1135,7 +1157,7 @@ export function KanbanBoard({
 
       // Date view
       const targetDateStr = formatDateStr(startOfDay(new Date(overTask.startDate || Date.now())));
-      const newStartDate = startOfDay(new Date(targetDateStr)).getTime();
+      const newStartDate = parseDateStr(targetDateStr).getTime();
 
       const sourceDateStr = formatDateStr(startOfDay(new Date(activeTaskData.startDate || Date.now())));
 
@@ -1152,11 +1174,22 @@ export function KanbanBoard({
         const moving = sourceList.filter((t) => movingIds.has(t._id));
         const reordered = [...nonMoving];
         reordered.splice(overIdx, 0, ...moving);
-        const updates = reordered.map((t, index) => ({
-          id: t._id as any,
-          order: index * 1000,
-          startDate: newStartDate,
-        }));
+        const updates = reordered.map((t, index) => {
+          let taskEndDate = t.endDate;
+          if (movingIds.has(t._id) && t.startDate && t.endDate) {
+            const tStart = new Date(t.startDate).getTime();
+            const tEnd = new Date(t.endDate).getTime();
+            if (!isNaN(tStart) && !isNaN(tEnd)) {
+              const delta = tEnd - tStart;
+              taskEndDate = newStartDate + delta;
+            }
+          }
+          return {
+            id: t._id as any,
+            order: index * 1000,
+            ...(movingIds.has(t._id) ? { startDate: newStartDate, endDate: taskEndDate } : {}),
+          };
+        });
         tm.updateTaskOrders(updates);
       } else {
         // Move to new date column
@@ -1165,11 +1198,22 @@ export function KanbanBoard({
         const moving = sourceList.filter((t) => movingIds.has(t._id));
         const newTarget = [...nonMoving];
         newTarget.splice(overIdx < 0 ? newTarget.length : overIdx, 0, ...moving);
-        const updates = newTarget.map((t, index) => ({
-          id: t._id as any,
-          order: index * 1000,
-          startDate: newStartDate,
-        }));
+        const updates = newTarget.map((t, index) => {
+          let taskEndDate = t.endDate;
+          if (movingIds.has(t._id) && t.startDate && t.endDate) {
+            const tStart = new Date(t.startDate).getTime();
+            const tEnd = new Date(t.endDate).getTime();
+            if (!isNaN(tStart) && !isNaN(tEnd)) {
+              const delta = tEnd - tStart;
+              taskEndDate = newStartDate + delta;
+            }
+          }
+          return {
+            id: t._id as any,
+            order: index * 1000,
+            ...(movingIds.has(t._id) ? { startDate: newStartDate, endDate: taskEndDate } : {}),
+          };
+        });
         tm.updateTaskOrders(updates);
       }
       setSelectedTaskIds(new Set());

@@ -40,7 +40,7 @@ export function NewTaskDialog({ children }: { children: React.ReactNode }) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={children as React.ReactElement} />
+      <DialogTrigger render={children as React.ReactElement} nativeButton={false} />
       <DialogContent className="sm:max-w-[425px] bg-neutral-900 text-white border-neutral-800">
         <DialogHeader>
           <DialogTitle>Add New Task</DialogTitle>

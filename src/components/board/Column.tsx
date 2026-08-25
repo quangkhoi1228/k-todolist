@@ -109,9 +109,13 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
         <div className="flex items-center gap-1.5">
           {!isOverdue && !statusMode && date && (
             <NewTaskSheet defaultDate={date}>
-              <div role="button" className="w-5 h-5 rounded-full bg-primary/10 hover:bg-primary/30 flex items-center justify-center text-primary border border-primary/20 opacity-0 group-hover:opacity-100 transition-all duration-300 scale-90 group-hover:scale-100 cursor-pointer">
+              <button
+                type="button"
+                className="w-5 h-5 rounded-full bg-primary/10 hover:bg-primary/30 flex items-center justify-center text-primary border border-primary/20 opacity-0 group-hover:opacity-100 transition-all duration-300 scale-90 group-hover:scale-100 cursor-pointer"
+                aria-label="Thêm công việc"
+              >
                 <Plus className="w-3.5 h-3.5" />
-              </div>
+              </button>
             </NewTaskSheet>
           )}
           <div className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${

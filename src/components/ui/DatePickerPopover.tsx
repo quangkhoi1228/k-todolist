@@ -161,7 +161,6 @@ export function DatePickerPopover({
           triggerClassName
         )}
         onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
       >
         {children || (
           <div

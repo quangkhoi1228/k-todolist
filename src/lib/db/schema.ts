@@ -7,6 +7,7 @@ import {
   bigserial,
   bigint,
   real,
+  doublePrecision,
   timestamp,
   uniqueIndex,
   index,
@@ -66,8 +67,8 @@ export const tasks = pgTable(
     userId: text("userId").notNull(),
     title: text("title").notNull(),
     estimatedTime: real("estimatedTime").notNull(), // hours
-    startDate: real("startDate"), // timestamp
-    endDate: real("endDate"),
+    startDate: doublePrecision("startDate"), // ms epoch
+    endDate: doublePrecision("endDate"),
     status: text("status"), // 'todo','processing','pending','done'
     isCompleted: boolean("isCompleted"),
     project: integer("project"), // FK projects.id
