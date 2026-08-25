@@ -20,9 +20,10 @@ interface ColumnProps {
   statusMode?: "todo" | "processing" | "pending" | "done";
   tasks: Task[];
   totalHours: number;
+  width?: number;
 }
 
-export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }: ColumnProps) {
+export function Column({ date, tasks, totalHours, isOverdue, title, statusMode, width = 270 }: ColumnProps) {
   const droppableId = statusMode ? statusMode : (date ? format(date, "yyyy-MM-dd") : "overdue");
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId,
@@ -54,7 +55,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
   };
 
   return (
-    <div className={`flex flex-col w-[270px] shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)] ${
+    <div className={`flex flex-col shrink-0 h-full min-h-0 rounded-2xl border transition-all duration-300 group shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.1)] ${
       statusMode
         ? statusStyles[statusMode]
         : isOverdue
@@ -64,7 +65,7 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
             : isTodayColumn 
               ? 'bg-primary/5 dark:bg-primary/5 border-primary/40 shadow-[0_0_20px_rgba(139,92,246,0.12)]' 
               : 'bg-card/50 dark:bg-zinc-900/50 backdrop-blur-md border-border/40 hover:border-border/60'
-    }`}>
+    }`} style={{ width }}>
       <div className={`p-2.5 border-b flex justify-between items-center rounded-t-2xl relative shrink-0 ${
         statusMode
           ? statusHeaderStyles[statusMode]
@@ -76,9 +77,9 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
                 ? 'border-primary/20 bg-primary/10' 
                 : 'border-border/40 bg-muted/20 dark:bg-zinc-800/40 backdrop-blur-md'
       }`}>
-        <div className="flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
-            <h3 className={`text-sm font-bold tracking-tight capitalize ${
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <h3 className={`text-sm font-bold tracking-tight capitalize truncate ${
               statusMode
                 ? statusTextStyles[statusMode]
                 : isOverdue 
@@ -102,11 +103,11 @@ export function Column({ date, tasks, totalHours, isOverdue, title, statusMode }
               : isOverdue 
                 ? 'Các công việc chưa hoàn thành trước hôm nay' 
                 : date 
-                  ? format(date, "dd MMM, yyyy", { locale: vi }) 
+                  ? format(date, "dd/MM/yyyy") 
                   : ""}
           </p>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           {!isOverdue && !statusMode && date && (
             <NewTaskSheet defaultDate={date}>
               <button

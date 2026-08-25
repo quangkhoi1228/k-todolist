@@ -21,7 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Column } from "./Column";
 import { TaskCard } from "./TaskCard";
 import { getDays, formatDateStr } from "@/lib/date-utils";
-import { startOfDay, addDays, format } from "date-fns";
+import { startOfDay, addDays, format, isToday, isTomorrow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Briefcase, Search, Circle, Clock, PauseCircle, CheckCircle2, Plus, SlidersHorizontal, Copy, Archive, Eye, EyeOff, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
 import { useTaskMutations, useProjectMutations, usePreferenceMutations, useUserPreferences, useAllDependencies } from "@/hooks/useDomain";
@@ -1814,6 +1814,7 @@ export function KanbanBoard({
                   isOverdue={true}
                   tasks={overdueTasks}
                   totalHours={0}
+                  width={300}
                 />
               )}
 
@@ -1821,13 +1822,17 @@ export function KanbanBoard({
                 const dateStr = formatDateStr(day);
                 const dayTasks = tasksByDate[dateStr] || [];
                 const totalHours = dayTasks.reduce((sum, t) => sum + t.estimatedTime, 0);
+                const isDayToday = isToday(day);
+                const isDayTomorrow = isTomorrow(day);
+                const colWidth = isDayToday || isDayTomorrow ? 300 : 240;
 
                 return (
                   <Column 
                     key={dateStr}
                     date={day} 
                     tasks={dayTasks} 
-                    totalHours={totalHours} 
+                    totalHours={totalHours}
+                    width={colWidth}
                   />
                 );
               })}
